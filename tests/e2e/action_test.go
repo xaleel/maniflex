@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"maniflex"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // TestActionBasic verifies that a POST action returns custom JSON.

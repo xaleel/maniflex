@@ -3,7 +3,7 @@ package e2e
 import (
 	"testing"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // skipRawSQLOnPostgres skips a test whose body hand-writes raw SQL with `?`

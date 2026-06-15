@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // runRule drives a single Validate-step middleware against a fixture body and

@@ -1,4 +1,4 @@
-module maniflex
+module github.com/xaleel/maniflex
 
 go 1.25.4
 

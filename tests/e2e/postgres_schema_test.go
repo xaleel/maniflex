@@ -20,9 +20,9 @@ import (
 	"encoding/hex"
 	"testing"
 
-	"maniflex"
-	"maniflex/db/postgres"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/postgres"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 func TestPostgresSchemaAutoCreate(t *testing.T) {

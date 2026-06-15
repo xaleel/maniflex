@@ -30,7 +30,7 @@ import (
 	"net/http"
 	"strings"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // Config controls how the admin panel is mounted and rendered.

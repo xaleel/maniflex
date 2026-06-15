@@ -31,7 +31,7 @@ import (
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // Config configures an S3Storage. Bucket and Region are required.

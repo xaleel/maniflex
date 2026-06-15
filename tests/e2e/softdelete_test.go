@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // TestSoftDelete covers both soft-delete styles: deleted_at (timestamp) and

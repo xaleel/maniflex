@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // Config tunes the Runner. All fields are optional.

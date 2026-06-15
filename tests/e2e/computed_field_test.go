@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"maniflex"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 func computedServer(t *testing.T, install func(s *maniflex.Server)) *testutil.Server {

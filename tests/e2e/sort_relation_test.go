@@ -9,7 +9,7 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // sortRelSeed creates three posts whose authors' names order oppositely to the

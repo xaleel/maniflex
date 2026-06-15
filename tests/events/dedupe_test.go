@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"maniflex/events"
+	"github.com/xaleel/maniflex/events"
 	_ "modernc.org/sqlite"
 )
 

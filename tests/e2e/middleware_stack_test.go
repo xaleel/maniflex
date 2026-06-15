@@ -19,14 +19,14 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/middleware/auth"
-	"maniflex/middleware/db"
-	"maniflex/middleware/response"
-	"maniflex/middleware/service"
-	svcbcrypt "maniflex/middleware/service/bcrypt"
-	"maniflex/middleware/validate"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/middleware/auth"
+	"github.com/xaleel/maniflex/middleware/db"
+	"github.com/xaleel/maniflex/middleware/response"
+	"github.com/xaleel/maniflex/middleware/service"
+	svcbcrypt "github.com/xaleel/maniflex/middleware/service/bcrypt"
+	"github.com/xaleel/maniflex/middleware/validate"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // TestMiddlewareStack tests the provided middleware packages end-to-end

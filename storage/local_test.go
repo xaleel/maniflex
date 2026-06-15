@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 func tempStorage(t *testing.T) *LocalStorage {

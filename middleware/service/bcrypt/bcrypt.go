@@ -7,7 +7,7 @@ package bcrypt
 import (
 	xbcrypt "golang.org/x/crypto/bcrypt"
 
-	"maniflex/middleware/service"
+	"github.com/xaleel/maniflex/middleware/service"
 )
 
 // Hasher returns a service.Hasher that bcrypt-hashes field values. An optional

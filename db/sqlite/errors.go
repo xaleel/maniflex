@@ -3,7 +3,7 @@ package sqlite
 import (
 	"strings"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // NormalizeError converts a modernc.org/sqlite constraint error into a

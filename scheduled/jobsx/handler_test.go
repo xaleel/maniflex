@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/db/sqlite"
-	"maniflex/jobs"
-	"maniflex/scheduled"
-	"maniflex/scheduled/jobsx"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/jobs"
+	"github.com/xaleel/maniflex/scheduled"
+	"github.com/xaleel/maniflex/scheduled/jobsx"
 )
 
 type jobxArticle struct {

@@ -13,8 +13,8 @@ import (
 	"slices"
 	"testing"
 
-	"maniflex"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // SearchDoc is searchable on title + body, soft-deletable (so soft-deleted rows

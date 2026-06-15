@@ -3,7 +3,7 @@
 // None of these middlewares are registered automatically — import and register
 // whichever ones you need:
 //
-//	import "maniflex/middleware/auth"
+//	import "github.com/xaleel/maniflex/middleware/auth"
 //
 //	server.Pipeline.Auth.Register(auth.JWTAuth(secret))
 //	server.Pipeline.Auth.Register(auth.RequireRole("admin"), maniflex.ForModel("User"))
@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // ── JWTAuth ───────────────────────────────────────────────────────────────────

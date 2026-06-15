@@ -7,8 +7,8 @@
 // Prometheus, …) without the framework taking a hard dependency on any of it.
 //
 //	import (
-//	    "maniflex"
-//	    mfxotel "maniflex/pkg/otel"
+//	    "github.com/xaleel/maniflex"
+//	    mfxotel "github.com/xaleel/maniflex/pkg/otel"
 //	    "go.opentelemetry.io/otel/sdk/trace"  // your SDK + exporter
 //	)
 //
@@ -39,8 +39,8 @@ import (
 	"context"
 	"net/http"
 
-	"maniflex"
-	"maniflex/middleware/response"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/middleware/response"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"

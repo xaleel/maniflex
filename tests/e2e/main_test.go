@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 
 	"github.com/testcontainers/testcontainers-go"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"

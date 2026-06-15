@@ -9,9 +9,9 @@ import (
 	"context"
 	"testing"
 
-	"maniflex"
-	"maniflex/pkg/money"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/pkg/money"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // derefStr returns the string value whether v is a string or a *string (the

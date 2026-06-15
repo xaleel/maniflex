@@ -10,7 +10,7 @@ touches the database directly.
 ## Adding the module
 
 ```bash
-go get maniflex/admin
+go get github.com/xaleel/maniflex/admin
 ```
 
 Because it is a satellite, importing it is the only thing needed to bring the
@@ -56,16 +56,16 @@ unprotected panel can never be shipped by accident.
 
 ## Config reference
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| `PathPrefix` | `string` | `"/admin"` | Mount path; the returned handler serves routes under this prefix |
-| `Title` | `string` | `"maniflex admin"` | Displayed in the panel header |
-| `Auth` | `func(http.Handler) http.Handler` | — | Wraps the whole panel with an auth gate; required unless `AllowUnauthenticated` is set |
-| `AllowUnauthenticated` | `bool` | `false` | Skips the auth requirement; **local dev only** |
-| `Models` | `[]string` | (all) | Struct names to show; empty means every registered model |
-| `ReadOnly` | `bool` | `false` | Hides create/edit/delete UI and unmounts those routes |
-| `Templates` | `fs.FS` | — | Override FS for custom templates (see [Templates](#templates)) |
-| `StaticFS` | `fs.FS` | — | Replaces the embedded CSS/asset bundle |
+| Field                  | Type                              | Default            | Description                                                                            |
+| ---------------------- | --------------------------------- | ------------------ | -------------------------------------------------------------------------------------- |
+| `PathPrefix`           | `string`                          | `"/admin"`         | Mount path; the returned handler serves routes under this prefix                       |
+| `Title`                | `string`                          | `"maniflex admin"` | Displayed in the panel header                                                          |
+| `Auth`                 | `func(http.Handler) http.Handler` | —                  | Wraps the whole panel with an auth gate; required unless `AllowUnauthenticated` is set |
+| `AllowUnauthenticated` | `bool`                            | `false`            | Skips the auth requirement; **local dev only**                                         |
+| `Models`               | `[]string`                        | (all)              | Struct names to show; empty means every registered model                               |
+| `ReadOnly`             | `bool`                            | `false`            | Hides create/edit/delete UI and unmounts those routes                                  |
+| `Templates`            | `fs.FS`                           | —                  | Override FS for custom templates (see [Templates](#templates))                         |
+| `StaticFS`             | `fs.FS`                           | —                  | Replaces the embedded CSS/asset bundle                                                 |
 
 ## Authentication
 
@@ -128,16 +128,16 @@ count, fetched in-process from the API.
 
 Both forms share the same template and widget logic:
 
-| Widget | When used |
-|---|---|
-| `text` | default string fields |
-| `textarea` | long-text / `text` DB type |
-| `number` | integer and float fields |
-| `checkbox` | boolean fields |
-| `select` | fields with `mfx:"enum:…"` |
-| `relation` | BelongsTo FK fields — a `<select>` populated from the target model |
-| `file` | fields tagged `mfx:"file"` — includes a preview/download link when a file is already stored |
-| `datetime` | `time.Time` fields — rendered as an `<input type="datetime-local">` |
+| Widget     | When used                                                                                   |
+| ---------- | ------------------------------------------------------------------------------------------- |
+| `text`     | default string fields                                                                       |
+| `textarea` | long-text / `text` DB type                                                                  |
+| `number`   | integer and float fields                                                                    |
+| `checkbox` | boolean fields                                                                              |
+| `select`   | fields with `mfx:"enum:…"`                                                                  |
+| `relation` | BelongsTo FK fields — a `<select>` populated from the target model                          |
+| `file`     | fields tagged `mfx:"file"` — includes a preview/download link when a file is already stored |
+| `datetime` | `time.Time` fields — rendered as an `<input type="datetime-local">`                         |
 
 Fields tagged `mfx:"hidden"` or `mfx:"writeonly"` are excluded from the list
 and detail views. Fields tagged `mfx:"readonly"` appear on the edit form as
@@ -190,14 +190,14 @@ Drop in a replacement for any individual template by providing a `fs.FS` on
 `Config.Templates`. Any file **not** present in the override FS falls back to
 the embedded default. The template file names are:
 
-| File | View |
-|---|---|
-| `layout.html` | outer chrome (header, sidebar, `<head>`) |
-| `dashboard.html` | model summary cards |
-| `list.html` | paginated table |
-| `detail.html` | single-record field list |
-| `form.html` | shared create/edit form |
-| `error.html` | error page |
+| File             | View                                     |
+| ---------------- | ---------------------------------------- |
+| `layout.html`    | outer chrome (header, sidebar, `<head>`) |
+| `dashboard.html` | model summary cards                      |
+| `list.html`      | paginated table                          |
+| `detail.html`    | single-record field list                 |
+| `form.html`      | shared create/edit form                  |
+| `error.html`     | error page                               |
 
 Example — override only the layout to inject custom branding:
 

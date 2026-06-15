@@ -2,7 +2,7 @@
 
 `maniflex` is a multi-module monorepo. The core module — also named `maniflex` —
 carries only chi and uuid. Every heavy dependency (a database driver, a
-message broker client, a crypto library) lives in its own *satellite* module
+message broker client, a crypto library) lives in its own _satellite_ module
 under the same repository, so a consumer pulls only the dependencies it
 imports.
 
@@ -64,10 +64,10 @@ of the framework itself.
 Each satellite is a normal Go module — add it with `go get`:
 
 ```bash
-go get maniflex                 # core
-go get maniflex/db/sqlite       # SQLite adapter
-go get maniflex/middleware/auth # auth helpers
-go get maniflex/events/kafka    # Kafka publisher
+go get github.com/xaleel/maniflex                 # core
+go get github.com/xaleel/maniflex/db/sqlite       # SQLite adapter
+go get github.com/xaleel/maniflex/middleware/auth # auth helpers
+go get github.com/xaleel/maniflex/events/kafka    # Kafka publisher
 ```
 
 In code:
@@ -83,7 +83,7 @@ import (
 
 There are no required satellites for the framework itself to function —
 `maniflex` alone gives you the registry, pipeline, and HTTP layer. You need
-*at least* a database adapter (sqlite or postgres) before `server.Start()` can
+_at least_ a database adapter (sqlite or postgres) before `server.Start()` can
 serve a request.
 
 ## Workspace mode

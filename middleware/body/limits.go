@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // MaxBodySize overrides the default 4 MB body limit for the models this

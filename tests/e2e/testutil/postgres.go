@@ -8,8 +8,8 @@ import (
 	"sync"
 	"testing"
 
-	"maniflex"
-	"maniflex/db/postgres"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/postgres"
 )
 
 // ── Postgres lane DSN plumbing ─────────────────────────────────────────────────

@@ -12,9 +12,9 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex"
-	"maniflex/middleware/validate"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/middleware/validate"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // ── Models ────────────────────────────────────────────────────────────────────

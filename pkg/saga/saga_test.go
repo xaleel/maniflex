@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"maniflex/pkg/saga"
+	"github.com/xaleel/maniflex/pkg/saga"
 )
 
 var errStep = errors.New("step error")

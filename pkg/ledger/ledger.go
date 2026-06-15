@@ -35,8 +35,8 @@ import (
 	"fmt"
 	"time"
 
-	"maniflex"
-	"maniflex/pkg/money"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/pkg/money"
 )
 
 // Sentinel errors returned by Post.

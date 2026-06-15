@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"testing"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // TestFilterORGroups verifies bracket-indexed ?filter[N]=... OR group semantics.

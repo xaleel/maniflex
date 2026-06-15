@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // writeStaticFile creates dir/name with the given contents and returns dir.

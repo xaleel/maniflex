@@ -18,7 +18,7 @@ import (
 	"strconv"
 	"strings"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // ErrCurrencyMismatch is returned by Add and Sub when the two amounts carry

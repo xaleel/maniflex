@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"maniflex/jobs"
+	"github.com/xaleel/maniflex/jobs"
 )
 
 // Queue is both a jobs.Queue (producer) and a jobs.Source (consumer).

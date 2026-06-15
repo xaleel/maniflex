@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // staticSegment is the first path segment under which embedded assets are

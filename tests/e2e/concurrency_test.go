@@ -12,7 +12,7 @@ import (
 	"sync"
 	"testing"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 func TestConcurrent_ListSameModel(t *testing.T) {

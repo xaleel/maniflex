@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"strings"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // CSRFMode selects between the two supported CSRF defence strategies.

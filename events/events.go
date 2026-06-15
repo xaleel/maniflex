@@ -19,7 +19,7 @@ import (
 	"log/slog"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // Event is a CloudEvents 1.0-aligned event envelope with maniflex extensions.

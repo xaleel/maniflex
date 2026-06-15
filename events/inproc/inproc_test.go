@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"maniflex/events"
-	"maniflex/events/inproc"
+	"github.com/xaleel/maniflex/events"
+	"github.com/xaleel/maniflex/events/inproc"
 )
 
 // noBackoff avoids real sleeps in tests that exercise retry paths.

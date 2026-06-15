@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/pkg/money"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/pkg/money"
 )
 
 type wideRow struct {

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────

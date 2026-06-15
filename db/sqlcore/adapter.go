@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 
 	"github.com/google/uuid"
 )

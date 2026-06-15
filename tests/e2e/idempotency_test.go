@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/middleware/idempotency"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/middleware/idempotency"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 func TestIdempotencyMiddleware(t *testing.T) {

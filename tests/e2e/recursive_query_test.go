@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // category is a self-referential model used exclusively by the recursive-query tests.

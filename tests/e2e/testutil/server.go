@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/db/sqlite"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
 )
 
 // Server wraps an httptest.Server with convenience helpers.

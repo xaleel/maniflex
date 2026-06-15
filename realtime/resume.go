@@ -7,7 +7,7 @@ import (
 	"strings"
 	"sync"
 
-	"maniflex/events"
+	"github.com/xaleel/maniflex/events"
 )
 
 // BufferedEvent pairs a fanned-out event with the cursor the hub stamped on it.

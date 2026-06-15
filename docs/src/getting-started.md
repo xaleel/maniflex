@@ -15,7 +15,7 @@ thirty lines of Go.
 ```bash
 mkdir blog && cd blog
 go mod init blog
-go get maniflex
+go get github.com/xaleel/maniflex
 ```
 
 `maniflex` itself pulls in only two dependencies — [chi](https://github.com/go-chi/chi)
@@ -23,7 +23,7 @@ and [uuid](https://github.com/google/uuid). The SQLite adapter lives in its own
 satellite module, so add it explicitly:
 
 ```bash
-go get maniflex/db/sqlite
+go get github.com/xaleel/maniflex/db/sqlite
 ```
 
 ## 2. Define a model
@@ -102,13 +102,13 @@ go run .
 The server is now listening on `:8080`, and `Post{}` has a full set of routes
 mounted under the `/api` prefix:
 
-| Method   | Path              | Action                |
-|----------|-------------------|-----------------------|
-| `POST`   | `/api/posts`      | create a post         |
-| `GET`    | `/api/posts`      | list posts            |
-| `GET`    | `/api/posts/{id}` | read one post         |
-| `PATCH`  | `/api/posts/{id}` | update a post         |
-| `DELETE` | `/api/posts/{id}` | delete a post         |
+| Method   | Path              | Action        |
+| -------- | ----------------- | ------------- |
+| `POST`   | `/api/posts`      | create a post |
+| `GET`    | `/api/posts`      | list posts    |
+| `GET`    | `/api/posts/{id}` | read one post |
+| `PATCH`  | `/api/posts/{id}` | update a post |
+| `DELETE` | `/api/posts/{id}` | delete a post |
 
 ## 5. Make some requests
 

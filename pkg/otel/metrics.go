@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"maniflex/middleware/response"
+	"github.com/xaleel/maniflex/middleware/response"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"

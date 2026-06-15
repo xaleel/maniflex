@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // filterCondsSQL is a test helper that runs filterConds and returns the SQL

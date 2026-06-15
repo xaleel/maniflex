@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	dbmw "maniflex/middleware/db"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	dbmw "github.com/xaleel/maniflex/middleware/db"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // fieldRateLimitBackend is a deterministic in-memory RateLimitBackend for tests.

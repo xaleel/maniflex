@@ -31,10 +31,10 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"maniflex"
-	"maniflex/db/sqlcore"
-	"maniflex/db/sqlite"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlcore"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // ── Model versions for schema-evolution tests ─────────────────────────────────

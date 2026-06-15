@@ -15,7 +15,8 @@ import (
 //
 // Boot order:    migrate → OnStart → Service.Start (registration order) → listen.
 // Shutdown order: http.Shutdown → Service.Stop (reverse order) → OnShutdown →
-//                 drain Server.Go + ctx.GoBackground goroutines.
+//
+//	drain Server.Go + ctx.GoBackground goroutines.
 //
 // All of shutdown is bounded by Config.ShutdownTimeout.
 type Service interface {

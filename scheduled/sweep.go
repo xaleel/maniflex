@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // hook kinds collected during a sweep, fired after the per-model tx commits.

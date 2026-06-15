@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	maniflex "maniflex"
-	"maniflex/tests/e2e/testutil"
+	maniflex "github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // Real magic-number prefixes so http.DetectContentType sniffs the right type.

@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/pkg/ledger"
-	"maniflex/pkg/money"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/pkg/ledger"
+	"github.com/xaleel/maniflex/pkg/money"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // TestLedger covers roadmap item 5.13 — pkg/ledger double-entry primitives.

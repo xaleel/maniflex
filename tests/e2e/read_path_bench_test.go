@@ -12,7 +12,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 func listHandlerAndReq(tb testing.TB) (http.Handler, *http.Request) {

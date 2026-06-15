@@ -10,7 +10,7 @@ package maniflex_test
 import (
 	"testing"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // ── 10.4: mfx:"index" ──────────────────────────────────────────────────────────

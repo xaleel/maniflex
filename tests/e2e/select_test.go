@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 func selectSrv(t *testing.T) (*testutil.Server, string, string) {

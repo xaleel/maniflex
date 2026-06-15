@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // TypeFunc derives the CloudEvents Type from a Server pipeline context.

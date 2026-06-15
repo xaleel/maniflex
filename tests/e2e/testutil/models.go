@@ -1,6 +1,6 @@
 package testutil
 
-import "maniflex"
+import "github.com/xaleel/maniflex"
 
 // ── Test models ───────────────────────────────────────────────────────────────
 // These are the canonical fixtures used across the whole e2e suite.

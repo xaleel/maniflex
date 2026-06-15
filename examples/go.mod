@@ -1,3 +1,3 @@
-module maniflex/examples
+module github.com/xaleel/maniflex/examples
 
 go 1.25.4

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"maniflex/jobs"
+	"github.com/xaleel/maniflex/jobs"
 )
 
 // Entry describes a recurring job schedule.

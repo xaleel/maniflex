@@ -7,10 +7,10 @@ import (
 	"strings"
 	"testing"
 
-	"maniflex"
-	"maniflex/db/sqlite"
-	"maniflex/pkg/encryption"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/pkg/encryption"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // ── Test model ────────────────────────────────────────────────────────────────

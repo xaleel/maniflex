@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // captureWarnings installs a slog handler that records WARN+ output into a

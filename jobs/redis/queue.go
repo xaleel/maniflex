@@ -21,7 +21,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"maniflex/jobs"
+	"github.com/xaleel/maniflex/jobs"
 )
 
 const (
@@ -47,8 +47,8 @@ type Queue struct {
 	consumerID string
 
 	// pending maps job.ID → pendingEntry so Ack/Nack can XACK and re-enqueue.
-	pendingMu  sync.Mutex
-	pending    map[string]pendingEntry
+	pendingMu sync.Mutex
+	pending   map[string]pendingEntry
 
 	promoterOnce sync.Once
 	promoterStop chan struct{}

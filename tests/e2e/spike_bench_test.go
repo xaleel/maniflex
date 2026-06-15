@@ -25,9 +25,9 @@ import (
 	"context"
 	"testing"
 
-	"maniflex"
-	"maniflex/tests/spike"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/spike"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // spikeBenchModel mirrors the core benchWideModel: ~20 mixed-scalar columns plus

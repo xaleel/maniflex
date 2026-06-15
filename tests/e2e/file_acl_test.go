@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // aclSetup uploads three files via /files and creates an ACLDoc referencing

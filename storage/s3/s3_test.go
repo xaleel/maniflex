@@ -15,7 +15,7 @@ import (
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // fakeS3 is an in-memory s3API + uploaderAPI used by the unit tests.

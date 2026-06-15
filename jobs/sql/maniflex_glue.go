@@ -13,7 +13,7 @@ package sql
 import (
 	"context"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 func init() {

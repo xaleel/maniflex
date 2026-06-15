@@ -18,10 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/db/sqlcore"
-	"maniflex/db/sqlite"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlcore"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 func TestHealthCheck(t *testing.T) {

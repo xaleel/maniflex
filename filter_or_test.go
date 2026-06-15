@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"testing"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // minimal stubs so we can call ParseQueryParams without a real registry

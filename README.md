@@ -77,7 +77,7 @@ curl 'localhost:8080/api/posts?filter=status:eq:published&sort=created_at:desc&p
 
 ## Documentation
 
-Full documentation, guides, and the tutorial series are at **[maniflex.dev](https://maniflex.dev)**.
+Full documentation, guides, and the tutorial series are at **[maniflex.dev](https://docs.maniflex.dev)**.
 
 ## Modules
 

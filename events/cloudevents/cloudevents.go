@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"time"
 
-	"maniflex"
-	"maniflex/events"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/events"
 )
 
 const specVersion = "1.0"

@@ -67,11 +67,11 @@ import (
 	"strconv"
 	"time"
 
-	"maniflex"
-	"maniflex/db/sqlite"
-	"maniflex/middleware/auth"
-	mwdb "maniflex/middleware/db"
-	"maniflex/middleware/service"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/middleware/auth"
+	mwdb "github.com/xaleel/maniflex/middleware/db"
+	"github.com/xaleel/maniflex/middleware/service"
 )
 
 // ─── Models ───────────────────────────────────────────────────────────────────

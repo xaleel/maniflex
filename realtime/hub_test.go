@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"maniflex/events"
-	"maniflex/events/inproc"
-	"maniflex/realtime"
+	"github.com/xaleel/maniflex/events"
+	"github.com/xaleel/maniflex/events/inproc"
+	"github.com/xaleel/maniflex/realtime"
 )
 
 // ── NewHub construction ───────────────────────────────────────────────────────

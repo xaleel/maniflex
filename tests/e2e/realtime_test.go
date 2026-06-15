@@ -27,12 +27,12 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"maniflex"
-	"maniflex/db/sqlite"
-	"maniflex/events"
-	"maniflex/events/inproc"
-	"maniflex/realtime"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/events"
+	"github.com/xaleel/maniflex/events/inproc"
+	"github.com/xaleel/maniflex/realtime"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // ── E2E stack setup ───────────────────────────────────────────────────────────

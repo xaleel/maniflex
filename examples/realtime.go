@@ -27,11 +27,11 @@ import (
 	"log"
 	"net/http"
 
-	"maniflex"
-	"maniflex/db/sqlite"
-	"maniflex/events"
-	"maniflex/events/inproc"
-	"maniflex/realtime"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/events"
+	"github.com/xaleel/maniflex/events/inproc"
+	"github.com/xaleel/maniflex/realtime"
 )
 
 // Order is the model whose changes drive realtime events. The default

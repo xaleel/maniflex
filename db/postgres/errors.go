@@ -3,7 +3,7 @@ package postgres
 import (
 	"strings"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 
 	"github.com/lib/pq"
 )

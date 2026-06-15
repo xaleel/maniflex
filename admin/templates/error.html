@@ -1,0 +1,7 @@
+{{define "content"}}
+{{with .Error}}
+<h1 class="error-title">Error {{.Status}}</h1>
+<p class="error-msg">{{.Message}}</p>
+{{end}}
+<p><a class="back" href="{{.Prefix}}/">&larr; Back to dashboard</a></p>
+{{end}}

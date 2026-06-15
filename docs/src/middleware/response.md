@@ -1,0 +1,126 @@
+# Response Middleware
+
+The `maniflex/middleware/response` package shapes the outgoing response —
+headers, body transforms, redactions, and observability hooks — on the
+**Response** step.
+
+## Cross-cutting headers
+
+### `CORSHeaders`
+
+Adds CORS headers to every response. Reasonable defaults; pass options to
+restrict origins, methods, or credentials.
+
+```go
+import "maniflex/middleware/response"
+
+server.Pipeline.Response.Register(response.CORSHeaders())
+```
+
+### `AddHeader`
+
+Sets one static header on every response:
+
+```go
+server.Pipeline.Response.Register(
+    response.AddHeader("Strict-Transport-Security", "max-age=63072000"),
+)
+```
+
+## Caching
+
+### `Cache`
+
+Sets `Cache-Control: public, max-age=N` on successful reads. Register at
+`maniflex.After` so the framework's own headers do not override yours:
+
+```go
+server.Pipeline.Response.Register(
+    response.Cache(300),  // 5 minutes
+    maniflex.ForOperation(maniflex.OpRead, maniflex.OpList),
+    maniflex.AtPosition(maniflex.After),
+)
+```
+
+## Body transforms
+
+### `TransformField`
+
+Rewrites a single field value before serialisation. Common use: rebasing a
+stored relative path onto a CDN host.
+
+```go
+server.Pipeline.Response.Register(
+    response.TransformField("avatar_url", func(v any) any {
+        return cdnBase + v.(string)
+    }),
+)
+```
+
+### `RedactField`
+
+Hides a field from the response conditionally. The predicate decides per
+request, often based on `ctx.Auth`:
+
+```go
+server.Pipeline.Response.Register(
+    response.RedactField("phone", func(ctx *maniflex.ServerContext) bool {
+        return !ctx.HasRole("support")
+    }),
+)
+```
+
+`RedactField` is the right tool for view-time access control on individual
+columns. For all-or-nothing exclusion across an entire model, the `hidden` or
+`writeonly` field tag is simpler.
+
+### `Envelope`
+
+Replaces the default `{"data": ...}` envelope with one of your own:
+
+```go
+server.Pipeline.Response.Register(
+    response.Envelope(func(ctx *maniflex.ServerContext, data any, meta *maniflex.ResponseMeta) any {
+        return map[string]any{
+            "result":   data,
+            "paging":   meta,
+            "trace_id": ctx.TraceID,
+        }
+    }),
+)
+```
+
+Useful when integrating with a frontend or API gateway that expects a
+different shape. Error responses are unaffected; only success responses are
+re-enveloped.
+
+## Observability
+
+### `Logging`
+
+Writes a structured access log line per request at `maniflex.After`:
+
+```go
+server.Pipeline.Response.Register(
+    response.Logging(slog.Default()),
+    maniflex.AtPosition(maniflex.After),
+)
+```
+
+The line carries request ID, trace ID, method, path, status, duration, and the
+authenticated user when set.
+
+### `Metrics`
+
+Records per-request metrics — count, latency, status class — into a configured
+collector:
+
+```go
+server.Pipeline.Response.Register(
+    response.Metrics(myCollector),
+    maniflex.AtPosition(maniflex.After),
+)
+```
+
+A reference Prometheus collector is provided; any sink with the same interface
+works.

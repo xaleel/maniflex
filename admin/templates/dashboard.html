@@ -1,0 +1,21 @@
+{{define "content"}}
+<h1>Dashboard</h1>
+{{with .Dashboard}}
+{{if .Cards}}
+<div class="cards">
+  {{range .Cards}}
+  <a class="card" href="{{$.Prefix}}/{{.Table}}">
+    <span class="card-label">{{.Label}}</span>
+    {{if .Err}}
+    <span class="card-error" title="{{.Err}}">error</span>
+    {{else}}
+    <span class="card-count">{{.Count}}</span>
+    {{end}}
+  </a>
+  {{end}}
+</div>
+{{else}}
+<p class="empty">No models are registered.</p>
+{{end}}
+{{end}}
+{{end}}

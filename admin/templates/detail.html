@@ -1,0 +1,33 @@
+{{define "content"}}
+{{with .Detail}}
+<div class="page-head">
+  <h1>{{.Model.Label}}</h1>
+  <span class="count mono">{{.ID}}</span>
+  {{if .EditHref}}<a class="btn primary push-right" href="{{.EditHref}}">Edit</a>{{end}}
+  <a class="btn ghost{{if not .EditHref}} push-right{{end}}" href="{{$.Prefix}}/{{.Model.Table}}">Back to list</a>
+</div>
+
+<div class="panel">
+  <dl class="kv">
+    {{range .Fields}}
+    <dt>{{.Label}}</dt>
+    <dd>{{if .Href}}<a href="{{.Href}}">{{.Value}}</a>{{else}}{{.Value}}{{end}}</dd>
+    {{end}}
+  </dl>
+</div>
+
+{{if .Relations}}
+<h2 class="sub">Related</h2>
+<div class="rel-links">
+  {{range .Relations}}<a class="btn ghost" href="{{.Href}}">{{.Label}} &rarr;</a>{{end}}
+</div>
+{{end}}
+
+{{if .DelHref}}
+<form class="danger-zone" method="post" action="{{.DelHref}}" onsubmit="return confirm('Delete this record? This cannot be undone.');">
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  <button type="submit" class="btn danger">Delete record</button>
+</form>
+{{end}}
+{{end}}
+{{end}}

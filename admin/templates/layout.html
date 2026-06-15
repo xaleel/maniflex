@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="{{.Prefix}}/static/admin.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="{{.Prefix}}/">{{.Title}}</a>
+  </header>
+  <div class="shell">
+    <nav class="sidebar">
+      <ul>
+        {{range .Nav}}
+        <li{{if eq .Table $.Active}} class="active"{{end}}>
+          <a href="{{$.Prefix}}/{{.Table}}">{{.Label}}</a>
+        </li>
+        {{else}}
+        <li class="muted">No models</li>
+        {{end}}
+      </ul>
+    </nav>
+    <main class="content">
+      {{template "content" .}}
+    </main>
+  </div>
+</body>
+</html>

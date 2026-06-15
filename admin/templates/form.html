@@ -1,0 +1,39 @@
+{{define "content"}}
+{{with .Form}}
+<div class="page-head">
+  <h1>{{if .IsEdit}}Edit{{else}}New{{end}} {{.Model.Label}}</h1>
+  <a class="btn ghost push-right" href="{{$.Prefix}}/{{.Model.Table}}">Cancel</a>
+</div>
+
+{{if .FormError}}<div class="banner error">{{.FormError}}</div>{{end}}
+
+<form class="entity-form" method="post" action="{{.Action}}"{{if .HasFiles}} enctype="multipart/form-data"{{end}}>
+  <input type="hidden" name="_csrf" value="{{.CSRF}}">
+  {{range .Fields}}
+  <div class="field{{if .Error}} has-error{{end}}">
+    <label>{{.Label}}{{if .Required}} <span class="req">*</span>{{end}}</label>
+    {{if eq .Widget "checkbox"}}
+      <input type="checkbox" name="{{.JSONName}}" value="true"{{if .Checked}} checked{{end}}{{if .Disabled}} disabled{{end}}>
+    {{else if or (eq .Widget "select") (eq .Widget "relation")}}
+      <select name="{{.JSONName}}"{{if .Disabled}} disabled{{end}}>
+        {{range .Options}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+      </select>
+    {{else if eq .Widget "file"}}
+      {{if .FileURL}}<a class="file-link" href="{{.FileURL}}" target="_blank" rel="noopener">current file</a>{{end}}
+      <input type="file" name="{{.JSONName}}"{{if .Accept}} accept="{{.Accept}}"{{end}}{{if .Disabled}} disabled{{end}}>
+    {{else if eq .Widget "number"}}
+      <input type="number" step="any" name="{{.JSONName}}" value="{{.Value}}"{{if .Disabled}} disabled{{end}}>
+    {{else if eq .Widget "datetime"}}
+      <input type="datetime-local" name="{{.JSONName}}" value="{{.Value}}"{{if .Disabled}} disabled{{end}}>
+    {{else}}
+      <input type="text" name="{{.JSONName}}" value="{{.Value}}"{{if .Disabled}} disabled{{end}}>
+    {{end}}
+    {{if .Error}}<span class="field-error">{{.Error}}</span>{{end}}
+  </div>
+  {{end}}
+  <div class="form-actions">
+    <button type="submit" class="btn primary">{{if .IsEdit}}Save changes{{else}}Create{{end}}</button>
+  </div>
+</form>
+{{end}}
+{{end}}

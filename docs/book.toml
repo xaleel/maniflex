@@ -1,0 +1,10 @@
+[book]
+title = "maniflex"
+authors = ["xaleel"]
+language = "en"
+src = "src"
+
+[output.html]
+default-theme = "navy"
+git-repository-url = ""
+additional-css = ["theme/custom.css"]

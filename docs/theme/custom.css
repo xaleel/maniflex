@@ -1,0 +1,29 @@
+/* --- Sidebar tweaks --- */
+
+/* Bigger, bolder section/part titles ("Defining Your API", etc.) */
+.chapter .part-title {
+	font-size: 1.75rem !important;
+	font-weight: 500 !important;
+	letter-spacing: 0.04em;
+	margin-top: 1.4em !important;
+	opacity: 0.9 !important;
+}
+
+/* Drop the auto-generated "5." / "11." numbering */
+.chapter li.chapter-item a strong {
+	display: none !important;
+}
+
+/* Indent chapter links so they read as subsections */
+.chapter li.chapter-item:has(> .chapter-link-wrapper) {
+	margin-left: 1em;
+	list-style: "›";
+}
+
+.chapter li.chapter-item .chapter-link-wrapper {
+	display: inline-flex;
+}
+
+.chapter li.chapter-item a {
+	padding-left: 0.5em;
+}

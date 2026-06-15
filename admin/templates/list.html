@@ -1,0 +1,58 @@
+{{define "content"}}
+{{with .List}}
+<div class="page-head">
+  <h1>{{.Model.Label}}</h1>
+  <span class="count">{{.Total}} record{{if ne .Total 1}}s{{end}}</span>
+  {{if .NewHref}}<a class="btn primary push-right" href="{{.NewHref}}">+ New</a>{{end}}
+</div>
+
+{{if or .Filters .Sorts}}
+<form class="toolbar" method="get">
+  {{range .Filters}}
+  <label class="ctl">
+    <span>{{.Label}}</span>
+    {{if .Options}}
+    <select name="f_{{.JSONName}}">
+      <option value="">Any</option>
+      {{range .Options}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+    </select>
+    {{else}}
+    <input type="text" name="f_{{.JSONName}}" value="{{.Value}}" placeholder="contains…">
+    {{end}}
+  </label>
+  {{end}}
+  <label class="ctl">
+    <span>Sort</span>
+    <select name="sort">
+      {{range .Sorts}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+    </select>
+  </label>
+  <button type="submit" class="btn">Apply</button>
+  <a class="btn ghost" href="?">Reset</a>
+</form>
+{{end}}
+
+<div class="table-wrap">
+  <table class="grid">
+    <thead>
+      <tr>{{range .Columns}}<th>{{.Label}}</th>{{end}}</tr>
+    </thead>
+    <tbody>
+      {{range .Rows}}
+      <tr class="clickable" onclick="location.href='{{.Href}}'">
+        {{range .Cells}}<td>{{.}}</td>{{end}}
+      </tr>
+      {{else}}
+      <tr><td class="empty" colspan="{{len .Columns}}">No records.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+
+<div class="pager">
+  {{if .PrevHref}}<a href="{{.PrevHref}}">&larr; Prev</a>{{else}}<span class="disabled">&larr; Prev</span>{{end}}
+  <span class="pager-pos">Page {{.Page}} of {{if gt .Pages 0}}{{.Pages}}{{else}}1{{end}}</span>
+  {{if .NextHref}}<a href="{{.NextHref}}">Next &rarr;</a>{{else}}<span class="disabled">Next &rarr;</span>{{end}}
+</div>
+{{end}}
+{{end}}

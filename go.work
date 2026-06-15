@@ -1,0 +1,24 @@
+go 1.25.4
+
+// Multi-module monorepo. The core module `maniflex` depends only on chi + uuid;
+// each satellite module isolates one heavy dependency so consumers pull only
+// what they import. This workspace ties them together for local development —
+// satellites resolve `maniflex` (and each other) from disk, no replace directives
+// or version tags required until release.
+use (
+	.
+	./admin
+	./db/postgres
+	./db/sqlite
+	./events/kafka
+	./events/nats
+	./events/rabbitmq
+	./events/redis
+	./examples
+	./jobs/redis
+	./middleware/db/redis
+	./middleware/service/bcrypt
+	./pkg/otel
+	./storage/s3
+	./tests
+)

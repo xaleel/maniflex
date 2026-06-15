@@ -40,13 +40,13 @@ type loggerSetter interface {
 //	    log.Fatal(err)
 //	}
 type Server struct {
-	cfg      Config
-	registry *Registry
-	steps    *defaultSteps    // held so SetDB can patch the adapter after construction
-	oasSteps *oasDefaultSteps // held so cfg pointer stays live for OpenAPI generation
-	Pipeline  *Pipeline
-	router    http.Handler // built lazily on first call to Handler() or Start()
-	httpSrv   *http.Server // set by Start/StartWithContext; nil until then
+	cfg          Config
+	registry     *Registry
+	steps        *defaultSteps    // held so SetDB can patch the adapter after construction
+	oasSteps     *oasDefaultSteps // held so cfg pointer stays live for OpenAPI generation
+	Pipeline     *Pipeline
+	router       http.Handler // built lazily on first call to Handler() or Start()
+	httpSrv      *http.Server // set by Start/StartWithContext; nil until then
 	actions      []ActionConfig
 	asyncCfg     *AsyncAPIConfig     // non-nil → mount /asyncapi.json (set via RealtimeDoc)
 	globalSearch *GlobalSearchConfig // non-nil → mount /search (set via EnableGlobalSearch)

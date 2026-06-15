@@ -15,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/pkg/money"
-	"maniflex/tests/spike"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/pkg/money"
+	"github.com/xaleel/maniflex/tests/spike"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // SpikeWide carries one of each awkward type the scan layer must handle:

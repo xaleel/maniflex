@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"maniflex"
-	"maniflex/db/sqlcore"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlcore"
 )
 
 // ── UniqueField ───────────────────────────────────────────────────────────────

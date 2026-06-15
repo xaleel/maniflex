@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"maniflex/events"
-	"maniflex/events/outbox"
+	"github.com/xaleel/maniflex/events"
+	"github.com/xaleel/maniflex/events/outbox"
 	_ "modernc.org/sqlite"
 )
 

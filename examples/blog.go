@@ -27,9 +27,9 @@ import (
 	"strings"
 	"time"
 
-	"maniflex"
-	"maniflex/db/sqlite"
-	"maniflex/storage"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/storage"
 )
 
 // ─── Models ───────────────────────────────────────────────────────────────────

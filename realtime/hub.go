@@ -18,7 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"maniflex/events"
+	"github.com/xaleel/maniflex/events"
 )
 
 // VisibilityFunc controls per-event, per-client delivery.

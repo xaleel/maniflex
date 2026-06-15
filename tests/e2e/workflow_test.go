@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex"
-	"maniflex/middleware/workflow"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/middleware/workflow"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // workflowServer wires WorkflowDoc with a status machine and a stub Auth

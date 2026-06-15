@@ -17,8 +17,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"maniflex"
-	"maniflex/db/sqlite"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
 )
 
 // openServer returns a Server server backed by a fresh on-disk SQLite database.

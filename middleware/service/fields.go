@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // ── HashField ─────────────────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ type Hasher func(plaintext string) (string, error)
 // field is simply skipped — a user can update other fields without resetting
 // their password.
 //
-//	import svcbcrypt "maniflex/middleware/service/bcrypt"
+//	import svcbcrypt "github.com/xaleel/maniflex/middleware/service/bcrypt"
 //
 //	server.Pipeline.Service.Register(
 //	    service.HashField("password", svcbcrypt.Hasher()),

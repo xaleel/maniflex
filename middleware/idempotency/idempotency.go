@@ -33,7 +33,7 @@ import (
 	"sync"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // Locker serialises concurrent first-misses on the same idempotency cache key.

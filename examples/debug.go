@@ -40,8 +40,8 @@ import (
 	"os"
 	"strings"
 
-	"maniflex"
-	"maniflex/db/sqlite"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
 )
 
 // ── Models ────────────────────────────────────────────────────────────────────

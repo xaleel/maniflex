@@ -15,9 +15,9 @@ import (
 	"net/http"
 	"time"
 
-	"maniflex"
-	"maniflex/db/sqlite"
-	"maniflex/scheduled"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/scheduled"
 )
 
 // Article soft-deletes when ExpiresAt passes, hard-deletes when PurgeAt

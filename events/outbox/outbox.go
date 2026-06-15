@@ -8,7 +8,7 @@
 //
 // Quick start:
 //
-//	import "maniflex/events/outbox"
+//	import "github.com/xaleel/maniflex/events/outbox"
 //
 //	// 1. Create the outbox table (once, at startup or migration time):
 //	if err := outbox.Migrate(ctx, rawDB, "sqlite"); err != nil { ... }
@@ -37,7 +37,7 @@ import (
 	"maps"
 	"time"
 
-	"maniflex/events"
+	"github.com/xaleel/maniflex/events"
 )
 
 // Migrate creates the event_outbox table if it does not exist.

@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"maniflex"
-	"maniflex/pkg/money"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/pkg/money"
 )
 
 func TestSQLType(t *testing.T) {

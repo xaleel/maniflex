@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 
 	"github.com/google/uuid"
 )

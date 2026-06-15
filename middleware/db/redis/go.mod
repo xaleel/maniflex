@@ -1,4 +1,4 @@
-module maniflex/middleware/db/redis
+module github.com/xaleel/maniflex/middleware/db/redis
 
 go 1.25.4
 

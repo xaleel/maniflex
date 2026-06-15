@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"maniflex/events"
+	"github.com/xaleel/maniflex/events"
 )
 
 func webhookEvent() events.Event {

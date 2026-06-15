@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex"
-	"maniflex/pkg/money"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/pkg/money"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // TestSQLTyper verifies that types implementing maniflex.SQLTyper receive the

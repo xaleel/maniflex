@@ -50,7 +50,7 @@ in and gate the writes.
 Add `maniflex/middleware/service/bcrypt`:
 
 ```bash
-go get maniflex/middleware/service/bcrypt
+go get github.com/xaleel/maniflex/middleware/service/bcrypt
 ```
 
 Then register the hashing middleware on the Service step, scoped to `User`
@@ -75,7 +75,7 @@ needs to know that the column is hashed.
 Pull in `maniflex/middleware/auth`:
 
 ```bash
-go get maniflex/middleware/auth
+go get github.com/xaleel/maniflex/middleware/auth
 ```
 
 Register `JWTAuth` on the Auth step, scoped to writes — we'll let reads stay
@@ -95,7 +95,7 @@ claims, and populates `ctx.Auth` with the user ID and roles. Tokens fail with
 `401 UNAUTHORIZED`; missing tokens fail the same way.
 
 Sign-up (`POST /api/users`) is itself a write — and a write that should
-*not* require a token, since the user does not exist yet. Add an exception:
+_not_ require a token, since the user does not exist yet. Add an exception:
 
 ```go
 server.Pipeline.Auth.Register(
@@ -193,13 +193,13 @@ curl -X PATCH localhost:8080/api/users/<id> \
 
 ## What we built
 
-| Capability | How |
-|---|---|
-| Sign-up | `POST /api/users` + `AllowPublicWrite` exception |
-| Password hashing | `service.HashField("password")` on the Service step |
-| Bearer-token auth on writes | `auth.JWTAuth` on the Auth step |
-| Admin-only delete | `auth.RequireRole("admin")` |
-| Token issuance | `/api/auth/login` action |
+| Capability                  | How                                                 |
+| --------------------------- | --------------------------------------------------- |
+| Sign-up                     | `POST /api/users` + `AllowPublicWrite` exception    |
+| Password hashing            | `service.HashField("password")` on the Service step |
+| Bearer-token auth on writes | `auth.JWTAuth` on the Auth step                     |
+| Admin-only delete           | `auth.RequireRole("admin")`                         |
+| Token issuance              | `/api/auth/login` action                            |
 
 ## Next
 

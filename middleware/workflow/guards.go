@@ -3,7 +3,7 @@ package workflow
 import (
 	"fmt"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // Guard gates a state transition on something beyond the from/to pair —

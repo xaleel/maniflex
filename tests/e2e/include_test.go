@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // TestInclude covers the ?include= query parameter for relation population.

@@ -18,7 +18,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // Machine is a compiled set of allowed transitions on a single status field.

@@ -15,8 +15,8 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // A middleware injects a field that was ABSENT from the request body via

@@ -30,16 +30,16 @@ import (
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
-	"maniflex/events"
+	"github.com/xaleel/maniflex/events"
 )
 
 const exchangeName = "maniflex.events"
 
 // Bus is an AMQP 0.9.1 event bus.
 type Bus struct {
-	conn    *amqp.Connection
-	mu      sync.Mutex
-	pubCh   *amqp.Channel // shared publish channel (lazy-opened, re-opened on error)
+	conn  *amqp.Connection
+	mu    sync.Mutex
+	pubCh *amqp.Channel // shared publish channel (lazy-opened, re-opened on error)
 }
 
 // New creates a RabbitMQ Bus from an existing AMQP connection.
@@ -238,4 +238,3 @@ func matchesAny(patterns []string, eventType string) bool {
 	}
 	return false
 }
-

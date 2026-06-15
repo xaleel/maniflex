@@ -4,7 +4,7 @@ import (
 	"errors"
 	"testing"
 
-	"maniflex/pkg/money"
+	"github.com/xaleel/maniflex/pkg/money"
 )
 
 // ── validateLines ─────────────────────────────────────────────────────────────

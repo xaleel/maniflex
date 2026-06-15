@@ -23,7 +23,7 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // TestCRUD covers the complete Create/Read/Update/Delete lifecycle for a model.

@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/events"
-	"maniflex/events/cloudevents"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/events"
+	"github.com/xaleel/maniflex/events/cloudevents"
 )
 
 // fullEvent returns an Event with every field populated so round-trip tests

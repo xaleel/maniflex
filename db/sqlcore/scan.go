@@ -23,7 +23,7 @@ import (
 	"strings"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 type scanKind uint8

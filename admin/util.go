@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // prettify turns a snake_case identifier into a human-readable Title Case

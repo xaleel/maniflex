@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // Widget is a minimal model used to exercise the panel without a database.

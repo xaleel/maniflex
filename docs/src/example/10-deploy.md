@@ -11,7 +11,7 @@ was already built for this.
 Add the satellite:
 
 ```bash
-go get maniflex/db/postgres
+go get github.com/xaleel/maniflex/db/postgres
 ```
 
 Change one import in `main.go`:
@@ -94,17 +94,17 @@ lets you stage them deliberately.
 
 ```yaml
 livenessProbe:
-  httpGet:
-    path: /health
-    port: 8080
-  periodSeconds: 10
-  timeoutSeconds: 5
+    httpGet:
+        path: /health
+        port: 8080
+    periodSeconds: 10
+    timeoutSeconds: 5
 readinessProbe:
-  httpGet:
-    path: /health
-    port: 8080
-  periodSeconds: 5
-  timeoutSeconds: 5
+    httpGet:
+        path: /health
+        port: 8080
+    periodSeconds: 5
+    timeoutSeconds: 5
 ```
 
 Set `HealthTimeout` (default 3s) shorter than the probe's `timeoutSeconds`
@@ -167,22 +167,22 @@ nothing else in the framework requires a C toolchain.
 
 ## Production checklist
 
-| | Setting |
-|---|---|
-| Database | `maniflex/db/postgres` with `WriteURL` and optional `ReadURL` |
-| Migrations | `AutoMigrate: false` + external migration tool |
-| Logger | JSON handler |
-| `Config.ServiceName` | the service name |
-| `Config.QueryTimeout` | bounded (e.g. `30s`) |
-| `Config.ShutdownTimeout` | matches the slowest legitimate request |
-| `Config.HealthCheckDB` | `true` |
-| K8s `terminationGracePeriodSeconds` | larger than `ShutdownTimeout` |
-| TLS | terminated at the load balancer |
-| Auth | `auth.JWTAuth` with an asymmetric key from your IdP |
-| Rate limits | `db.RateLimit` on password-reset / sign-up / login |
-| Audit log | `db.AuditLog` on `OpCreate / OpUpdate / OpDelete` |
-| File storage | swap `LocalStorage` for S3 / R2 / GCS |
-| Outbox worker | run alongside the API, or as a separate deployment |
+|                                     | Setting                                                       |
+| ----------------------------------- | ------------------------------------------------------------- |
+| Database                            | `maniflex/db/postgres` with `WriteURL` and optional `ReadURL` |
+| Migrations                          | `AutoMigrate: false` + external migration tool                |
+| Logger                              | JSON handler                                                  |
+| `Config.ServiceName`                | the service name                                              |
+| `Config.QueryTimeout`               | bounded (e.g. `30s`)                                          |
+| `Config.ShutdownTimeout`            | matches the slowest legitimate request                        |
+| `Config.HealthCheckDB`              | `true`                                                        |
+| K8s `terminationGracePeriodSeconds` | larger than `ShutdownTimeout`                                 |
+| TLS                                 | terminated at the load balancer                               |
+| Auth                                | `auth.JWTAuth` with an asymmetric key from your IdP           |
+| Rate limits                         | `db.RateLimit` on password-reset / sign-up / login            |
+| Audit log                           | `db.AuditLog` on `OpCreate / OpUpdate / OpDelete`             |
+| File storage                        | swap `LocalStorage` for S3 / R2 / GCS                         |
+| Outbox worker                       | run alongside the API, or as a separate deployment            |
 
 ## Where to go from here
 

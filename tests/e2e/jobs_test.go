@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	jobsmaniflex "maniflex/jobs/maniflex"
-	"maniflex/jobs"
-	"maniflex/jobs/inproc"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	jobsmaniflex "github.com/xaleel/maniflex/jobs/maniflex"
+	"github.com/xaleel/maniflex/jobs"
+	"github.com/xaleel/maniflex/jobs/inproc"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────

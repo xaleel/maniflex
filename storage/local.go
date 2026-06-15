@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // LocalStorage stores files on the local filesystem under a root directory.

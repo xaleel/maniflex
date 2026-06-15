@@ -1,6 +1,8 @@
-module maniflex/storage/s3
+module github.com/xaleel/maniflex/storage/s3
 
 go 1.25.4
+
+require github.com/xaleel/maniflex v0.1.0
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.41.7

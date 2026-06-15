@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/db/sqlite"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // TestGracefulShutdown covers the full shutdown lifecycle.

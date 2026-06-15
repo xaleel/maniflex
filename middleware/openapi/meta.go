@@ -3,7 +3,7 @@
 package openapi
 
 import (
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // ── AddSecurityScheme ─────────────────────────────────────────────────────────

@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // ── Test models ───────────────────────────────────────────────────────────────

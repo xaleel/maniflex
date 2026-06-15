@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // navItem is one sidebar entry.

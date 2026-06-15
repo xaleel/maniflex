@@ -24,7 +24,7 @@ import (
 	"strings"
 	"unicode"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 const (

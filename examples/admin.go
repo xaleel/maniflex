@@ -24,9 +24,9 @@ import (
 	"net/http/httptest"
 	"strings"
 
-	"maniflex/admin"
-	"maniflex"
-	"maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/admin"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
 )
 
 // Author writes articles. Exercises required / unique / enum tags.

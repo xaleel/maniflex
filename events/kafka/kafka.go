@@ -20,7 +20,7 @@ import (
 
 	kafkago "github.com/segmentio/kafka-go"
 
-	"maniflex/events"
+	"github.com/xaleel/maniflex/events"
 )
 
 // Config holds optional Kafka topic configuration applied when EnsureTopics

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 func TestConfigFromEnv_WithPrefix(t *testing.T) {

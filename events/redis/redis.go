@@ -18,7 +18,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
-	"maniflex/events"
+	"github.com/xaleel/maniflex/events"
 )
 
 // Bus is a Redis Streams event bus.

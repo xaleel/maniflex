@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex"
-	"maniflex/middleware/auth"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/middleware/auth"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // AbacDoc is a simple model used throughout the ABAC tests.

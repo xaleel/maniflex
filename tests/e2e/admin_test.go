@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"maniflex/admin"
-	"maniflex"
-	"maniflex/db/sqlite"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/admin"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // adminPanel builds a Server backed by in-memory SQLite, mounts the admin panel

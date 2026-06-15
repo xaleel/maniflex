@@ -32,12 +32,12 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"maniflex"
-	"maniflex/db/sqlcore"
-	"maniflex/db/sqlite"
-	"maniflex/middleware/response"
-	"maniflex/middleware/validate"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlcore"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/middleware/response"
+	"github.com/xaleel/maniflex/middleware/validate"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // ── Local test models ─────────────────────────────────────────────────────────

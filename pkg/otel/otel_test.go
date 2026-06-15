@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"

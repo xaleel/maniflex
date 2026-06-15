@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/db/sqlite"
-	"maniflex/scheduled"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/scheduled"
 )
 
 // ── Test models ───────────────────────────────────────────────────────────────

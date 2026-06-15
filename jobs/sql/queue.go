@@ -22,9 +22,9 @@ import (
 	"strings"
 	"time"
 
-	"maniflex"
-	"maniflex/db/sqlcore"
-	"maniflex/jobs"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlcore"
+	"github.com/xaleel/maniflex/jobs"
 )
 
 const defaultLeaseDuration = 5 * time.Minute

@@ -3,8 +3,8 @@ package e2e
 import (
 	"testing"
 
-	"maniflex"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // TestDriverProbe asserts the server actually connects to the backend the

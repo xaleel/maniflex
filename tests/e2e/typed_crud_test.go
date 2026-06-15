@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"testing"
 
-	"maniflex"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 func TestTyped_CRUDHelpers(t *testing.T) {

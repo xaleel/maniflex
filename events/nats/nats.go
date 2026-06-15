@@ -16,7 +16,7 @@ import (
 
 	natsclient "github.com/nats-io/nats.go"
 
-	"maniflex/events"
+	"github.com/xaleel/maniflex/events"
 )
 
 // Bus is a NATS JetStream event bus.

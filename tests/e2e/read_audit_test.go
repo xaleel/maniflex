@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/middleware/auth"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/middleware/auth"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // memReadAuditSink captures ReadAuditRecords for test assertions.

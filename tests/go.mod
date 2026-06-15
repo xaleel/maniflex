@@ -1,4 +1,4 @@
-module maniflex/tests
+module github.com/xaleel/maniflex/tests
 
 go 1.25.4
 

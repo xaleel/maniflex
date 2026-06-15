@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"maniflex"
-	"maniflex/events"
-	"maniflex/middleware/auth"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/events"
+	"github.com/xaleel/maniflex/middleware/auth"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // 11B.11 (H11) — DLQ event must carry a fresh ID (not the original's) so

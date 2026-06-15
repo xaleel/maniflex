@@ -12,14 +12,14 @@ shows how the features compose in a real application.
 
 `bookstore` — an HTTP API with:
 
-| Endpoint family | Capability |
-|---|---|
-| `/api/users` | sign-up, JWT auth, role-based access |
+| Endpoint family                             | Capability                                      |
+| ------------------------------------------- | ----------------------------------------------- |
+| `/api/users`                                | sign-up, JWT auth, role-based access            |
 | `/api/books`, `/api/authors`, `/api/genres` | the catalogue, with relations and full querying |
-| `/api/reviews` | per-book ratings with custom validation |
-| Book cover upload via `multipart/form-data` | a `file` field |
-| `POST /api/orders/place` | a transactional action with stock locking |
-| Outbox + background worker | email a receipt after each order |
+| `/api/reviews`                              | per-book ratings with custom validation         |
+| Book cover upload via `multipart/form-data` | a `file` field                                  |
+| `POST /api/orders/place`                    | a transactional action with stock locking       |
+| Outbox + background worker                  | email a receipt after each order                |
 
 By the end of part 10 the same code base will be deployed to production with
 PostgreSQL, env-driven configuration, and a health probe.
@@ -68,7 +68,7 @@ Create the directory, initialise a module, and add the framework:
 ```bash
 mkdir bookstore && cd bookstore
 go mod init bookstore
-go get maniflex maniflex/db/sqlite
+go get github.com/xaleel/maniflex github.com/xaleel/maniflex/db/sqlite
 ```
 
 `main.go` starts as the smallest maniflex app:

@@ -15,8 +15,8 @@ import (
 	"context"
 	"encoding/json"
 
-	"maniflex/jobs"
-	"maniflex/scheduled"
+	"github.com/xaleel/maniflex/jobs"
+	"github.com/xaleel/maniflex/scheduled"
 )
 
 // JobType is the conventional jobs.Job.Type for a scheduled sweep.

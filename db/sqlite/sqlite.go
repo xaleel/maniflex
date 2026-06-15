@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"maniflex"
-	"maniflex/db/sqlcore"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlcore"
 
 	_ "modernc.org/sqlite" // register "sqlite" driver
 )

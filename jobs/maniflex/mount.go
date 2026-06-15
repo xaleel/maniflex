@@ -25,8 +25,8 @@ import (
 	"net/http"
 	"time"
 
-	maniflex "maniflex"
-	"maniflex/jobs"
+	maniflex "github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/jobs"
 )
 
 // writeBlocker rejects external create/update/delete requests on the StatusModel.

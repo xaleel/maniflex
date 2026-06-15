@@ -4,7 +4,7 @@ import (
 	"errors"
 	"net/http"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // Policy is an authorization function that determines whether the authenticated

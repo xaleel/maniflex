@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"maniflex/events"
+	"github.com/xaleel/maniflex/events"
 )
 
 // Bus is an in-process fan-out event bus.

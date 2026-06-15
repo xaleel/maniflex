@@ -37,17 +37,17 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"maniflex"
-	"maniflex/db/sqlcore"
-	"maniflex/db/sqlite"
-	"maniflex/events"
-	"maniflex/events/inproc"
-	"maniflex/middleware/auth"
-	dbmw "maniflex/middleware/db"
-	"maniflex/middleware/response"
-	"maniflex/middleware/service"
-	"maniflex/middleware/validate"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlcore"
+	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/events"
+	"github.com/xaleel/maniflex/events/inproc"
+	"github.com/xaleel/maniflex/middleware/auth"
+	dbmw "github.com/xaleel/maniflex/middleware/db"
+	"github.com/xaleel/maniflex/middleware/response"
+	"github.com/xaleel/maniflex/middleware/service"
+	"github.com/xaleel/maniflex/middleware/validate"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // ── Additional test models ────────────────────────────────────────────────────

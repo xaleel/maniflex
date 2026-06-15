@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // ── CORSHeaders ───────────────────────────────────────────────────────────────

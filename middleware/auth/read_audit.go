@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // ReadAuditRecord is the structured log entry written for every audited read

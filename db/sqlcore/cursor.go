@@ -3,7 +3,7 @@ package sqlcore
 import (
 	"fmt"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // cursor.go — keyset (cursor) pagination SQL for FindMany (roadmap 4.8).

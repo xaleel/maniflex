@@ -3,7 +3,7 @@ package maniflex_test
 import (
 	"testing"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // ── Scanner detection tests ───────────────────────────────────────────────────

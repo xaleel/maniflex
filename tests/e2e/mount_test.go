@@ -8,8 +8,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"maniflex"
-	"maniflex/db/sqlite"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
 )
 
 type mountModelA struct{ maniflex.BaseModel }

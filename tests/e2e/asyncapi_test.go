@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"maniflex"
-	"maniflex/tests/e2e/testutil"
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // Ledger is a registered model; AutoModelEvents should derive

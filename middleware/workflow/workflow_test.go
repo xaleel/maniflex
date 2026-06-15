@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"maniflex"
+	"github.com/xaleel/maniflex"
 )
 
 // runMW drives the workflow middleware with a fixture context. The test

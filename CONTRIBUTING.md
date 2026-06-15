@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-1. [Install Go][go-install].
+1. [Install Go](https://go.dev/doc/install).
 2. Download the sources and switch the working directory:
 
     ```bash

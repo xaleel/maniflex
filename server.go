@@ -432,6 +432,9 @@ func (c *Server) Shutdown(ctx context.Context) error {
 
 // Handler returns the underlying http.Handler without starting the server.
 // Useful for testing or embedding into an existing HTTP mux.
+//
+// Unlike Start, Handler does NOT run auto-migration — call Start, MigrateOnly,
+// or the adapter's AutoMigrate first, or requests will fail against missing tables.
 func (c *Server) Handler() http.Handler {
 	if c.router == nil {
 		// Resolve many-to-many relations now that all models are registered.

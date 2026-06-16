@@ -13,6 +13,7 @@ hit the routes, assert on responses.
 package tests
 
 import (
+    "context"
     "log"
     "net/http/httptest"
 
@@ -47,6 +48,12 @@ func newTestServer(t *testing.T) (*httptest.Server, *maniflex.Server) {
     t.Cleanup(func() { db.Close() })
     server.SetDB(db)
 
+    // Handler() does NOT migrate — only Start() does, and tests mount Handler()
+    // directly. MigrateOnly runs the migration and honours AutoMigrate.
+    if err := server.MigrateOnly(context.Background()); err != nil {
+        t.Fatal(err)
+    }
+
     middleware.Register(server)
 
     ts := httptest.NewServer(server.Handler())
@@ -55,10 +62,14 @@ func newTestServer(t *testing.T) (*httptest.Server, *maniflex.Server) {
 }
 ```
 
-Two notes:
+Three notes:
 
 - **`:memory:`** opens an in-memory SQLite database. There is no file to
   clean up; closing the connection discards it.
+- **`server.MigrateOnly(...)`** creates the tables. `server.Handler()` builds
+  the router but does **not** migrate — only `Start()` does that. When you mount
+  `Handler()` yourself (tests, embedding), migrate explicitly first or every
+  request fails against missing tables.
 - **`server.Handler()`** returns the chi router — `httptest.NewServer`
   wraps it and serves requests in-process.
 

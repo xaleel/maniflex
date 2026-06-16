@@ -636,6 +636,8 @@ main.go             server.MustRegister(auth.Models, orders.Models, catalog.Mode
    Without it, multipart uploads return 501.
 10. **SQLite has no nested transactions.** Calling `BeginTx` inside an active
     SQLite tx fails. Reuse `ctx.Tx`.
+11. **`Handler()` does not migrate.** Only `Start()` runs auto-migration. When
+    mounting `Handler()` yourself, call `MigrateOnly`/`AutoMigrate` first.
 
 ## Testing pattern
 
@@ -648,6 +650,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *maniflex.Server) {
     if err != nil { t.Fatal(err) }
     t.Cleanup(func() { db.Close() })
     server.SetDB(db)
+    // Handler() does not migrate — only Start() does. Migrate explicitly.
+    if err := server.MigrateOnly(context.Background()); err != nil { t.Fatal(err) }
     middleware.Register(server)
     ts := httptest.NewServer(server.Handler())
     t.Cleanup(ts.Close)
@@ -655,7 +659,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *maniflex.Server) {
 }
 ```
 
-In-memory SQLite per test. `server.Handler()` returns the chi router.
+In-memory SQLite per test. `server.Handler()` returns the chi router but does
+**not** migrate — `MigrateOnly` creates the tables up front.
 
 ## Sentinels & constants
 

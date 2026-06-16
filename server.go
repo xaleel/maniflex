@@ -215,8 +215,14 @@ func (c *Server) migrate(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// No groups means no models are registered yet — there is nothing to
+	// migrate or wire. This is a valid state: the smallest possible app only
+	// serves /health and an empty OpenAPI document. A genuine missing-adapter
+	// misconfiguration (models registered with no Config.DB and no per-model
+	// adapter) is caught inside adapterGroups with a message naming the
+	// offending models, so reaching here with zero groups is benign.
 	if len(groups) == 0 {
-		return fmt.Errorf("maniflex: no database adapter configured")
+		return nil
 	}
 
 	logger := c.cfg.logger()

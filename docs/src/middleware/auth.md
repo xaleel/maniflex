@@ -10,7 +10,7 @@ or `403` on failure.
 Verifies a bearer JWT and populates `ctx.Auth` from its claims.
 
 ```go
-import "maniflex/middleware/auth"
+import "github.com/xaleel/maniflex/middleware/auth"
 
 server.Pipeline.Auth.Register(
     auth.JWTAuth("my-signing-secret", auth.JWTOptions{

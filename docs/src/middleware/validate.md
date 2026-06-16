@@ -9,7 +9,7 @@ built-in tag enforcement and aborts with `422 VALIDATION_FAILED` on rejection.
 Rejects a create or update whose value collides with an existing row.
 
 ```go
-import "maniflex/middleware/validate"
+import "github.com/xaleel/maniflex/middleware/validate"
 
 server.Pipeline.Validate.Register(
     validate.UniqueField(sqlDB, maniflex.Postgres, "email"),

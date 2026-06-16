@@ -16,8 +16,8 @@ import (
     "log"
     "net/http/httptest"
 
-    "maniflex"
-    "maniflex/db/sqlite"
+    "github.com/xaleel/maniflex"
+    "github.com/xaleel/maniflex/db/sqlite"
 
     "bookstore/middleware"
     "bookstore/models"

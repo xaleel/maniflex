@@ -83,7 +83,7 @@ The endpoint is public by default. To restrict it — say, to internal users
 only — register an Auth middleware on the OpenAPI pipeline:
 
 ```go
-import "maniflex/middleware/auth"
+import "github.com/xaleel/maniflex/middleware/auth"
 
 server.Pipeline.OpenAPI.Auth.Register(
     auth.JWTAuth("my-secret"),

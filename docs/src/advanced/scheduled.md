@@ -80,7 +80,7 @@ It is opt-in — declaring scheduled tags makes the rows ready to be acted
 on, but nothing happens until a runner is started.
 
 ```go
-import "maniflex/scheduled"
+import "github.com/xaleel/maniflex/scheduled"
 
 runner, err := scheduled.New(server, scheduled.Config{
     Interval:  time.Minute,
@@ -166,9 +166,9 @@ dispatched by the worker pool:
 
 ```go
 import (
-    "maniflex/jobs"
-    "maniflex/scheduled"
-    "maniflex/scheduled/jobsx"
+    "github.com/xaleel/maniflex/jobs"
+    "github.com/xaleel/maniflex/scheduled"
+    "github.com/xaleel/maniflex/scheduled/jobsx"
 )
 
 handler := jobsx.JobHandler(runner)

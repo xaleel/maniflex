@@ -19,7 +19,7 @@ driver means no CGo and no external service — `go run .` is enough to start a
 local server with a working database.
 
 ```go
-import "maniflex/db/sqlite"
+import "github.com/xaleel/maniflex/db/sqlite"
 
 db, err := sqlite.Open("./app.db", server.Registry())
 if err != nil {
@@ -47,7 +47,7 @@ The recommended adapter for any multi-process deployment. It supports
 genuine concurrent writers, real `FOR UPDATE` locks, and read replicas.
 
 ```go
-import "maniflex/db/postgres"
+import "github.com/xaleel/maniflex/db/postgres"
 
 db, err := postgres.Open(postgres.Options{
     WriteURL: "postgres://user:pass@host/db?sslmode=require",
@@ -73,8 +73,8 @@ The adapter is the only thing that changes; nothing else in the application
 needs to know which database is in use:
 
 ```diff
-- import "maniflex/db/sqlite"
-+ import "maniflex/db/postgres"
+- import "github.com/xaleel/maniflex/db/sqlite"
++ import "github.com/xaleel/maniflex/db/postgres"
 
 - db, err := sqlite.Open("./app.db", server.Registry())
 + db, err := postgres.Open(postgres.Options{WriteURL: os.Getenv("DB_URL")},

@@ -15,10 +15,10 @@ pays no websocket dependency, goroutine, or shutdown phase.
 
 ```go
 import (
-    "maniflex"
-    "maniflex/events"
-    "maniflex/events/inproc"
-    "maniflex/realtime"
+    "github.com/xaleel/maniflex"
+    "github.com/xaleel/maniflex/events"
+    "github.com/xaleel/maniflex/events/inproc"
+    "github.com/xaleel/maniflex/realtime"
 )
 
 bus := inproc.New() // or events/redis, events/nats, … for multi-replica

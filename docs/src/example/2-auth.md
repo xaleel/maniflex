@@ -11,7 +11,7 @@ Create `models/user.go`:
 ```go
 package models
 
-import "maniflex"
+import "github.com/xaleel/maniflex"
 
 type User struct {
     maniflex.BaseModel
@@ -57,7 +57,7 @@ Then register the hashing middleware on the Service step, scoped to `User`
 create and update:
 
 ```go
-import "maniflex/middleware/service"
+import "github.com/xaleel/maniflex/middleware/service"
 
 server.Pipeline.Service.Register(
     service.HashField("password"),
@@ -82,7 +82,7 @@ Register `JWTAuth` on the Auth step, scoped to writes — we'll let reads stay
 public for now:
 
 ```go
-import "maniflex/middleware/auth"
+import "github.com/xaleel/maniflex/middleware/auth"
 
 server.Pipeline.Auth.Register(
     auth.JWTAuth("dev-secret", auth.JWTOptions{Issuer: "bookstore"}),

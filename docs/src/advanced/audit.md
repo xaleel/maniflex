@@ -12,7 +12,7 @@ options that change what is captured.
 The simplest registration captures the operation without per-field diffs:
 
 ```go
-import "maniflex/middleware/db"
+import "github.com/xaleel/maniflex/middleware/db"
 
 server.Pipeline.DB.Register(
     db.AuditLog(mySink),

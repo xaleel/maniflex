@@ -6,7 +6,7 @@ that would move a record between states the workflow does not allow, or that
 fail a guard (e.g. role check).
 
 ```go
-import "maniflex/middleware/workflow"
+import "github.com/xaleel/maniflex/middleware/workflow"
 
 sm := workflow.New("status",
     workflow.Allow("draft",     "submitted"),

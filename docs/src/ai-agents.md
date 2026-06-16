@@ -315,14 +315,14 @@ Auto-cleanup: stored file deleted on hard-delete or field overwrite. `auto_delet
 
 ```go
 import (
-    "maniflex/middleware/auth"
-    "maniflex/middleware/body"
-    "maniflex/middleware/validate"
-    "maniflex/middleware/service"
-    "maniflex/middleware/db"
-    "maniflex/middleware/response"
-    "maniflex/middleware/openapi"
-    "maniflex/middleware/idempotency"
+    "github.com/xaleel/maniflex/middleware/auth"
+    "github.com/xaleel/maniflex/middleware/body"
+    "github.com/xaleel/maniflex/middleware/validate"
+    "github.com/xaleel/maniflex/middleware/service"
+    "github.com/xaleel/maniflex/middleware/db"
+    "github.com/xaleel/maniflex/middleware/response"
+    "github.com/xaleel/maniflex/middleware/openapi"
+    "github.com/xaleel/maniflex/middleware/idempotency"
 )
 
 // AUTH (Auth step)
@@ -399,7 +399,7 @@ idempotency.Middleware(idempotency.Config{
 ## Encryption at rest
 
 ```go
-import "maniflex/pkg/encryption"
+import "github.com/xaleel/maniflex/pkg/encryption"
 
 server := maniflex.New(maniflex.Config{
     KeyProvider: &encryption.EnvKeyProvider{Prefix: "MYAPP_KEY"},
@@ -432,7 +432,7 @@ Diff excludes hidden/writeonly/encrypted fields and HMAC companions. History tab
 ## Scheduled runner
 
 ```go
-import "maniflex/scheduled"
+import "github.com/xaleel/maniflex/scheduled"
 
 runner, _ := scheduled.New(server, scheduled.Config{
     Interval:  time.Minute,

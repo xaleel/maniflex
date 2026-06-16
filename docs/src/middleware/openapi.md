@@ -12,7 +12,7 @@ Override the default title and description, which are derived from
 `Config.ServiceName`:
 
 ```go
-import "maniflex/middleware/openapi"
+import "github.com/xaleel/maniflex/middleware/openapi"
 
 server.Pipeline.OpenAPI.Generate.Register(
     openapi.SetTitle("Orders API"),

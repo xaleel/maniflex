@@ -12,7 +12,7 @@ Replaces a plaintext field with its bcrypt hash before the DB step. Standard
 choice for passwords:
 
 ```go
-import "maniflex/middleware/service"
+import "github.com/xaleel/maniflex/middleware/service"
 
 server.Pipeline.Service.Register(
     service.HashField("password"),

@@ -12,7 +12,7 @@ Adds CORS headers to every response. Reasonable defaults; pass options to
 restrict origins, methods, or credentials.
 
 ```go
-import "maniflex/middleware/response"
+import "github.com/xaleel/maniflex/middleware/response"
 
 server.Pipeline.Response.Register(response.CORSHeaders())
 ```

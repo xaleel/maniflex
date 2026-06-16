@@ -9,7 +9,7 @@ Overrides the default 4 MB body limit for the current request. Register on
 the Deserialize step, scoped to the model that needs the larger limit:
 
 ```go
-import "maniflex/middleware/body"
+import "github.com/xaleel/maniflex/middleware/body"
 
 server.Pipeline.Deserialize.Register(
     body.MaxBodySize(16 << 20),  // 16 MB

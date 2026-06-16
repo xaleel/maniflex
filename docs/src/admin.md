@@ -24,9 +24,9 @@ package main
 import (
     "net/http"
 
-    "maniflex"
-    "maniflex/admin"
-    "maniflex/db/sqlite"
+    "github.com/xaleel/maniflex"
+    "github.com/xaleel/maniflex/admin"
+    "github.com/xaleel/maniflex/db/sqlite"
     "github.com/go-chi/chi/v5"
 )
 
@@ -59,7 +59,7 @@ unprotected panel can never be shipped by accident.
 | Field                  | Type                              | Default            | Description                                                                            |
 | ---------------------- | --------------------------------- | ------------------ | -------------------------------------------------------------------------------------- |
 | `PathPrefix`           | `string`                          | `"/admin"`         | Mount path; the returned handler serves routes under this prefix                       |
-| `Title`                | `string`                          | `"maniflex admin"` | Displayed in the panel header                                                          |
+| `Title`                | `string`                          | `"github.com/xaleel/maniflex admin"` | Displayed in the panel header                                                          |
 | `Auth`                 | `func(http.Handler) http.Handler` | —                  | Wraps the whole panel with an auth gate; required unless `AllowUnauthenticated` is set |
 | `AllowUnauthenticated` | `bool`                            | `false`            | Skips the auth requirement; **local dev only**                                         |
 | `Models`               | `[]string`                        | (all)              | Struct names to show; empty means every registered model                               |
@@ -73,7 +73,7 @@ Set `Config.Auth` to any `func(http.Handler) http.Handler` middleware — for
 example the JWT middleware from `maniflex/middleware/auth`:
 
 ```go
-import "maniflex/middleware/auth"
+import "github.com/xaleel/maniflex/middleware/auth"
 
 adminHandler := admin.Mount(server, admin.Config{
     Title: "My Admin",

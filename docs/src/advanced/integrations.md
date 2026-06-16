@@ -8,7 +8,7 @@ framework — it's three composable types you call from your own code.
 ## `Caller` — JSON-over-HTTP with retry
 
 ```go
-import "maniflex/pkg/integration"
+import "github.com/xaleel/maniflex/pkg/integration"
 
 var billing = &integration.Caller{
     BaseURL: "https://api.billing.example.com",

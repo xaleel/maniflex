@@ -74,10 +74,10 @@ In code:
 
 ```go
 import (
-    "maniflex"
-    "maniflex/db/sqlite"
-    "maniflex/middleware/auth"
-    "maniflex/events/kafka"
+    "github.com/xaleel/maniflex"
+    "github.com/xaleel/maniflex/db/sqlite"
+    "github.com/xaleel/maniflex/middleware/auth"
+    "github.com/xaleel/maniflex/events/kafka"
 )
 ```
 

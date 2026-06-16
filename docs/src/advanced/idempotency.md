@@ -32,8 +32,8 @@ position, scoped to the operations that should be retryable:
 
 ```go
 import (
-    "maniflex"
-    "maniflex/middleware/idempotency"
+    "github.com/xaleel/maniflex"
+    "github.com/xaleel/maniflex/middleware/idempotency"
 )
 
 server.Pipeline.Deserialize.Register(
@@ -136,7 +136,7 @@ gets a fresh run, defeating the purpose.
 A shared cache backs the middleware across replicas:
 
 ```go
-import "maniflex/middleware/db/redis"
+import "github.com/xaleel/maniflex/middleware/db/redis"
 
 store := redis.NewCacheStore(redisClient, "idempotency:")
 server.Pipeline.Deserialize.Register(

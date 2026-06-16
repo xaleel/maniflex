@@ -142,7 +142,7 @@ client that expects a different layout, register `response.Envelope` from the
 catalogue:
 
 ```go
-import "maniflex/middleware/response"
+import "github.com/xaleel/maniflex/middleware/response"
 
 server.Pipeline.Response.Register(
     response.Envelope(func(ctx *maniflex.ServerContext, data any, meta *maniflex.ResponseMeta) any {

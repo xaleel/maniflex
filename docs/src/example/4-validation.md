@@ -13,7 +13,7 @@ field belongs in Validate-step middleware. This part adds three rules:
 `validate.RegexField` is enough for the ISBN check:
 
 ```go
-import "maniflex/middleware/validate"
+import "github.com/xaleel/maniflex/middleware/validate"
 
 server.Pipeline.Validate.Register(
     validate.RegexField("isbn", `^(?:97[89])?\d{10}$`),
@@ -88,7 +88,7 @@ Letting a client supply `user_id` is asking for impersonation. `service.OwnerSco
 from the catalogue forces the field on every create:
 
 ```go
-import "maniflex/middleware/service"
+import "github.com/xaleel/maniflex/middleware/service"
 
 server.Pipeline.Service.Register(
     service.OwnerScope("user_id"),

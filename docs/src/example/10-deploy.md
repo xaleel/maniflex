@@ -17,8 +17,8 @@ go get github.com/xaleel/maniflex/db/postgres
 Change one import in `main.go`:
 
 ```diff
-- import "maniflex/db/sqlite"
-+ import "maniflex/db/postgres"
+- import "github.com/xaleel/maniflex/db/sqlite"
++ import "github.com/xaleel/maniflex/db/postgres"
 ```
 
 …and the adapter open call:

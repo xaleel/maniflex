@@ -97,7 +97,7 @@ analytics tables — register `db.Paginate` from the catalogue to lower the
 ceiling per model:
 
 ```go
-import "maniflex/middleware/db"
+import "github.com/xaleel/maniflex/middleware/db"
 
 server.Pipeline.DB.Register(db.Paginate(50), maniflex.ForModel("AuditLog"))
 ```

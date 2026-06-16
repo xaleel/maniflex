@@ -40,8 +40,8 @@ package main
 import (
     "log"
 
-    "maniflex"
-    "maniflex/db/sqlite"
+    "github.com/xaleel/maniflex"
+    "github.com/xaleel/maniflex/db/sqlite"
 )
 
 type Post struct {

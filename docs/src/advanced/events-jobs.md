@@ -19,8 +19,8 @@ publishes `user.created`, `order.placed`, etc. to whichever bus is wired up:
 
 ```go
 import (
-    "maniflex/events/redis"
-    "maniflex/middleware/service"
+    "github.com/xaleel/maniflex/events/redis"
+    "github.com/xaleel/maniflex/middleware/service"
 )
 
 bus := redis.New(redisClient)
@@ -61,8 +61,8 @@ adapters is a one-line change.
 
 ```go
 import (
-    "maniflex/jobs"
-    "maniflex/jobs/sql" as jobssql
+    "github.com/xaleel/maniflex/jobs"
+    jobssql "github.com/xaleel/maniflex/jobs/sql"
 )
 
 // During startup, after opening the DB:
@@ -91,7 +91,7 @@ Fields worth knowing:
 ### The Worker
 
 ```go
-import "maniflex/jobs"
+import "github.com/xaleel/maniflex/jobs"
 
 w, err := jobs.NewWorker(jobs.WorkerConfig{
     Source:   queue.(jobs.Source),
@@ -123,7 +123,7 @@ below.
 Mount the status model once, alongside other model registrations:
 
 ```go
-import jobsmaniflex "maniflex/jobs/maniflex"
+import jobsmaniflex "github.com/xaleel/maniflex/jobs/maniflex"
 
 sink, queue, err := jobsmaniflex.Mount(server, rawQueue)
 if err != nil { log.Fatal(err) }
@@ -252,7 +252,7 @@ tick is missed); for durable scheduling, combine `jobs/sql` with a
 auto-expire), see [Scheduled Fields & Runner](scheduled.md).
 
 ```go
-import "maniflex/jobs/cron"
+import "github.com/xaleel/maniflex/jobs/cron"
 
 cr := cron.New(queue, cron.Config{
     Jobs: []cron.Entry{

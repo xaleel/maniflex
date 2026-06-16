@@ -68,7 +68,7 @@ Uploads require a `FileStorage` implementation on `maniflex.Config`. The framewo
 ships one backend; bring your own for cloud storage.
 
 ```go
-import "maniflex/storage"
+import "github.com/xaleel/maniflex/storage"
 
 fs, err := storage.NewLocalStorage("./uploads")
 if err != nil {
@@ -93,7 +93,7 @@ The satellite module `maniflex/storage/s3` ships a `FileStorage` implementation
 backed by the AWS SDK v2. It works against any S3-compatible service.
 
 ```go
-import "maniflex/storage/s3"
+import "github.com/xaleel/maniflex/storage/s3"
 
 store, err := s3.New(ctx, s3.Config{
     Bucket: "my-app-uploads",

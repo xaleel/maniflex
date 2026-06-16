@@ -27,8 +27,8 @@ matching pipeline step:
 
 ```go
 import (
-    "maniflex/middleware/auth"
-    "maniflex/middleware/service"
+    "github.com/xaleel/maniflex/middleware/auth"
+    "github.com/xaleel/maniflex/middleware/service"
 )
 
 server.Pipeline.Auth.Register(

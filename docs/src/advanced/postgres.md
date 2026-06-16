@@ -7,7 +7,7 @@ go beyond the [Database Backends](../databases.md) overview.
 ## Opening the adapter
 
 ```go
-import "maniflex/db/postgres"
+import "github.com/xaleel/maniflex/db/postgres"
 
 // Single primary (no replica) — pass "" for the read DSN.
 db, err := postgres.Open(

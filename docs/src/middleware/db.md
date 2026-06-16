@@ -11,7 +11,7 @@ Injects a filter on every list, read, update, and delete, regardless of what
 the client requested. Used to enforce invariants the client cannot override:
 
 ```go
-import "maniflex/middleware/db"
+import "github.com/xaleel/maniflex/middleware/db"
 
 server.Pipeline.DB.Register(
     db.ForceFilter("org_id", func(ctx *maniflex.ServerContext) any {

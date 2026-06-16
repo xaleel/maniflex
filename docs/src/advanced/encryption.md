@@ -58,7 +58,7 @@ constructed as plain struct literals.
 ### `EnvKeyProvider` — keys from environment variables
 
 ```go
-import "maniflex/pkg/encryption"
+import "github.com/xaleel/maniflex/pkg/encryption"
 
 server := maniflex.New(maniflex.Config{
     KeyProvider: &encryption.EnvKeyProvider{Prefix: "MYAPP_KEY"},

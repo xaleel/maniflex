@@ -27,10 +27,10 @@ Install the queue alongside the server setup in `main.go`:
 
 ```go
 import (
-    "maniflex"
-    jobsmaniflex "maniflex/jobs/maniflex"
-    "maniflex/jobs"
-    jobssql "maniflex/jobs/sql"
+    "github.com/xaleel/maniflex"
+    jobsmaniflex "github.com/xaleel/maniflex/jobs/maniflex"
+    "github.com/xaleel/maniflex/jobs"
+    jobssql "github.com/xaleel/maniflex/jobs/sql"
 )
 
 server := maniflex.New(maniflex.Config{ /* ... */ })
@@ -142,8 +142,8 @@ created" — the `service.Emit` middleware is a simpler fit than the job queue:
 
 ```go
 import (
-    "maniflex/events/redis"
-    "maniflex/middleware/service"
+    "github.com/xaleel/maniflex/events/redis"
+    "github.com/xaleel/maniflex/middleware/service"
 )
 
 bus := redis.New(redisClient)

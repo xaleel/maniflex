@@ -41,7 +41,7 @@ For development we use local disk. The `maniflex/storage` package ships a ready
 implementation:
 
 ```go
-import "maniflex/storage"
+import "github.com/xaleel/maniflex/storage"
 
 fs, err := storage.NewLocalStorage("./uploads")
 if err != nil {

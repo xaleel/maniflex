@@ -1,10 +1,23 @@
 [book]
 title = "maniflex"
+description = "maniflex is a Go framework that turns annotated structs into a complete REST API — CRUD, filtering, pagination, relations, soft-delete, and a composable middleware pipeline, with no code generation."
 authors = ["xaleel"]
 language = "en"
 src = "src"
 
 [output.html]
 default-theme = "navy"
-git-repository-url = ""
+preferred-dark-theme = "navy"
 additional-css = ["theme/custom.css"]
+git-repository-url = "https://github.com/xaleel/maniflex"
+edit-url-template = "https://github.com/xaleel/maniflex/edit/main/docs/{path}"
+site-url = "/"
+cname = "docs.maniflex.dev"
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-boolean-and = true
+boost-title = 2
+boost-hierarchy = 1
+boost-paragraph = 1

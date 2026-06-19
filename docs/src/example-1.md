@@ -187,7 +187,7 @@ regenerate. To browse it as interactive documentation, the framework ships an
 HTML viewer in `static/openapi.html` that loads `/api/openapi.json` — open
 <http://localhost:8080/static/openapi.html> while the server is running.
 
-The OpenAPI step is fully customisable later; see [OpenAPI Spec](openapi.md).
+The OpenAPI step is fully customisable later; see [OpenAPI Spec](using-the-api/openapi.md).
 
 ## What this example showed
 
@@ -204,6 +204,6 @@ Everything here treated the two models as separate islands. Real apps connect
 them — a post *belongs to* an author, a comment *belongs to* a post. That, and
 the `mfx:` tags beyond the basics, are the next chapters:
 
-- **[Models & BaseModel](models.md)** — the embeds and what they contribute.
-- **[Field Tags Reference](tags.md)** — every `mfx:` tag.
-- **[Relations](relations.md)** — connecting models with foreign keys.
+- **[Models & BaseModel](defining-your-api/models.md)** — the embeds and what they contribute.
+- **[Field Tags Reference](defining-your-api/tags.md)** — every `mfx:` tag.
+- **[Relations](defining-your-api/relations.md)** — connecting models with foreign keys.

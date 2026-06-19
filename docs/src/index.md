@@ -55,8 +55,8 @@ table, the JSON request and response shapes, the validation rules, and which
 fields are filterable or sortable. Optional embeds add behaviour — `maniflex.WithDeletedAt`
 turns on soft-delete — and naming conventions like a `UserID` field declare
 relations.
-→ [Models & BaseModel](models.md), [Field Tags Reference](tags.md),
-[Relations](relations.md)
+→ [Models & BaseModel](defining-your-api/models.md), [Field Tags Reference](defining-your-api/tags.md),
+[Relations](defining-your-api/relations.md)
 
 ### Registry
 
@@ -72,7 +72,7 @@ is handed the populated registry.
 Six ordered steps every request flows through: **Auth → Deserialize → Validate →
 Service → DB → Response**. The pipeline is the unit of customisation — instead of
 writing handlers, you attach middleware to the step where your logic belongs.
-→ [Pipeline Overview](pipeline.md), [ServerContext](context.md)
+→ [Pipeline Overview](the-request-pipeline/pipeline.md), [ServerContext](the-request-pipeline/context.md)
 
 ### Middleware
 
@@ -80,7 +80,7 @@ A `func(ctx *maniflex.ServerContext, next func() error) error` registered on a p
 step. Registration is scoped with `maniflex.ForModel(...)` and `maniflex.ForOperation(...)`,
 and positioned with `maniflex.Before` (default), `maniflex.After`, or `maniflex.Replace`. Set
 `ctx.Response` and return without calling `next()` to short-circuit the request.
-→ [Writing Middleware](middleware.md), [Middleware Catalogue](middleware/index.md)
+→ [Writing Middleware](the-request-pipeline/middleware.md), [Middleware Catalogue](middleware-catalogue/index.md)
 
 ### Adapter
 
@@ -88,15 +88,15 @@ The database backend implementing the storage interface. Two ship in-tree —
 `db/sqlite` (pure-Go, no CGo) and `db/postgres` — and both share one SQL core.
 Inject one with `server.SetDB(db)`, which patches the pipeline's DB step in
 place.
-→ [Database Backends](databases.md), [Transactions](transactions.md)
+→ [Database Backends](deployment/databases.md), [Transactions](the-request-pipeline/transactions.md)
 
 ## Where to go next
 
 - **[Getting Started](getting-started.md)** — install, define your first model, run the server.
-- **[Models & Tags](models.md)** — the full `mfx:` tag reference and relation conventions.
-- **[The Pipeline](pipeline.md)** — how requests flow and where to hook in.
-- **[Middleware Catalogue](middleware/index.md)** — ready-made middleware for every step.
-- **[Querying the API](querying.md)** — filtering, sorting, pagination, includes.
+- **[Models & Tags](defining-your-api/models.md)** — the full `mfx:` tag reference and relation conventions.
+- **[The Pipeline](the-request-pipeline/pipeline.md)** — how requests flow and where to hook in.
+- **[Middleware Catalogue](middleware-catalogue/index.md)** — ready-made middleware for every step.
+- **[Querying the API](using-the-api/querying.md)** — filtering, sorting, pagination, includes.
 
 ---
 

@@ -120,7 +120,7 @@ func Load() maniflex.Config {
 }
 ```
 
-See [Configuration](config.md) for every `maniflex.Config` field.
+See [Configuration](deployment/config.md) for every `maniflex.Config` field.
 
 ### `models/` — one file per model
 
@@ -146,8 +146,8 @@ type Post struct {
 
 Put model-spanning relations in whichever file is the "owning" side and let Go's
 package scope resolve the rest — all models share the `models` package, so
-`Post` can reference `Comment` freely. See [Models & BaseModel](models.md),
-[Field Tags Reference](tags.md), and [Relations](relations.md).
+`Post` can reference `Comment` freely. See [Models & BaseModel](defining-your-api/models.md),
+[Field Tags Reference](defining-your-api/tags.md), and [Relations](defining-your-api/relations.md).
 
 ### `middleware/` — your pipeline hooks
 
@@ -175,7 +175,7 @@ func Register(s *maniflex.Server) {
 ```
 
 The middleware functions themselves live in their topic files. See
-[Writing Middleware](middleware.md) and the [Middleware Catalogue](middleware/index.md)
+[Writing Middleware](the-request-pipeline/middleware.md) and the [Middleware Catalogue](middleware-catalogue/index.md)
 for hooks that already ship with the framework.
 
 ### `internal/` — everything that isn't maniflex
@@ -338,5 +338,5 @@ stays readable.
 
 - **[Example 1: Simple Blog](example-1.md)** — this layout filled in for a real
   three-model app.
-- **[The Request Pipeline](pipeline.md)** — the six steps in depth.
-- **[Configuration](config.md)** — every `maniflex.Config` field.
+- **[The Request Pipeline](the-request-pipeline/pipeline.md)** — the six steps in depth.
+- **[Configuration](deployment/config.md)** — every `maniflex.Config` field.

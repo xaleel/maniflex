@@ -1,0 +1,113 @@
+# maniflex
+
+> A Go framework that turns annotated structs into a complete REST API — CRUD, filtering, keyset pagination, relations, soft-delete, and a composable middleware pipeline, all derived at runtime by reflection with no code generation. Define a struct, register it, point it at a database, and get CRUD routes, query parsing, validation, an OpenAPI 3.1 spec, and relation loading for free.
+
+Key facts for working with maniflex:
+
+- Requires Go 1.25 or newer. Install with `go get github.com/xaleel/maniflex` plus a database adapter such as `go get github.com/xaleel/maniflex/db/sqlite`.
+- Multi-module monorepo: the core depends only on `chi` and `uuid`; heavy integrations live in opt-in satellite modules (`db/postgres`, `db/sqlite`, `events/{kafka,nats,rabbitmq,redis}`, `jobs/redis`, `middleware/service/bcrypt`, `storage/s3`, `pkg/otel`).
+- Models embed `maniflex.BaseModel` and use `mfx:"..."` struct tags (e.g. `required`, `filterable`, `sortable`, `enum:a|b|c`) to declare behaviour.
+- Register models before opening the DB — the adapter needs the registry to run migrations and resolve relations.
+- Requests flow through a six-step pipeline (Auth, Deserialize, Validate, Service, DB, Response), extensible with `Before` / `After` / `Replace` middleware.
+
+## Getting Started
+
+- [Overview](https://docs.maniflex.dev/index): What maniflex is and the problem it solves.
+- [Getting Started](https://docs.maniflex.dev/getting-started): Install, define a model, register it, and run your first API.
+- [App Anatomy](https://docs.maniflex.dev/anatomy): The shape of a maniflex application and how the pieces fit together.
+- [Example 1: Simple Blog](https://docs.maniflex.dev/example-1): End-to-end walkthrough of a minimal blog API.
+
+## How It Works
+
+- [Architecture](https://docs.maniflex.dev/how-it-works/architecture): The reflection-driven core, registry, and runtime derivation of routes.
+- [Request Lifecycle](https://docs.maniflex.dev/how-it-works/lifecycle): How an HTTP request travels through the pipeline.
+
+## Defining Your API
+
+- [Models & BaseModel](https://docs.maniflex.dev/defining-your-api/models): Declaring entities and what `BaseModel` provides.
+- [Field Tags Reference](https://docs.maniflex.dev/defining-your-api/tags): The full `mfx:` tag vocabulary for validation, filtering, and behaviour.
+- [Relations](https://docs.maniflex.dev/defining-your-api/relations): `BelongsTo` / `HasMany` by convention, populated via `?include=`.
+- [Soft Delete](https://docs.maniflex.dev/defining-your-api/soft-delete): Logical deletion and querying around it.
+- [File Fields & Uploads](https://docs.maniflex.dev/defining-your-api/files): Handling file fields and multipart uploads.
+- [Static Files](https://docs.maniflex.dev/defining-your-api/static-files): Serving static assets.
+- [Localization](https://docs.maniflex.dev/defining-your-api/localization): Multi-language fields and responses.
+
+## The Request Pipeline
+
+- [Pipeline Overview](https://docs.maniflex.dev/the-request-pipeline/pipeline): The six-step Auth → Deserialize → Validate → Service → DB → Response flow.
+- [ServerContext](https://docs.maniflex.dev/the-request-pipeline/context): The per-request context object passed through the pipeline.
+- [Writing Middleware](https://docs.maniflex.dev/the-request-pipeline/middleware): Composing behaviour with `Before` / `After` / `Replace`.
+- [Transactions](https://docs.maniflex.dev/the-request-pipeline/transactions): Transactional request handling.
+- [Error Handling](https://docs.maniflex.dev/the-request-pipeline/errors): Producing structured error responses.
+- [Example 2: B2B SaaS API](https://docs.maniflex.dev/the-request-pipeline/example-2): A multi-tenant API walkthrough.
+
+## Middleware Catalogue
+
+- [Overview](https://docs.maniflex.dev/the-request-pipeline/middleware-catalogue/index): The built-in middleware set.
+- [Auth](https://docs.maniflex.dev/the-request-pipeline/middleware-catalogue/auth): Authentication and authorization step.
+- [Body](https://docs.maniflex.dev/the-request-pipeline/middleware-catalogue/body): Request body deserialization.
+- [Validate](https://docs.maniflex.dev/the-request-pipeline/middleware-catalogue/validate): Field and rule validation.
+- [Workflow](https://docs.maniflex.dev/the-request-pipeline/middleware-catalogue/workflow): Workflow / state-machine middleware.
+- [Service](https://docs.maniflex.dev/the-request-pipeline/middleware-catalogue/service): Business-logic service step.
+- [DB](https://docs.maniflex.dev/the-request-pipeline/middleware-catalogue/db): Database persistence step.
+- [Response](https://docs.maniflex.dev/the-request-pipeline/middleware-catalogue/response): Response shaping and serialization.
+- [OpenAPI](https://docs.maniflex.dev/the-request-pipeline/middleware-catalogue/openapi): OpenAPI spec contribution.
+
+## Using the API
+
+- [Querying](https://docs.maniflex.dev/using-the-api/querying): Filtering, sorting, keyset pagination, and field projection.
+- [Searching](https://docs.maniflex.dev/using-the-api/searching): Full-text and field search.
+- [Response Envelope](https://docs.maniflex.dev/using-the-api/responses): The shape of API responses.
+- [OpenAPI Spec](https://docs.maniflex.dev/using-the-api/openapi): Generated OpenAPI 3.1 documentation.
+
+## Deployment
+
+- [Database Backends](https://docs.maniflex.dev/deployment/databases): PostgreSQL and pure-Go SQLite (no CGo).
+- [Configuration](https://docs.maniflex.dev/deployment/config): Server `Config` options.
+- [Graceful Shutdown](https://docs.maniflex.dev/deployment/shutdown): Clean shutdown handling.
+- [Satellite Modules](https://docs.maniflex.dev/deployment/modules): The opt-in module ecosystem.
+- [Admin Panel](https://docs.maniflex.dev/deployment/admin): The built-in admin UI.
+
+## Advanced Topics
+
+- [Custom Endpoints (Actions)](https://docs.maniflex.dev/advanced-topics/actions): Adding non-CRUD routes.
+- [Raw Queries & Query Models](https://docs.maniflex.dev/advanced-topics/raw-queries): Dropping down to raw SQL.
+- [Batch Operations & Sagas](https://docs.maniflex.dev/advanced-topics/batch-saga): Bulk writes and multi-step transactions.
+- [Events & Background Jobs](https://docs.maniflex.dev/advanced-topics/events-jobs): The event bus and job runners.
+- [Realtime / WebSockets](https://docs.maniflex.dev/advanced-topics/realtime): WebSocket and SSE support.
+- [Encryption at Rest](https://docs.maniflex.dev/advanced-topics/encryption): Field-level encryption.
+- [Versioning & History](https://docs.maniflex.dev/advanced-topics/versioning): Record history and versioning.
+- [Scheduled Fields & Runner](https://docs.maniflex.dev/advanced-topics/scheduled): Time-based field execution.
+- [Audit Logging](https://docs.maniflex.dev/advanced-topics/audit): Tracking changes.
+- [Idempotency](https://docs.maniflex.dev/advanced-topics/idempotency): Safe request retries.
+- [Outbound Integrations](https://docs.maniflex.dev/advanced-topics/integrations): Calling external systems.
+- [CSV / XLSX Export](https://docs.maniflex.dev/advanced-topics/export): Exporting data.
+- [Auth & Security Hardening](https://docs.maniflex.dev/advanced-topics/security): Securing a deployment.
+- [PostgreSQL in Production](https://docs.maniflex.dev/advanced-topics/postgres): Production Postgres guidance.
+- [Example 3: Order Processing System](https://docs.maniflex.dev/advanced-topics/example-3): A larger end-to-end example.
+
+## Full Tutorial by Example
+
+- [1. Overview & Scaffolding](https://docs.maniflex.dev/full-tutorial-by-example/1-scaffolding): Project setup.
+- [2. Users & Auth](https://docs.maniflex.dev/full-tutorial-by-example/2-auth): Authentication.
+- [3. Modeling Domain Entities & Relations](https://docs.maniflex.dev/full-tutorial-by-example/3-models): Domain modeling.
+- [4. Validation & Business Rules](https://docs.maniflex.dev/full-tutorial-by-example/4-validation): Enforcing rules.
+- [5. File Uploads](https://docs.maniflex.dev/full-tutorial-by-example/5-uploads): Handling uploads.
+- [6. Filtering, Sorting & Pagination](https://docs.maniflex.dev/full-tutorial-by-example/6-querying): Query features.
+- [7. Custom Endpoints & Actions](https://docs.maniflex.dev/full-tutorial-by-example/7-actions): Custom routes.
+- [8. Events & Background Jobs](https://docs.maniflex.dev/full-tutorial-by-example/8-events-jobs): Async work.
+- [9. Testing the API](https://docs.maniflex.dev/full-tutorial-by-example/9-testing): Test strategies.
+- [10. Deploying to Production](https://docs.maniflex.dev/full-tutorial-by-example/10-deploy): Going live.
+
+## Reference
+
+- [Glossary](https://docs.maniflex.dev/reference/glossary): Terminology used across the docs.
+- [FAQ & Troubleshooting](https://docs.maniflex.dev/reference/faq): Common questions and fixes.
+- [AI Agents](https://docs.maniflex.dev/reference/ai-agents): Guidance for AI agents working with maniflex.
+
+## Optional
+
+- [README](https://github.com/xaleel/maniflex/blob/main/README.md): Repository overview and quickstart.
+- [CHANGELOG](https://github.com/xaleel/maniflex/blob/main/CHANGELOG.md): Release history.
+- [CONTRIBUTING](https://github.com/xaleel/maniflex/blob/main/CONTRIBUTING.md): How to contribute.
+- [SECURITY](https://github.com/xaleel/maniflex/blob/main/SECURITY.md): Security policy and reporting.

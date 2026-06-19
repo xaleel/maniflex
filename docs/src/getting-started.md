@@ -53,8 +53,8 @@ type Post struct {
 ```
 
 `maniflex.BaseModel` contributes the `id`, `created_at`, and `updated_at` fields, so
-you never declare them yourself. See [Field Tags Reference](tags.md) for every
-tag and [Models & BaseModel](models.md) for the embeds.
+you never declare them yourself. See [Field Tags Reference](defining-your-api/tags.md) for every
+tag and [Models & BaseModel](defining-your-api/models.md) for the embeds.
 
 ## 3. Wire up the server
 
@@ -132,7 +132,7 @@ curl 'localhost:8080/api/posts?sort=created_at:desc&page=1&limit=10'
 
 Filtering and sorting only work on fields tagged `filterable` / `sortable` —
 that's why `Title` and `Status` carry those tags above. The full filter grammar
-is in [Querying](querying.md).
+is in [Querying](using-the-api/querying.md).
 
 ## What you get for free
 
@@ -149,8 +149,8 @@ No generated code, no per-endpoint handlers.
 ## Where to go next
 
 - **[Quickstart Tutorial](tutorial.md)** — build a small app end to end.
-- **[Models & BaseModel](models.md)** — relations, soft-delete, file fields.
-- **[The Request Pipeline](pipeline.md)** — the six steps every request flows
+- **[Models & BaseModel](defining-your-api/models.md)** — relations, soft-delete, file fields.
+- **[The Request Pipeline](the-request-pipeline/pipeline.md)** — the six steps every request flows
   through, and where to hook in your own middleware.
-- **[Querying](querying.md)** — the full filter, sort, and `include` grammar.
-- **[Database Backends](databases.md)** — switching from SQLite to PostgreSQL.
+- **[Querying](using-the-api/querying.md)** — the full filter, sort, and `include` grammar.
+- **[Database Backends](deployment/databases.md)** — switching from SQLite to PostgreSQL.

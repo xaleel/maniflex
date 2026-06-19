@@ -90,7 +90,7 @@ func (t *txAdapter) FindByID(ctx context.Context, model *maniflex.ModelMeta, id 
 		if err != nil {
 			return nil, err
 		}
-		return maniflex.MapToRecord(model, m)
+		return echoRecord(model, m)
 	}
 	p := t.newPH()
 	joinSQL := buildJoins(model, qp.Filters, qp.Sorts)
@@ -229,7 +229,7 @@ func (t *txAdapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp 
 		}
 		recs := make([]any, len(results))
 		for i, m := range results {
-			rec, _ := maniflex.MapToRecord(model, m)
+			rec, _ := echoRecord(model, m)
 			recs[i] = rec
 		}
 		return recs, total, nil
@@ -359,14 +359,14 @@ func (t *txAdapter) Create(ctx context.Context, model *maniflex.ModelMeta, recor
 		if err != nil {
 			return nil, err
 		}
-		return maniflex.MapToRecord(model, m)
+		return echoRecord(model, m)
 	}
 	data := recordData(model, record)
 	m, err := t.createMap(ctx, model, data)
 	if err != nil {
 		return nil, err
 	}
-	return maniflex.MapToRecord(model, m)
+	return echoRecord(model, m)
 }
 
 // execInsert runs a prebuilt INSERT on the tx connection, mirroring
@@ -424,14 +424,14 @@ func (t *txAdapter) Update(ctx context.Context, model *maniflex.ModelMeta, id st
 			if err != nil {
 				return nil, err
 			}
-			return maniflex.MapToRecord(model, m)
+			return echoRecord(model, m)
 		}
 		query, args := buildUpdateSQL(model, id, ptr, present, t.driver, normaliseTx)
 		m, err := t.execUpdate(ctx, model, query, args, id)
 		if err != nil {
 			return nil, err
 		}
-		return maniflex.MapToRecord(model, m)
+		return echoRecord(model, m)
 	}
 	full := recordData(model, record)
 	data := make(map[string]any, len(present))
@@ -444,7 +444,7 @@ func (t *txAdapter) Update(ctx context.Context, model *maniflex.ModelMeta, id st
 	if err != nil {
 		return nil, err
 	}
-	return maniflex.MapToRecord(model, m)
+	return echoRecord(model, m)
 }
 
 func (t *txAdapter) updateMap(ctx context.Context, model *maniflex.ModelMeta, id string, data map[string]any) (map[string]any, error) {

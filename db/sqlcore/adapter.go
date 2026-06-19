@@ -683,7 +683,7 @@ func (a *Adapter) FindByID(ctx context.Context, model *maniflex.ModelMeta, id st
 		if err != nil {
 			return nil, err
 		}
-		return maniflex.MapToRecord(model, m)
+		return echoRecord(model, m)
 	}
 	p := &ph{driver: a.driver}
 	joinSQL := buildJoins(model, qp.Filters, qp.Sorts)
@@ -1097,14 +1097,14 @@ func (a *Adapter) Create(ctx context.Context, model *maniflex.ModelMeta, record 
 		if err != nil {
 			return nil, err
 		}
-		return maniflex.MapToRecord(model, m)
+		return echoRecord(model, m)
 	}
 	data := recordData(model, record)
 	m, err := a.createMap(ctx, model, data)
 	if err != nil {
 		return nil, err
 	}
-	return maniflex.MapToRecord(model, m)
+	return echoRecord(model, m)
 }
 
 // structForWrite reports whether record is a non-nil struct pointer for a typed
@@ -1205,14 +1205,14 @@ func (a *Adapter) Update(ctx context.Context, model *maniflex.ModelMeta, id stri
 			if err != nil {
 				return nil, err
 			}
-			return maniflex.MapToRecord(model, m)
+			return echoRecord(model, m)
 		}
 		query, args := a.buildUpdate(model, id, ptr, present)
 		m, err := a.execUpdate(ctx, model, query, args, id)
 		if err != nil {
 			return nil, err
 		}
-		return maniflex.MapToRecord(model, m)
+		return echoRecord(model, m)
 	}
 	full := recordData(model, record)
 	data := make(map[string]any, len(present))
@@ -1225,7 +1225,7 @@ func (a *Adapter) Update(ctx context.Context, model *maniflex.ModelMeta, id stri
 	if err != nil {
 		return nil, err
 	}
-	return maniflex.MapToRecord(model, m)
+	return echoRecord(model, m)
 }
 
 // execUpdate runs a prebuilt UPDATE and returns the updated row as a DB-column

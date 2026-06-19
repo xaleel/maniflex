@@ -354,6 +354,75 @@ func (a *Adapter) scanStructValues(model *maniflex.ModelMeta, cols []string, raw
 	return convertRowValues(model, a.driver, cols, raw, a.scanPlanFor(model, cols))
 }
 
+// asStoredText returns the textual stored form of a scanned DB value (the
+// string / []byte shapes scanRows produces) and true; any other Go type is
+// already a native value that needs no decode, and returns false.
+func asStoredText(v any) ([]byte, bool) {
+	switch s := v.(type) {
+	case string:
+		return []byte(s), true
+	case []byte:
+		return s, true
+	}
+	return nil, false
+}
+
+// decodeStructuredColumns rewrites JSON / SQLTyper column values in a DB-column
+// echo map (the map produced by scanRows / findByIDMap on the create/update
+// write path) from their stored text form into the Go value of the matching
+// model field. This makes create and update responses serialise structured
+// columns — maniflex.LocaleString and JSON-backed sql.Scanner types — as
+// objects/arrays, matching the typed read path (scanStruct), instead of the raw
+// JSON string the map otherwise carries onto the response.
+//
+// Columns with no matching model field (e.g. encryption *_hmac companions) and
+// plain scalar fields are left untouched. No-op for GoType-less synthetic
+// models, whose map IS the record.
+func decodeStructuredColumns(model *maniflex.ModelMeta, m map[string]any) {
+	if model == nil || model.GoType == nil {
+		return
+	}
+	for i := range model.Fields {
+		f := &model.Fields[i]
+		raw, ok := m[f.Tags.DBName]
+		if !ok || raw == nil {
+			continue
+		}
+		text, isText := asStoredText(raw)
+		if !isText || len(text) == 0 {
+			continue // already a native Go value, or empty
+		}
+
+		base := f.Type
+		if base.Kind() == reflect.Pointer {
+			base = base.Elem()
+		}
+		switch {
+		case base == scanLocaleType:
+			ls := maniflex.LocaleString{}
+			if err := json.Unmarshal(text, &ls); err == nil {
+				m[f.Tags.DBName] = ls
+			}
+		case base.Implements(scanScannerType) || reflect.PointerTo(base).Implements(scanScannerType):
+			// Let the type decode its own stored form, exactly as the typed read
+			// path's skScanner does via rows.Scan ([]byte for a TEXT/JSON column).
+			pv := reflect.New(base)
+			if err := pv.Interface().(sql.Scanner).Scan(text); err == nil {
+				m[f.Tags.DBName] = pv.Elem().Interface()
+			}
+		}
+	}
+}
+
+// echoRecord builds a create/update response record from a freshly written
+// DB-column map, decoding structured columns first (see decodeStructuredColumns)
+// so the echo matches the typed read path's JSON shape. For GoType-less
+// synthetic models it is exactly maniflex.MapToRecord.
+func echoRecord(model *maniflex.ModelMeta, m map[string]any) (any, error) {
+	decodeStructuredColumns(model, m)
+	return maniflex.MapToRecord(model, m)
+}
+
 // convertRowValues is the shared DB-free converter: it drives each holder's
 // sql.Scanner with the supplied raw values, then assigns into a fresh *T.
 func convertRowValues(model *maniflex.ModelMeta, driver maniflex.DriverType, cols []string, raw []any, steps []columnStep) (any, error) {

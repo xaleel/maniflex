@@ -83,9 +83,11 @@ func TestFilterParser_BracketedGroupAssigned(t *testing.T) {
 	if len(q.Filters) != 2 {
 		t.Fatalf("want 2 filters, got %d", len(q.Filters))
 	}
+	// URL group index N maps to internal Group N+1, leaving Group<=0 (incl. the
+	// zero value) reserved for "ungrouped/AND". So filter[0] → internal Group 1.
 	for _, f := range q.Filters {
-		if f.Group != 0 {
-			t.Fatalf("expected Group=0, got %d", f.Group)
+		if f.Group != 1 {
+			t.Fatalf("expected Group=1 (filter[0]+1), got %d", f.Group)
 		}
 	}
 }
@@ -101,9 +103,9 @@ func TestFilterParser_MixedBracketedAndUnbracketed(t *testing.T) {
 	}
 	grouped, ungrouped := 0, 0
 	for _, f := range q.Filters {
-		if f.Group == 0 {
+		if f.Group >= 1 { // filter[0] → internal Group 1
 			grouped++
-		} else if f.Group == -1 {
+		} else if f.Group <= 0 { // unbracketed → ungrouped (-1)
 			ungrouped++
 		}
 	}
@@ -139,7 +141,8 @@ func TestFilterParser_DifferentGroupIndicesAreIndependent(t *testing.T) {
 	for _, f := range q.Filters {
 		groups[f.Group] = true
 	}
-	if !groups[0] || !groups[1] {
-		t.Fatalf("expected groups 0 and 1, got %v", groups)
+	// filter[0] → internal Group 1, filter[1] → internal Group 2.
+	if !groups[1] || !groups[2] {
+		t.Fatalf("expected internal groups 1 and 2, got %v", groups)
 	}
 }

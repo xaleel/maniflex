@@ -40,10 +40,27 @@ func TestFilterConds_SingleUngrouped_SQLite(t *testing.T) {
 	}
 }
 
+// Hand-built filters left at the FilterExpr zero value (Group == 0) must AND,
+// not silently OR. Regression for the ownership-scoping leak where a scoped
+// list (e.g. user_id=A AND archived=false) matched far more rows than intended.
+func TestFilterConds_ZeroValueGroupAnds_SQLite(t *testing.T) {
+	sql, args := filterCondsSQL(maniflex.SQLite, postModel(), []*maniflex.FilterExpr{
+		{Field: "user_id", Operator: maniflex.OpEq, Value: "A"},   // Group 0 (zero value)
+		{Field: "archived", Operator: maniflex.OpEq, Value: false}, // Group 0 (zero value)
+	})
+	want := `"posts"."user_id" = ? AND "posts"."archived" = ?`
+	if sql != want {
+		t.Fatalf("zero-value Group must AND, not OR\n got  %q\n want %q", sql, want)
+	}
+	if len(args) != 2 {
+		t.Fatalf("want 2 args, got %v", args)
+	}
+}
+
 func TestFilterConds_ORGroup_SQLite(t *testing.T) {
 	sql, args := filterCondsSQL(maniflex.SQLite, postModel(), []*maniflex.FilterExpr{
-		f("status", maniflex.OpEq, "draft", 0),
-		f("status", maniflex.OpEq, "published", 0),
+		f("status", maniflex.OpEq, "draft", 1),
+		f("status", maniflex.OpEq, "published", 1),
 	})
 	want := `("posts"."status" = ? OR "posts"."status" = ?)`
 	if sql != want {
@@ -57,8 +74,8 @@ func TestFilterConds_ORGroup_SQLite(t *testing.T) {
 func TestFilterConds_ORGroupAndUngrouped_SQLite(t *testing.T) {
 	// (A OR B) AND C
 	filters := []*maniflex.FilterExpr{
-		f("status", maniflex.OpEq, "draft", 0),
-		f("status", maniflex.OpEq, "published", 0),
+		f("status", maniflex.OpEq, "draft", 1),
+		f("status", maniflex.OpEq, "published", 1),
 		f("title", maniflex.OpEq, "Hello", -1),
 	}
 	sql, args := filterCondsSQL(maniflex.SQLite, postModel(), filters)
@@ -74,12 +91,12 @@ func TestFilterConds_ORGroupAndUngrouped_SQLite(t *testing.T) {
 }
 
 func TestFilterConds_TwoSeparateORGroups_SQLite(t *testing.T) {
-	// group 0: (A OR B)  AND  group 1: (C OR D)
+	// group 1: (A OR B)  AND  group 2: (C OR D)
 	filters := []*maniflex.FilterExpr{
-		f("status", maniflex.OpEq, "draft", 0),
-		f("status", maniflex.OpEq, "published", 0),
-		f("title", maniflex.OpEq, "Alpha", 1),
-		f("title", maniflex.OpEq, "Beta", 1),
+		f("status", maniflex.OpEq, "draft", 1),
+		f("status", maniflex.OpEq, "published", 1),
+		f("title", maniflex.OpEq, "Alpha", 2),
+		f("title", maniflex.OpEq, "Beta", 2),
 	}
 	sql, args := filterCondsSQL(maniflex.SQLite, postModel(), filters)
 	// Should look like  ("posts"."status" = ? OR ...) AND ("posts"."title" = ? OR ...)
@@ -100,21 +117,21 @@ func TestFilterConds_GroupOrderDeterministic(t *testing.T) {
 	// groups added in reverse order — SQL should still put lower group first
 	filters := []*maniflex.FilterExpr{
 		f("title", maniflex.OpEq, "Z", 2),
-		f("status", maniflex.OpEq, "draft", 0),
-		f("status", maniflex.OpEq, "published", 0),
+		f("status", maniflex.OpEq, "draft", 1),
+		f("status", maniflex.OpEq, "published", 1),
 		f("title", maniflex.OpEq, "A", 2),
 	}
 	sql1, _ := filterCondsSQL(maniflex.SQLite, postModel(), filters)
 
 	filters2 := []*maniflex.FilterExpr{
-		f("status", maniflex.OpEq, "draft", 0),
-		f("status", maniflex.OpEq, "published", 0),
+		f("status", maniflex.OpEq, "draft", 1),
+		f("status", maniflex.OpEq, "published", 1),
 		f("title", maniflex.OpEq, "Z", 2),
 		f("title", maniflex.OpEq, "A", 2),
 	}
 	sql2, _ := filterCondsSQL(maniflex.SQLite, postModel(), filters2)
 
-	// group 0 (status) must appear before group 2 (title) in both
+	// group 1 (status) must appear before group 2 (title) in both
 	if !strings.Contains(sql1, "status") || !strings.Contains(sql2, "status") {
 		t.Fatalf("status missing: %q / %q", sql1, sql2)
 	}
@@ -142,8 +159,8 @@ func TestFilterConds_Between_SQLite(t *testing.T) {
 // not leak across its two bounds.
 func TestFilterConds_BetweenInORGroup_SQLite(t *testing.T) {
 	sql, _ := filterCondsSQL(maniflex.SQLite, postModel(), []*maniflex.FilterExpr{
-		f("views", maniflex.OpBetween, "100,500", 0),
-		f("status", maniflex.OpEq, "draft", 0),
+		f("views", maniflex.OpBetween, "100,500", 1),
+		f("status", maniflex.OpEq, "draft", 1),
 	})
 	want := `(("posts"."views" >= ? AND "posts"."views" <= ?) OR "posts"."status" = ?)`
 	if sql != want {
@@ -155,8 +172,8 @@ func TestFilterConds_BetweenInORGroup_SQLite(t *testing.T) {
 
 func TestFilterConds_ORGroup_Postgres(t *testing.T) {
 	sql, args := filterCondsSQL(maniflex.Postgres, postModel(), []*maniflex.FilterExpr{
-		f("status", maniflex.OpEq, "draft", 0),
-		f("status", maniflex.OpEq, "published", 0),
+		f("status", maniflex.OpEq, "draft", 1),
+		f("status", maniflex.OpEq, "published", 1),
 	})
 	want := `("posts"."status" = $1 OR "posts"."status" = $2)`
 	if sql != want {

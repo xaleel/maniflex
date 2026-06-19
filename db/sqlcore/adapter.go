@@ -1389,8 +1389,10 @@ func allWhereConds(model *maniflex.ModelMeta, filters []*maniflex.FilterExpr, dr
 }
 
 func filterConds(model *maniflex.ModelMeta, filters []*maniflex.FilterExpr, driver maniflex.DriverType, p *ph) string {
-	// Partition filters by group. Group -1 filters each become their own AND
-	// clause. Filters with the same non-negative group are OR-ed together.
+	// Partition filters by group. Group <= 0 filters (including the FilterExpr
+	// zero value) each become their own AND clause. Filters with the same
+	// Group >= 1 are OR-ed together. The URL parser maps ?filter[N]= onto N+1,
+	// so user-facing group 0 lands here as group 1.
 	type groupEntry struct {
 		exprs []*maniflex.FilterExpr
 	}
@@ -1400,7 +1402,7 @@ func filterConds(model *maniflex.ModelMeta, filters []*maniflex.FilterExpr, driv
 	seen := make(map[int]bool)
 
 	for _, f := range filters {
-		if f.Group < 0 {
+		if f.Group <= 0 {
 			ungrouped = append(ungrouped, f)
 		} else {
 			if !seen[f.Group] {

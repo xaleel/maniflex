@@ -129,10 +129,13 @@ func ParseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor) (
 			}
 			continue
 		}
+		// No bracket → ungrouped (-1). Bracket ?filter[N]= → OR group, mapped
+		// onto N+1 so that the internal sentinel for "ungrouped" (Group <= 0,
+		// incl. the FilterExpr zero value) stays distinct from a user's group 0.
 		group := -1
 		if m[1] != "" {
 			n, _ := strconv.Atoi(m[1])
-			group = n
+			group = n + 1
 		}
 		for _, raw := range vals {
 			expr, err := ParseFilterParam(raw, model, reg)

@@ -52,9 +52,17 @@ type FilterExpr struct {
 	IsLocale  bool   // true when filtering on a locale sub-key
 	LocaleKey string // the locale key portion, e.g. "ar"
 
-	// Group is the OR-group index from ?filter[N]=... syntax.
-	// -1 means ungrouped (forms its own AND clause).
-	// Filters sharing the same non-negative Group are OR-ed together.
+	// Group is the OR-group index.
+	//
+	// Group <= 0 (which includes the struct's zero value) means ungrouped: the
+	// filter forms its own AND clause. Filters sharing the same Group >= 1 are
+	// OR-ed together. The zero value is ungrouped on purpose so a hand-built
+	// FilterExpr AND-s by default — building one with the bare Field/Operator/
+	// Value set is the common case and must not silently OR.
+	//
+	// The URL bracket syntax ?filter[N]=... (N >= 0) is mapped onto Group N+1
+	// during parsing, so e.g. ?filter[0]=a&filter[0]=b is one OR group; the
+	// external contract is unchanged.
 	Group int
 }
 
@@ -64,7 +72,7 @@ func validateFilterGroups(filters []*FilterExpr, primaryTable string) error {
 	// map[group] -> first table seen for that group
 	groupTable := make(map[int]string)
 	for _, f := range filters {
-		if f.Group < 0 {
+		if f.Group <= 0 {
 			continue
 		}
 		table := primaryTable

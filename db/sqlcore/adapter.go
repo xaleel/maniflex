@@ -121,9 +121,42 @@ func (a *Adapter) Close() error {
 // simultaneously each see either the pre-migration or post-migration schema,
 // never a half-applied state.
 func (a *Adapter) AutoMigrate(ctx context.Context, reg maniflex.RegistryAccessor) error {
+	// Reject unmappable columns across every model before issuing any DDL, so a
+	// field with no SQL mapping fails the whole migration loudly and atomically
+	// instead of being silently dropped (see validateMappableColumns).
+	for _, m := range reg.All() {
+		if err := a.validateMappableColumns(m); err != nil {
+			return fmt.Errorf("migrate %s: %w", m.Name, err)
+		}
+	}
 	for _, m := range reg.All() {
 		if err := a.migrateModel(ctx, m); err != nil {
 			return fmt.Errorf("migrate %s: %w", m.Name, err)
+		}
+	}
+	return nil
+}
+
+// validateMappableColumns rejects model fields whose Go type has no SQL column
+// mapping (goTypeToSQL returns ""). Without this check such a field is silently
+// dropped during migration — CREATE TABLE omits the column and ALTER TABLE ADD
+// COLUMN no-ops — so the model registers and "migrates" successfully while the
+// field has no backing column and writes to it never persist.
+//
+// A type is mappable if it is a scalar, time.Time, or implements
+// maniflex.SQLTyper. Bare map / slice types (e.g. map[string]any, []string) are
+// not: wrap them in a named type implementing maniflex.SQLTyper (SQLType +
+// driver.Valuer + sql.Scanner), or exclude the field from persistence with the
+// `mfx:"-"` tag. meta.Fields already excludes relations, has-many slices, and
+// ignored fields, so every entry here is a genuine column candidate.
+func (a *Adapter) validateMappableColumns(m *maniflex.ModelMeta) error {
+	for _, f := range m.Fields {
+		if a.goTypeToSQL(f.Type) == "" {
+			return fmt.Errorf(
+				"model %q field %q has Go type %s, which has no SQL column mapping; "+
+					"wrap it in a named type implementing maniflex.SQLTyper, or exclude it "+
+					"from persistence with the `mfx:\"-\"` tag",
+				m.Name, f.Name, f.Type)
 		}
 	}
 	return nil

@@ -4,8 +4,6 @@ go 1.25.4
 
 require github.com/xaleel/maniflex v0.1.0
 
-require github.com/xaleel/maniflex/middleware/response v0.1.0
-
 require (
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/metric v1.44.0

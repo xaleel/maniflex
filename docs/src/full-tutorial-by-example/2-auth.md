@@ -79,14 +79,24 @@ go get github.com/xaleel/maniflex/middleware/auth
 ```
 
 Register `JWTAuth` on the Auth step, scoped to writes — we'll let reads stay
-public for now:
+public for now. Auth scoping (`ForModel` / `ForOperation`) is
+**inclusion-only**: a middleware runs *only* for the models and operations you
+scope it to, so anything you don't scope onto stays public.
 
 ```go
 import "github.com/xaleel/maniflex/middleware/auth"
 
+// Protect updates and deletes on every model…
 server.Pipeline.Auth.Register(
     auth.JWTAuth("dev-secret", auth.JWTOptions{Issuer: "bookstore"}),
-    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete),
+    maniflex.ForOperation(maniflex.OpUpdate, maniflex.OpDelete),
+)
+// …and protect creates only where a session is required. "User" is deliberately
+// left out, so POST /api/users (sign-up) needs no token.
+server.Pipeline.Auth.Register(
+    auth.JWTAuth("dev-secret", auth.JWTOptions{Issuer: "bookstore"}),
+    maniflex.ForModel("Book"),
+    maniflex.ForOperation(maniflex.OpCreate),
 )
 ```
 
@@ -94,19 +104,10 @@ server.Pipeline.Auth.Register(
 claims, and populates `ctx.Auth` with the user ID and roles. Tokens fail with
 `401 UNAUTHORIZED`; missing tokens fail the same way.
 
-Sign-up (`POST /api/users`) is itself a write — and a write that should
-_not_ require a token, since the user does not exist yet. Add an exception:
-
-```go
-server.Pipeline.Auth.Register(
-    auth.AllowPublicWrite(),
-    maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpCreate),
-)
-```
-
-`AllowPublicWrite` returns immediately for matching requests, bypassing the
-JWT check. Registering it before `JWTAuth` (which we did) means it runs
-first.
+Sign-up (`POST /api/users`) is a create on `User` — a model we never scoped
+auth onto — so it stays public with no extra middleware. There is no
+`AllowPublicWrite` helper: public access always comes from *not* scoping the
+authenticator onto an operation, because scoping is inclusion-only.
 
 ## Role-gated deletes
 
@@ -195,7 +196,7 @@ curl -X PATCH localhost:8080/api/users/<id> \
 
 | Capability                  | How                                                 |
 | --------------------------- | --------------------------------------------------- |
-| Sign-up                     | `POST /api/users` + `AllowPublicWrite` exception    |
+| Sign-up                     | `POST /api/users` stays public (auth not scoped onto it) |
 | Password hashing            | `service.HashField("password")` on the Service step |
 | Bearer-token auth on writes | `auth.JWTAuth` on the Auth step                     |
 | Admin-only delete           | `auth.RequireRole("admin")`                         |

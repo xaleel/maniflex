@@ -27,12 +27,21 @@ func NormalizeError(err error, table string) error {
 	switch pqErr.Code {
 	case "23505": // unique_violation
 		return &maniflex.ErrConstraint{
+			Kind:   maniflex.ConstraintUnique,
 			Table:  table,
 			Column: extractColumn(pqErr.Detail),
 			Detail: pqErr.Detail,
 		}
+	case "23502": // not_null_violation — pqErr.Column names the offending column
+		return &maniflex.ErrConstraint{
+			Kind:   maniflex.ConstraintNotNull,
+			Table:  table,
+			Column: pqErr.Column,
+			Detail: pqErr.Message,
+		}
 	case "23503": // foreign_key_violation
 		return &maniflex.ErrConstraint{
+			Kind:   maniflex.ConstraintForeignKey,
 			Table:  table,
 			Detail: pqErr.Detail,
 		}

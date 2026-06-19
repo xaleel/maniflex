@@ -1001,6 +1001,25 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 		// Unwrap wrapped constraint errors (e.g. fmt.Errorf("create: %w", *ErrConstraint))
 		var constraintErr *ErrConstraint
 		if errors.As(dbErr, &constraintErr) {
+			// A NOT NULL violation is a missing-required-value problem, not a
+			// conflict — surface it as a 422 validation error (matching the
+			// validate middleware) instead of an opaque 500 or a misleading 409.
+			if constraintErr.Kind == ConstraintNotNull {
+				details := map[string]string{"message": "value is required"}
+				if constraintErr.Column != "" {
+					details["field"] = constraintErr.Column
+					details["message"] = constraintErr.Column + " is required"
+				}
+				ctx.Response = &APIResponse{
+					StatusCode: http.StatusUnprocessableEntity,
+					Error: &APIError{
+						Code:    "VALIDATION_ERROR",
+						Message: "missing required field",
+						Details: details,
+					},
+				}
+				return nil
+			}
 			details := map[string]string{
 				"message": "value already exists",
 			}

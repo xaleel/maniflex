@@ -32,11 +32,28 @@ type SQLTyper interface {
 // ErrNotFound is returned by adapter methods when a requested record does not exist.
 var ErrNotFound = errors.New("record not found")
 
+// ConstraintKind classifies a database constraint violation so the DB step can
+// map it to the right HTTP status: unique / foreign-key → 409 Conflict, and
+// not-null → 422 Validation. The zero value ("") is treated as a generic
+// conflict, preserving the original behaviour for normalisers that don't set it.
+type ConstraintKind string
+
+const (
+	ConstraintUnique     ConstraintKind = "unique"
+	ConstraintForeignKey ConstraintKind = "foreign_key"
+	ConstraintNotNull    ConstraintKind = "not_null"
+)
+
 // ErrConstraint is returned by adapter methods when a database constraint is
-// violated. It is driver-neutral: both SQLite "UNIQUE constraint failed:
-// table.column" and Postgres error code 23505 are normalised into this type
-// before being returned to the DB step, which converts it to a 409 Conflict.
+// violated. It is driver-neutral: SQLite "UNIQUE constraint failed:
+// table.column" / "NOT NULL constraint failed: table.column" and Postgres error
+// codes (23505, 23502, 23503) are normalised into this type before being
+// returned to the DB step, which converts it to a 409 Conflict (unique/FK) or a
+// 422 Validation error (not-null).
 type ErrConstraint struct {
+	// Kind classifies the violation (unique, foreign_key, not_null). Empty for
+	// normalisers that predate the field; treated as a generic conflict.
+	Kind ConstraintKind
 	// Table is the DB table name where the violation occurred.
 	Table string
 	// Column is the column name that was violated, if the driver exposes it.

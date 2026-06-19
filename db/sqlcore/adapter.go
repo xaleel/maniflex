@@ -5,6 +5,7 @@ package sqlcore
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,8 @@ import (
 
 	"github.com/google/uuid"
 )
+
+var driverValuerIface = reflect.TypeOf((*driver.Valuer)(nil)).Elem()
 
 // Adapter is a generic SQL DBAdapter backed by a *sql.DB.
 type Adapter struct {
@@ -514,7 +517,65 @@ func (a *Adapter) zeroDefaultSQL(t reflect.Type, sqlType string) string {
 		reflect.Float32, reflect.Float64:
 		return "0"
 	}
+	// SQLTyper container/custom types (LocaleString, JSON maps/arrays, money.Amount,
+	// …) have no scalar zero default, so omitting them on insert otherwise violates
+	// NOT NULL. Synthesise their empty stored form so an absent JSON/locale/custom
+	// column inserts its empty container instead of failing.
+	if t.Implements(sqlTyperIface) || reflect.PointerTo(t).Implements(sqlTyperIface) {
+		return a.sqlTyperZeroDefault(t, sqlType)
+	}
 	return ""
+}
+
+// sqlTyperZeroDefault returns the empty stored form of a SQLTyper type as an
+// already-quoted SQL DEFAULT literal, or "" when it can't be determined (the
+// caller then omits the DEFAULT clause). It prefers the type's own driver.Valuer
+// zero value (e.g. money.Amount → "0.0000", a JSON type whose Value() emits
+// "{}"/"[]"); failing that it falls back by container kind for JSON-backed types
+// the adapter encodes itself, such as maniflex.LocaleString (a map with no
+// Valuer).
+func (a *Adapter) sqlTyperZeroDefault(t reflect.Type, sqlType string) string {
+	if lit, ok := zeroValuerLiteral(t); ok {
+		return a.quotedDefault(lit, sqlType)
+	}
+	base := t
+	if base.Kind() == reflect.Pointer {
+		base = base.Elem()
+	}
+	switch base.Kind() {
+	case reflect.Map:
+		return a.quotedDefault("{}", sqlType)
+	case reflect.Slice:
+		return a.quotedDefault("[]", sqlType)
+	}
+	return ""
+}
+
+// zeroValuerLiteral returns the string form of a type's zero-value driver.Valuer
+// output, if the type (or its pointer) implements driver.Valuer and the zero
+// value yields a non-nil, error-free value.
+func zeroValuerLiteral(t reflect.Type) (string, bool) {
+	var zv reflect.Value
+	switch {
+	case t.Implements(driverValuerIface):
+		zv = reflect.Zero(t)
+	case reflect.PointerTo(t).Implements(driverValuerIface):
+		zv = reflect.New(t) // *t pointing at a zero t
+	default:
+		return "", false
+	}
+	val, err := zv.Interface().(driver.Valuer).Value()
+	if err != nil || val == nil {
+		return "", false
+	}
+	switch s := val.(type) {
+	case string:
+		return s, true
+	case []byte:
+		return string(s), true
+	default:
+		return fmt.Sprint(val), true
+	}
 }
 
 func (a *Adapter) quotedDefault(val, sqlType string) string {

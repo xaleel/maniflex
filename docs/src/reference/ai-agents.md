@@ -329,9 +329,9 @@ import (
 auth.JWTAuth(secret, auth.JWTOptions{Issuer, Audience, TenantClaim, ScopesClaim, PublicKey})
 auth.APIKeyAuth("X-API-Key", auth.APIKeyEntry{Key, Auth: maniflex.AuthInfo{...}}, ...)
 auth.RequireRole("admin")
-auth.AllowPublicRead()
-auth.AllowPublicWrite()                      // useful exception for sign-up
+auth.AllowPublicRead()                       // passthrough on read/list; must run BEFORE an aborting authenticator
 auth.BlockOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete)
+// (no AllowPublicWrite — keep an op public by NOT scoping JWTAuth onto it; scoping is inclusion-only)
 
 // BODY (Deserialize / Validate steps)
 body.MaxBodySize(16 << 20)                   // override 4MB default
@@ -524,12 +524,14 @@ A `ModelConfig` value applies to the model immediately preceding it.
 
 ## Common patterns
 
-### Sign-up exception with global JWT
+### Public sign-up (scope auth away from it; inclusion-only)
 ```go
-server.Pipeline.Auth.Register(auth.AllowPublicWrite(),
-    maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpCreate))
+// Protect updates/deletes everywhere; protect creates only where needed.
+// "User" is not scoped, so POST /users (sign-up) stays public.
 server.Pipeline.Auth.Register(auth.JWTAuth(secret),
-    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete))
+    maniflex.ForOperation(maniflex.OpUpdate, maniflex.OpDelete))
+server.Pipeline.Auth.Register(auth.JWTAuth(secret),
+    maniflex.ForModel("Post", "Comment"), maniflex.ForOperation(maniflex.OpCreate))
 ```
 
 ### Hash password on User create/update

@@ -24,6 +24,15 @@ func NormalizeError(err error, table string) error {
 	msg := err.Error()
 	if strings.Contains(msg, "UNIQUE constraint failed") {
 		return &maniflex.ErrConstraint{
+			Kind:   maniflex.ConstraintUnique,
+			Table:  table,
+			Column: extractColumn(msg),
+			Detail: msg,
+		}
+	}
+	if strings.Contains(msg, "NOT NULL constraint failed") {
+		return &maniflex.ErrConstraint{
+			Kind:   maniflex.ConstraintNotNull,
 			Table:  table,
 			Column: extractColumn(msg),
 			Detail: msg,
@@ -31,6 +40,7 @@ func NormalizeError(err error, table string) error {
 	}
 	if strings.Contains(msg, "FOREIGN KEY constraint failed") {
 		return &maniflex.ErrConstraint{
+			Kind:   maniflex.ConstraintForeignKey,
 			Table:  table,
 			Detail: msg,
 		}

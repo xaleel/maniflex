@@ -220,22 +220,33 @@ re-run `maniflex.RotateEncryptionKey` and the digests are refreshed.
 
 ### "I added `auth.JWTAuth` and sign-up stopped working."
 
-Sign-up is a write — `auth.JWTAuth` rejects it because no token exists
-yet. Add an exception:
+Sign-up is a write — a global `auth.JWTAuth` rejects it because no token
+exists yet. There is no `AllowPublicWrite` helper; instead **scope the
+authenticator** so it never runs on the sign-up path. Auth scoping
+(`ForModel` / `ForOperation`) is *inclusion-only*: a middleware runs only
+for the models and operations you scope it to, so anything you leave out of
+every auth registration stays public.
 
 ```go
-server.Pipeline.Auth.Register(
-    auth.AllowPublicWrite(),
-    maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpCreate),
-)
+// Protect updates and deletes everywhere…
 server.Pipeline.Auth.Register(
     auth.JWTAuth(secret),
-    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete),
+    maniflex.ForOperation(maniflex.OpUpdate, maniflex.OpDelete),
+)
+// …and protect creates only on the models that need a session. "User" is
+// deliberately not listed, so POST /users (sign-up) is covered by no auth
+// registration and stays public.
+server.Pipeline.Auth.Register(
+    auth.JWTAuth(secret),
+    maniflex.ForModel("Post", "Comment"),
+    maniflex.ForOperation(maniflex.OpCreate),
 )
 ```
 
-The order matters: `AllowPublicWrite` registers first, so it runs first
-and short-circuits the JWT check for matching requests.
+The same inclusion-only rule applies to public reads: `auth.AllowPublicRead`
+is a passthrough that must run *before* an aborting authenticator, but a
+global `JWTAuth` aborts first — so prefer scoping `JWTAuth` away from the
+operations you want public rather than relying on a later passthrough.
 
 ### "JWT keeps returning 401 — the token validates manually."
 

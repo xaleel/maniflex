@@ -744,9 +744,18 @@ func (c *Server) checkActionConflict(cfg ActionConfig) {
 // (roadmap §10.1) will promote these warnings to panics.
 func flattenArgs(args []any) (models []any, configs []ModelConfig) {
 	prevWasConfig := false
-	for i, arg := range args {
+
+	// add handles a single, already-unsliced argument: it binds a ModelConfig to
+	// the preceding model, or records a struct / pointer-to-struct as a model.
+	// Calling it for both top-level args and slice elements applies the
+	// "ModelConfig follows its model" rule at any nesting depth — so the
+	// idiomatic MustRegister(domainA.Models(), domainB.Models()) pattern, where
+	// each Models() slice carries its own inline ModelConfigs, pairs them
+	// correctly instead of routing a config struct into ScanModel (which panicked
+	// with "model must embed BaseModel").
+	add := func(arg any, pos int) {
 		if arg == nil {
-			continue
+			return
 		}
 
 		// ModelConfig — bind to the previously added model.
@@ -754,49 +763,44 @@ func flattenArgs(args []any) (models []any, configs []ModelConfig) {
 			switch {
 			case len(models) == 0:
 				slog.Default().Warn("[maniflex] ignoring ModelConfig at argument position 0 — ModelConfig must follow a model",
-					slog.Int("position", i))
+					slog.Int("position", pos))
 			case prevWasConfig:
 				slog.Default().Warn("[maniflex] ignoring ModelConfig immediately after another ModelConfig — only one ModelConfig per model is honoured",
-					slog.Int("position", i))
+					slog.Int("position", pos))
 			default:
 				configs[len(models)-1] = cfg
 			}
 			prevWasConfig = true
-			continue
+			return
 		}
 
-		t := reflect.TypeOf(arg)
-		v := reflect.ValueOf(arg)
 		prevWasConfig = false
 
-		// Slice — recurse into elements
-		if t.Kind() == reflect.Slice {
-			for j := 0; j < v.Len(); j++ {
-				elem := v.Index(j).Interface()
-				if elem == nil {
-					continue
-				}
-				et := reflect.TypeOf(elem)
-				for et.Kind() == reflect.Ptr {
-					et = et.Elem()
-				}
-				if et.Kind() == reflect.Struct {
-					models = append(models, elem)
-					configs = append(configs, ModelConfig{})
-				}
-			}
-			continue
-		}
-
-		// Struct or pointer-to-struct
-		base := t
-		for base.Kind() == reflect.Ptr {
+		// Struct or pointer-to-struct → a model.
+		base := reflect.TypeOf(arg)
+		for base.Kind() == reflect.Pointer {
 			base = base.Elem()
 		}
 		if base.Kind() == reflect.Struct {
 			models = append(models, arg)
 			configs = append(configs, ModelConfig{})
 		}
+	}
+
+	for i, arg := range args {
+		if arg == nil {
+			continue
+		}
+		// Slice — flatten one level, handling each element as though it had been
+		// passed as a top-level variadic arg, so inline ModelConfigs still bind
+		// to the model element that precedes them.
+		if v := reflect.ValueOf(arg); v.Kind() == reflect.Slice {
+			for j := 0; j < v.Len(); j++ {
+				add(v.Index(j).Interface(), i)
+			}
+			continue
+		}
+		add(arg, i)
 	}
 	return
 }

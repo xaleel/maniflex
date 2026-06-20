@@ -169,6 +169,15 @@ type ModelConfig struct {
 	// GET /config). Singleton models must not declare mfx:"required" fields —
 	// the auto-provisioned row has no values to satisfy them.
 	Singleton bool
+
+	// Headless registers the model fully — migration, registry, typed access,
+	// relations — but mounts NO REST routes for it. Use it to back a path with a
+	// custom server.Action instead of the auto-generated CRUD: a model and an
+	// action cannot both own the same method+path (chi panics at boot), so set
+	// Headless on the model to free its table path (e.g. GET /threads) for the
+	// action. The model is still reachable via ctx.GetModel / typed CRUD and via
+	// relations from other models. Takes precedence over Singleton.
+	Headless bool
 }
 
 // SingletonID is the fixed primary key of the single row backing a

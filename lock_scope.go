@@ -1,6 +1,9 @@
 package maniflex
 
-import "fmt"
+import (
+	"fmt"
+	"log/slog"
+)
 
 // LockScopeSpec records one mfx:"lock_scope:ModelName" directive resolved at
 // registration time. The DB step acquires a FOR UPDATE lock on the referenced
@@ -46,4 +49,29 @@ func validateLockScopes(reg *Registry) error {
 		}
 	}
 	return nil
+}
+
+// warnDanglingRelations logs a warning for every convention-inferred BelongsTo
+// relation — a "<Name>ID" field auto-promoted to a relation — whose target model
+// was never registered. This is almost always a microservice storing a foreign
+// id by design (e.g. UserID when users live in another service); tagging the
+// field mfx:"norelation" silences the inference. It only warns: a missing target
+// is not fatal, the FK column is still created and usable.
+func warnDanglingRelations(reg *Registry, logger *slog.Logger) {
+	for _, model := range reg.All() {
+		for i := range model.Relations {
+			rel := &model.Relations[i]
+			if !rel.Convention || rel.Kind != BelongsTo {
+				continue
+			}
+			if _, ok := reg.Get(rel.RelatedModel); ok {
+				continue
+			}
+			logger.Warn("[maniflex] convention relation targets an unregistered model — "+
+				"tag the field mfx:\"norelation\" if it is a plain foreign id, not a relation",
+				slog.String("model", model.Name),
+				slog.String("field", rel.FieldName),
+				slog.String("target_model", rel.RelatedModel))
+		}
+	}
 }

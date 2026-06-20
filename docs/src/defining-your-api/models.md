@@ -110,6 +110,7 @@ server.MustRegister(
 | `OptimisticLock`    | enable `If-Match` / ETag concurrency control on PATCH and DELETE                                                         |
 | `Adapter`           | route this model to a separate database adapter                                                                          |
 | `Singleton`         | expose the model as a single-row resource (`GET` / `PATCH`, no id) — see [Singleton models](#singleton-models-singleton) |
+| `Headless`          | register the model fully but mount no REST routes, freeing its path for a custom action — see [Serving a model's own path from an action](../advanced-topics/actions.md#serving-a-models-own-path-from-an-action) |
 
 ### Optimistic locking (`OptimisticLock`)
 

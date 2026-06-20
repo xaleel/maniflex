@@ -44,6 +44,21 @@ generated OpenAPI relations:
 ExternalID string `json:"external_id" mfx:"norelation"` // just a string, not → External
 ```
 
+This is especially common in microservices, where you store a foreign id whose
+owning model lives in **another service** (e.g. `UserID` when users are owned by
+auth-svc). If a convention `…ID` field points at a model that was never
+registered, the framework logs a warning at startup:
+
+```text
+WARN [maniflex] convention relation targets an unregistered model — tag the field
+mfx:"norelation" if it is a plain foreign id, not a relation
+  model=Order field=UserID target_model=User
+```
+
+The column is still created and fully usable — the warning only flags that the
+inferred relation has no target. Tag the field `mfx:"norelation"` to declare it a
+plain foreign id and silence the warning.
+
 ### Including the related row
 
 ```bash

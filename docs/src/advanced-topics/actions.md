@@ -186,6 +186,37 @@ If you'd rather build the OpenAPI types by hand, set `RequestBody` and
 `Responses` directly on the `ActionConfig` — those take precedence over the
 inferred schemas when both are present.
 
+## Serving a model's own path from an action
+
+An action and a model cannot both own the same method + path. Registering an
+action at a path a model already owns (e.g. `GET /threads` when a model's table
+is `threads`) is rejected **at startup** with a clear panic, rather than letting
+chi silently mount two handlers:
+
+```text
+panic: maniflex: action GET /threads conflicts with auto-generated route for model "Thread"
+```
+
+When you want to serve a model's collection path yourself — returning a custom
+shape, or composing several models — mark the model **headless** so it mounts no
+REST routes at all, freeing its path for the action:
+
+```go
+server.MustRegister(Thread{}, maniflex.ModelConfig{Headless: true})
+
+server.Action(maniflex.ActionConfig{
+    Method:  "GET",
+    Path:    "/threads",     // no collision: Thread mounts no routes
+    Handler: listThreads,
+})
+```
+
+A headless model is still registered in full — it migrates, participates in
+relations, and is reachable through `ctx.GetModel("Thread")` and typed CRUD — it
+simply has no auto-generated HTTP surface (and no auto-generated OpenAPI paths;
+its schema is still emitted for `$ref`s). Use it whenever the generated CRUD
+shape doesn't match the contract you want to expose for that resource.
+
 ## When to use an action
 
 | Need | Use |

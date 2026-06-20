@@ -445,6 +445,9 @@ func (c *Server) Handler() http.Handler {
 		if err := validateLockScopes(c.registry); err != nil {
 			panic(err.Error())
 		}
+		// Warn about convention "<Name>ID" relations whose target model was never
+		// registered (commonly a foreign id that should be mfx:"norelation").
+		warnDanglingRelations(c.registry, c.cfg.logger())
 		// Auto-register file cleanup middleware for models with file fields
 		if c.cfg.FileStorage != nil {
 			c.registerFileCleanup()
@@ -713,6 +716,11 @@ func (c *Server) checkActionConflict(cfg ActionConfig) {
 	}
 
 	for _, meta := range c.registry.All() {
+		// Headless models mount no REST routes, so they can't collide with an
+		// action — that is the whole point of registering one behind an action.
+		if meta.Config.Headless {
+			continue
+		}
 		base := "/" + strings.TrimPrefix(meta.TableName, TABLE_NAME_PREFIX)
 		item := base + "/{id}"
 		if norm == base && (method == "GET" || method == "POST" || method == "HEAD" || method == "OPTIONS") {

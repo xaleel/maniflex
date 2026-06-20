@@ -56,9 +56,13 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 			r.Method(http.MethodDelete, "/files/*", wrapFileMiddleware(cfg, fh.Delete()))
 		}
 
-		// One sub-router per registered model
+		// One sub-router per registered model. Headless models register fully but
+		// mount no REST routes, freeing their table path for a custom action.
 		storageConfigured := cfg.FileStorage != nil
 		for _, meta := range reg.All() {
+			if meta.Config.Headless {
+				continue
+			}
 			mountModel(r, meta, h, storageConfigured)
 		}
 

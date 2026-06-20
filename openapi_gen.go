@@ -44,6 +44,11 @@ func GenerateSpec(reg RegistryAccessor, cfg *Config, actions []ActionConfig, sea
 
 	for _, m := range models {
 		buildModelSchemas(spec, m, reg)
+		// Headless models mount no REST routes, so emit their schema (still
+		// referenced by relations and custom actions) but no auto-generated paths.
+		if m.Config.Headless {
+			continue
+		}
 		buildModelPaths(spec, m, cfg)
 	}
 

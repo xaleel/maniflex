@@ -128,6 +128,13 @@ type RelationMeta struct {
 	// RelatedModel is the target model's struct name, e.g. "User".
 	RelatedModel string
 
+	// Convention is true when this BelongsTo was inferred from a "<Name>ID" field
+	// name rather than an explicit mfx:"relation:X" tag. Used to warn (not error)
+	// when such an inferred relation targets a model that was never registered —
+	// the common microservice case of storing a foreign id (e.g. UserID) by
+	// design, which mfx:"norelation" silences.
+	Convention bool
+
 	Kind     RelationKind
 	OnDelete OnDeleteAction
 
@@ -785,6 +792,7 @@ func scanFields(t reflect.Type, meta *ModelMeta, indexPath []int) error {
 			RelationKey:    relKey,
 			CompanionField: relModelName,
 			RelatedModel:   relatedModel,
+			Convention:     true,
 			Kind:           BelongsTo,
 			OnDelete:       fk.tags.OnDelete,
 		})

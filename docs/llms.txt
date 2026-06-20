@@ -10,6 +10,12 @@ Key facts for working with maniflex:
 - Register models before opening the DB — the adapter needs the registry to run migrations and resolve relations.
 - Requests flow through a six-step pipeline (Auth, Deserialize, Validate, Service, DB, Response), extensible with `Before` / `After` / `Replace` middleware.
 
+Accessing the docs:
+
+- Every page linked below is also served as **raw Markdown** — append `.md` to the page path (e.g. `https://docs.maniflex.dev/getting-started.md`, `https://docs.maniflex.dev/defining-your-api/models.md`). Section overview pages live at `<section>/index.md`.
+- Sitemap of all pages: https://docs.maniflex.dev/sitemap.xml
+- The entire documentation concatenated into one file: https://docs.maniflex.dev/llms-full.txt
+
 ## Getting Started
 
 - [Overview](https://docs.maniflex.dev/index): What maniflex is and the problem it solves.

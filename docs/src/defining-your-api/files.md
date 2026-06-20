@@ -164,6 +164,13 @@ already uploaded via the standalone endpoint. This is useful when the upload
 is decoupled from the record creation (large files uploaded ahead of time,
 re-using an existing file, and so on).
 
+The key is **existence-checked against storage** before the write: setting a
+`file` field to a string key that does not exist in the configured `FileStorage`
+is rejected with `422 FILE_NOT_FOUND`, so a record can never reference a dangling
+key. (Pass JSON `null` to clear the field.) In production the key exists because
+the client uploaded it first — via the multipart part or a prior `POST /files`.
+In tests, seed the key into the shared storage before referencing it.
+
 ## Standalone file endpoints
 
 When `FileStorage` is configured, three routes are mounted under `PathPrefix`:

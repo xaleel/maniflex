@@ -333,5 +333,6 @@ filtering/sorting behaviour.
 | `file` `max_size:` `accept:` `auto_delete:false` `file_acl:` | file upload           |
 | `encrypted` `key:…`                                          | encryption            |
 | `scheduled;…`                                                | scheduled transitions |
+| `locale` `split` `resolve` `dynamic` `default_locale:…`      | localization          |
 | `locale` `split` `resolve` `dynamic` `default_locale:`       | localisation          |
 | `-`                                                          | exclude the field     |

@@ -35,6 +35,21 @@ Subscribers call `bus.Subscribe(ctx, "order.*", handler)`. For WebSocket
 fan-out, connect a `realtime.Hub` to the bus — see
 [Realtime / WebSockets](realtime.md).
 
+> **Custom actions emit manually.** `service.Emit` runs on the DB step, which
+> [custom actions](actions.md) skip — so a `server.Action` handler never fires
+> the middleware and must publish to the bus itself:
+>
+> ```go
+> err := bus.Publish(ctx.Ctx, events.Event{
+>     Type:     "order.cancelled",
+>     Model:    "Order",
+>     RecordID: orderID,
+> })
+> ```
+>
+> For the transactional outbox, publish inside the action's own transaction so
+> the event commits atomically with the write.
+
 Available adapters: `events/redis`, `events/kafka`, `events/nats`,
 `events/rabbitmq`. The in-process adapter (`events.NewInProcessBus`) ships in
 the core module for tests.

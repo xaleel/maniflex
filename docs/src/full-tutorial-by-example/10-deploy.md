@@ -24,13 +24,16 @@ Change one import in `main.go`:
 …and the adapter open call:
 
 ```go
-db, err := postgres.Open(postgres.Options{
-    WriteURL:        os.Getenv("DB_WRITE_URL"),
-    ReadURL:         os.Getenv("DB_READ_URL"), // optional
-    MaxOpenConns:    25,
-    MaxIdleConns:    5,
-    ConnMaxLifetime: 30 * time.Minute,
-}, server.Registry())
+// Open(writeDSN, readDSN, registry) is positional. For pool/session tuning use
+// OpenWithConfig(writeDSN, readDSN, registry, writePool, readPool, session).
+db, err := postgres.OpenWithConfig(
+    os.Getenv("DB_WRITE_URL"),
+    os.Getenv("DB_READ_URL"), // optional; "" routes reads to the primary
+    server.Registry(),
+    postgres.PoolConfig{MaxOpenConns: 25, MaxIdleConns: 5, ConnMaxLifetime: 30 * time.Minute}, // write pool
+    postgres.PoolConfig{MaxOpenConns: 25, MaxIdleConns: 5, ConnMaxLifetime: 30 * time.Minute}, // read pool
+    postgres.SessionConfig{ApplicationName: "bookstore"},
+)
 ```
 
 Models, middleware, actions, and tests all carry over unchanged. The shared

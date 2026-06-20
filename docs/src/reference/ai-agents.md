@@ -481,14 +481,15 @@ db, err := sqlite.Open("./app.db", server.Registry())
 db, err := sqlite.Open(":memory:", server.Registry())
 db, err := sqlite.Open("file:./app.db?_txlock=immediate", server.Registry())
 
-// PostgreSQL (prod)
-db, err := postgres.Open(postgres.Options{
-    WriteURL:        os.Getenv("DB_WRITE_URL"),
-    ReadURL:         os.Getenv("DB_READ_URL"),  // optional read replica
-    MaxOpenConns:    25,
-    MaxIdleConns:    5,
-    ConnMaxLifetime: 30 * time.Minute,
-}, server.Registry())
+// PostgreSQL (prod) — Open(writeDSN, readDSN, registry) is positional.
+db, err := postgres.Open(os.Getenv("DB_WRITE_URL"), os.Getenv("DB_READ_URL"), server.Registry())
+// Pool/session tuning → OpenWithConfig(writeDSN, readDSN, registry, writePool, readPool, session):
+db, err := postgres.OpenWithConfig(
+    os.Getenv("DB_WRITE_URL"), os.Getenv("DB_READ_URL"), server.Registry(),
+    postgres.PoolConfig{MaxOpenConns: 25, MaxIdleConns: 5, ConnMaxLifetime: 30 * time.Minute}, // write
+    postgres.PoolConfig{MaxOpenConns: 25, MaxIdleConns: 5, ConnMaxLifetime: 30 * time.Minute}, // read
+    postgres.SessionConfig{ApplicationName: "myapp"},
+)
 ```
 
 Reads route to ReadURL outside an active transaction; reads inside a tx go to write primary. AutoMigrate adds missing columns; never drops. Logs drift warnings.

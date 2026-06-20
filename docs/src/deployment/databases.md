@@ -49,10 +49,12 @@ genuine concurrent writers, real `FOR UPDATE` locks, and read replicas.
 ```go
 import "github.com/xaleel/maniflex/db/postgres"
 
-db, err := postgres.Open(postgres.Options{
-    WriteURL: "postgres://user:pass@host/db?sslmode=require",
-    ReadURL:  "postgres://user:pass@read.host/db?sslmode=require", // optional
-}, server.Registry())
+// Open(writeDSN, readDSN, registry) — positional arguments.
+db, err := postgres.Open(
+    "postgres://user:pass@host/db?sslmode=require",      // write DSN
+    "postgres://user:pass@read.host/db?sslmode=require", // read DSN (optional)
+    server.Registry(),
+)
 if err != nil {
     log.Fatal(err)
 }
@@ -60,12 +62,14 @@ defer db.Close()
 server.SetDB(db)
 ```
 
-Pass an empty `ReadURL` to route reads to the primary. The adapter selects the
-appropriate pool per request based on the operation — `OpList` and `OpRead`
+Pass an empty read DSN (`""`) to route reads to the primary. The adapter selects
+the appropriate pool per request based on the operation — `OpList` and `OpRead`
 go to the read pool, everything else to the write pool.
 
-See [PostgreSQL in Production](../advanced-topics/postgres.md) for connection-pool
-tuning, replica lag handling, and SSL.
+For connection-pool and session tuning use `postgres.OpenWithConfig(writeDSN,
+readDSN, registry, writePool, readPool, session)` — see
+[PostgreSQL in Production](../advanced-topics/postgres.md) for replica lag
+handling and SSL.
 
 ## Switching between them
 
@@ -77,8 +81,7 @@ needs to know which database is in use:
 + import "github.com/xaleel/maniflex/db/postgres"
 
 - db, err := sqlite.Open("./app.db", server.Registry())
-+ db, err := postgres.Open(postgres.Options{WriteURL: os.Getenv("DB_URL")},
-+                          server.Registry())
++ db, err := postgres.Open(os.Getenv("DB_URL"), "", server.Registry())
 ```
 
 Models, middleware, and queries are portable across both backends because they

@@ -99,6 +99,20 @@ func refundOrder(ctx *maniflex.ServerContext) error {
 `ctx.BindJSON` enforces the same 4 MB body limit as the default Deserialize
 step. `ctx.URLParam` and `ctx.QueryParam` read URL and query parameters.
 
+> **Multipart uploads:** `ctx.Files` is populated by the Deserialize step, which
+> actions skip — so it is **always empty** inside an action. To accept a file
+> upload in an action, parse the request yourself:
+>
+> ```go
+> if err := ctx.Request.ParseMultipartForm(32 << 20); err != nil {
+>     ctx.Abort(http.StatusBadRequest, "BAD_REQUEST", "invalid multipart form")
+>     return nil
+> }
+> for _, headers := range ctx.Request.MultipartForm.File {
+>     // headers[0].Open() → the uploaded file
+> }
+> ```
+
 ## Transactional actions
 
 `ctx.BeginTx` works inside an action just as it does in middleware. For most
@@ -121,6 +135,56 @@ func cancelOrder(ctx *maniflex.ServerContext) error {
 
 Because the action does not pass through the Service step, `maniflex.WithTransaction`
 registered there does not apply — actions manage their own transactions.
+
+> **SQLite deadlock — fetch the model accessor _after_ setting `ctx.Tx`.** The
+> SQLite adapter uses a single write connection (`MaxOpenConns(1)`). A
+> `ctx.GetModel(...)` accessor binds to whatever `ctx.Tx` is at the time you
+> call `GetModel`. If you grab the accessor *before* `BeginTx` and then write
+> with it after `ctx.Tx = tx`, the write opens a *second* writer connection and
+> blocks forever behind the transaction holding the single writer — the request
+> hangs with no error. Always call `ctx.GetModel(...)` **after** `ctx.Tx = tx`:
+>
+> ```go
+> tx, _ := ctx.BeginTx(ctx.Ctx, nil)
+> defer tx.Rollback()
+> ctx.Tx = tx
+> orders := ctx.GetModel("Order") // bound to ctx.Tx now — safe
+> orders.Update(id, patch)
+> if err := tx.Commit(); err != nil { return err }
+> ctx.Tx = nil // reset: reads built for the response after commit must not
+>              // route through the finished tx
+> ```
+
+## Streaming a raw (non-JSON) response
+
+An action normally returns JSON by setting `ctx.Response`. For a binary or
+streaming endpoint — serving an image, a generated PDF, a CSV export — write
+directly to `ctx.Writer` (the raw `http.ResponseWriter`) and **leave
+`ctx.Response` nil**. After the handler returns, the framework writes nothing
+further when `ctx.Response` is nil, so the bytes you wrote are the whole
+response:
+
+```go
+func downloadEvidence(ctx *maniflex.ServerContext) error {
+    f, err := openEvidence(ctx.URLParam("id"))
+    if err != nil {
+        ctx.Abort(http.StatusNotFound, "NOT_FOUND", "evidence not found")
+        return nil
+    }
+    defer f.Close()
+
+    ctx.Writer.Header().Set("Content-Type", "image/png")
+    ctx.Writer.WriteHeader(http.StatusOK)
+    _, err = io.Copy(ctx.Writer, f) // leave ctx.Response nil
+    return err
+}
+```
+
+When the bytes are an `mfx:"file"` model field, prefer the built-in per-model
+attachment route (`GET /{model}/{id}/{field}`) instead — it runs the read
+pipeline (auth, soft-delete, tenancy) and streams for you. If you scope a
+`db.ForceFilter` to `OpList`/`OpRead`, remember to add `OpReadAttachment` too, or
+downloads bypass the filter.
 
 ## Documenting an action in OpenAPI
 

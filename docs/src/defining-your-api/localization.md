@@ -182,6 +182,28 @@ In `dynamic` mode without an explicit `?locale=` the filter hits the raw JSON
 column, which typically returns no results for plain-string comparisons — this
 is intentional: in dynamic mode the field's meaning depends on request context.
 
+## Searching localized content
+
+The `mfx:"searchable"` full-text directive (the `?q=` endpoint) indexes **plain
+`string` columns only** — tagging a `LocaleString` field `searchable` fails at
+model registration, because full-text search has no single text column to index:
+
+```text
+maniflex: model "Department" field "Name" is mfx:"searchable" but its type is
+maniflex.LocaleString; full-text search only indexes text (string) columns
+```
+
+Two ways to make localized content searchable:
+
+- **Substring filter (simplest).** Tag the `LocaleString` field `filterable` and
+  use `?filter=name:ilike:%25term%25`. Because the value is stored as one JSON
+  object, an `ilike` against the raw column matches across every locale's text at
+  once — no extra schema.
+- **Denormalized plaintext column.** Add a plain `string` column (e.g.
+  `SearchText`) tagged `searchable`, and populate it on create/update from a
+  Service-step middleware that flattens the localized strings. Use this when you
+  need true `?q=` full-text ranking rather than substring matching.
+
 ## RTL meta
 
 When the resolved locale is in `LocaleOptions.RTL`, every response envelope

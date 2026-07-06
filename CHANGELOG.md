@@ -3,6 +3,7 @@
 ## v0.1.3 (2026-07-06)
 
 - `events.DeliverWithRetry` no longer swallows handler failures silently: it logs a WARN on each retried attempt and an ERROR when all attempts are exhausted (dead-lettering when a DLQ is configured, or "event dropped" when it isn't). Previously a handler that failed every time produced no log at all, so failing events vanished without a trace.
+- `maniflex.List[T]` no longer returns zero rows when passed a non-nil `*QueryParams` whose `Limit` is left at its zero value. A hand-built `&QueryParams{Filters: …}` previously issued `LIMIT 0`; `Limit <= 0` (and `Page <= 0`) now fall back to the default, matching the `q == nil` case. Only the programmatic typed `List` was affected — the HTTP list path fills the limit from `?limit`.
 
 ## v0.1.2 (2026-06-20)
 

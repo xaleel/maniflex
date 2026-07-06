@@ -59,6 +59,15 @@ func List[T any](ctx *ServerContext, q *QueryParams) ([]*T, error) {
 	if q == nil {
 		q = &QueryParams{Page: 1, Limit: defaultLimit}
 	}
+	// A hand-built &QueryParams{} leaves Limit at 0, which would issue LIMIT 0 and
+	// return no rows. Clamp to the default so a non-nil query without an explicit
+	// limit behaves like the nil case (the HTTP path fills these from ?limit/?page).
+	if q.Limit <= 0 {
+		q.Limit = defaultLimit
+	}
+	if q.Page <= 0 {
+		q.Page = 1
+	}
 	var items []any
 	if tx != nil {
 		items, _, err = tx.FindMany(ctx.Ctx, meta, q)

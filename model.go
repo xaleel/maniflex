@@ -943,11 +943,11 @@ func collectFields(
 		case !isSlice && ft.Kind() == reflect.Struct && !isBuiltinStruct(ft):
 			companions[sf.Name] = rf
 
-		// ── Convention FK: string field whose name ends in "ID" (but isn't "ID")─
-		// mfx:"norelation" opts the field out, so it falls through to a plain
-		// scalar column instead of implying a BelongsTo relation.
-		case !tags.NoRelation && !isSlice && ft.Kind() == reflect.String &&
-			strings.HasSuffix(sf.Name, "ID") && sf.Name != "ID":
+		// ── Inferred relation: bare mfx:"relation" on a scalar FK. The target
+		// model is the field name with a trailing "ID" stripped (AuthorID →
+		// Author). Relations are NO LONGER inferred from the "ID" suffix alone —
+		// a field must opt in with mfx:"relation" (or mfx:"relation:Target").
+		case tags.RelationInfer && !isSlice:
 			*conventionFKs = append(*conventionFKs, rf)
 
 		// ── Everything else is a scalar DB column ─────────────────────────────

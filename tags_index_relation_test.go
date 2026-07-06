@@ -1,8 +1,10 @@
 package maniflex_test
 
 // Coverage for two registration-time tag directives:
-//   - mfx:"index"      → an IndexSpec is appended so AutoMigrate creates the index (§10.4)
-//   - mfx:"norelation" → a convention-FK field stays a plain scalar column (§10.2)
+//   - mfx:"index"    → an IndexSpec is appended so AutoMigrate creates the index (§10.4)
+//   - mfx:"relation" → an FK field opts IN to a BelongsTo relation; untagged
+//     "<Name>ID" fields are plain scalar columns (relations are no longer inferred
+//     from the "ID" suffix alone).
 //
 // Both are resolved entirely by ScanModel, so these are fast meta-level tests.
 // hasIndexOnColumn / scan / captureWarnings are shared with scheduled_test.go.
@@ -45,10 +47,10 @@ func TestIndexTag_AppendsIndexSpec(t *testing.T) {
 
 type indexedFKModel struct {
 	maniflex.BaseModel
-	OwnerID string `json:"owner_id" mfx:"index"` // convention FK + index on the FK column
+	OwnerID string `json:"owner_id" mfx:"index"` // plain scalar FK column + index
 }
 
-func TestIndexTag_OnConventionFKColumn(t *testing.T) {
+func TestIndexTag_OnFKColumn(t *testing.T) {
 	meta := scan(t, indexedFKModel{})
 	// The FK column is a real DB column, so indexing it is valid and useful.
 	if n := hasIndexOnColumn(meta, "owner_id"); n != 1 {
@@ -68,56 +70,44 @@ func TestIndexTag_NotDuplicatedWhenUserDeclared(t *testing.T) {
 	}
 }
 
-// ── 10.2: mfx:"norelation" ──────────────────────────────────────────────────────
+// ── mfx:"relation" opt-in (and untagged *ID is NOT a relation) ────────────────
 
-type relOptOutModel struct {
+type relInferModel struct {
 	maniflex.BaseModel
-	UserID string `json:"user_id"`                  // convention FK → relation "user"
-	TeamID string `json:"team_id" mfx:"norelation"` // opted out → scalar only
+	UserID   string `json:"user_id"`                    // untagged → plain scalar, NO relation
+	AuthorID string `json:"author_id" mfx:"relation"`   // opt IN → BelongsTo "author"
+	TeamID   string `json:"team_id"   mfx:"norelation"` // deprecated no-op → scalar
 }
 
-func TestNoRelation_OptsOutConventionFK(t *testing.T) {
-	meta := scan(t, relOptOutModel{})
+func TestRelation_OptInOnly(t *testing.T) {
+	meta := scan(t, relInferModel{})
 
-	// UserID still produces the convention relation.
-	if rel := meta.RelationByKey("user"); rel == nil {
-		t.Error("UserID should still produce a convention BelongsTo relation 'user'")
+	// Untagged UserID no longer auto-relates — it's just a column.
+	if rel := meta.RelationByKey("user"); rel != nil {
+		t.Errorf("untagged UserID must NOT produce a relation, got %+v", rel)
 	}
-
-	// TeamID does NOT produce a relation...
-	if rel := meta.RelationByKey("team"); rel != nil {
-		t.Errorf("TeamID mfx:\"norelation\" must not produce a relation, got %+v", rel)
-	}
-	if rel := meta.RelationByModel("Team"); rel != nil {
-		t.Errorf("TeamID mfx:\"norelation\" must not reference a Team model, got %+v", rel)
-	}
-
-	// ...but it IS still a plain scalar DB column.
-	if f := meta.FieldByDBName("team_id"); f == nil {
-		t.Error("team_id should remain a scalar column even when opted out of the relation")
-	} else if !f.Tags.NoRelation {
-		t.Error("team_id field should carry Tags.NoRelation = true")
-	}
-
-	// The FK column for the kept relation is still present too.
 	if f := meta.FieldByDBName("user_id"); f == nil {
-		t.Error("user_id scalar column missing")
+		t.Error("user_id should still be a scalar column")
 	}
-}
 
-// norelation on a non-convention field (one that never implied a relation) is a
-// harmless no-op: the field stays a scalar, no relation appears or disappears.
-type relOptOutNoopModel struct {
-	maniflex.BaseModel
-	Title string `json:"title" mfx:"norelation"`
-}
-
-func TestNoRelation_NoopOnPlainField(t *testing.T) {
-	meta := scan(t, relOptOutNoopModel{})
-	if len(meta.Relations) != 0 {
-		t.Errorf("expected no relations, got %d", len(meta.Relations))
+	// mfx:"relation" opts in: AuthorID → BelongsTo Author (target inferred by
+	// stripping the ID suffix).
+	rel := meta.RelationByKey("author")
+	if rel == nil {
+		t.Fatal(`AuthorID mfx:"relation" should produce a BelongsTo relation "author"`)
 	}
-	if f := meta.FieldByDBName("title"); f == nil {
-		t.Error("title should remain a scalar column")
+	if rel.Kind != maniflex.BelongsTo || rel.RelatedModel != "Author" {
+		t.Errorf("author relation wrong: kind=%v target=%q", rel.Kind, rel.RelatedModel)
+	}
+	if f := meta.FieldByDBName("author_id"); f == nil {
+		t.Error("author_id FK column should exist")
+	}
+
+	// norelation is now a harmless no-op: still a scalar, no relation, no error.
+	if rel := meta.RelationByKey("team"); rel != nil {
+		t.Errorf("norelation TeamID must not relate, got %+v", rel)
+	}
+	if f := meta.FieldByDBName("team_id"); f == nil {
+		t.Error("team_id should remain a scalar column")
 	}
 }

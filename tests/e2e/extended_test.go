@@ -77,7 +77,7 @@ type Contact struct {
 type Attachment struct {
 	maniflex.BaseModel
 	Name   string `json:"name"    db:"name"    mfx:"required"`
-	UserID string `json:"user_id" db:"user_id" mfx:"filterable"`
+	UserID string `json:"user_id" db:"user_id" mfx:"filterable,relation"`
 }
 
 // ── M6: response.Logging and response.Envelope ───────────────────────────────

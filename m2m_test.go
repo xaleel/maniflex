@@ -21,9 +21,9 @@ type m2mTag struct {
 }
 type M2MProductTag struct {
 	maniflex.BaseModel
-	ProductID  string     `json:"product_id"  db:"product_id"  mfx:"required"`
-	TagID      string     `json:"tag_id"      db:"tag_id"      mfx:"required"`
-	AssignedBy string     `json:"assigned_by" db:"assigned_by"`
+	ProductID  string `json:"product_id"  db:"product_id"  mfx:"required,relation"`
+	TagID      string `json:"tag_id"      db:"tag_id"      mfx:"required,relation"`
+	AssignedBy string `json:"assigned_by" db:"assigned_by"`
 	Product    m2mProduct
 	Tag        m2mTag
 }

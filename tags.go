@@ -43,11 +43,16 @@ type FieldTags struct {
 	Relation string
 	OnDelete OnDeleteAction
 
-	// NoRelation opts a convention-FK field (one whose name ends in "ID") out of
-	// the automatic ID-suffix relation, so e.g. `UserID string mfx:"norelation"`
-	// stays a plain scalar column instead of implying a BelongsTo relation to a
-	// User model. Has no effect on fields that aren't convention FKs or that carry
-	// an explicit relation: tag.
+	// RelationInfer is set by a bare mfx:"relation" tag. It marks a scalar FK field
+	// as a BelongsTo whose target is inferred from the field name (the "ID" suffix
+	// is stripped, e.g. AuthorID → Author). Use mfx:"relation:Target" instead when
+	// the field name doesn't match the target model.
+	RelationInfer bool
+
+	// Deprecated: NoRelation (mfx:"norelation") is a no-op. Relations are no longer
+	// inferred from a field's "ID" suffix — tag the field mfx:"relation" (or
+	// mfx:"relation:Target") to opt IN instead. The tag is still parsed so existing
+	// models compile.
 	NoRelation bool
 
 	// Through is set on []SliceFields to declare a many-to-many relation via a
@@ -211,6 +216,8 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 			t.Unique = true
 		case part == "index":
 			t.Index = true
+		case part == "relation":
+			t.RelationInfer = true
 		case part == "norelation":
 			t.NoRelation = true
 		case part == "searchable":

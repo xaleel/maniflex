@@ -7,6 +7,7 @@
 - `GET /health` with `HealthCheckDB: true` now reports `db:"ok"` (or `"error"`) even before any model is registered. The ping set previously came only from registered models, so a bootstrapping server with a reachable `Config.DB` but no models yet reported `db:"unknown"`. `Config.DB` is now always included.
 - Raw SQL (`ctx.RawQuery`/`ctx.RawExec` and the adapter's `Raw`) now rebinds `?` placeholders to the adapter's dialect, so `?` works on Postgres (`$1, $2, …`) as well as SQLite. `?` inside string literals is left untouched.
 - `ctx.RawQuery` now returns the rows from a data-modifying statement with a `RETURNING` clause (`UPDATE … RETURNING`, `INSERT … RETURNING`), on both the autocommit and in-transaction paths. Previously query-vs-exec was decided by a `SELECT`-prefix check, so a `RETURNING` statement was routed to `ExecContext` and its result set was silently discarded.
+- `mfx:"unique"` is now honoured when the column is added to an existing table via `ALTER TABLE ADD COLUMN`, not only when the table is first created. AutoMigrate creates a `UNIQUE INDEX` (`uidx_<table>_<column>`) on both paths. Previously the constraint was silently skipped (warn only) on the add-column path, so a uniqueness guarantee could vanish on a redeploy that added the column. **Behaviour change:** if existing rows already violate the new constraint, migration now fails with an error naming the table and column instead of skipping — resolve duplicate data before deploying.
 
 ## v0.1.2 (2026-06-20)
 

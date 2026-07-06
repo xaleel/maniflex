@@ -217,6 +217,15 @@ values in that column **fails migration** (the index build errors, naming the
 table and column) rather than silently dropping the constraint; resolve the
 duplicates before deploying.
 
+### JSON and other custom columns
+
+A bare `map[string]any`, `map[string]string`, or `[]string` field has **no SQL
+column mapping** and fails `AutoMigrate` with a clear error. Wrap it in a named
+type that implements `maniflex.SQLTyper` (plus `driver.Valuer` + `sql.Scanner`)
+so it controls its own column type — e.g. a `JSONMap` that maps to `JSONB` on
+Postgres and `TEXT` on SQLite. `maniflex.LocaleString` is a built-in example. To
+keep such a field out of the database entirely, tag it `mfx:"-"`.
+
 ## Relation directives
 
 A field may declare a relationship to another model. Relations are **opt-in** —

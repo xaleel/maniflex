@@ -54,6 +54,17 @@ Available adapters: `events/redis`, `events/kafka`, `events/nats`,
 `events/rabbitmq`. The in-process adapter (`events.NewInProcessBus`) ships in
 the core module for tests.
 
+> **Broker adapters are nested modules.** Adapters with heavy dependencies (e.g.
+> NATS) ship as their own Go modules — `go get github.com/xaleel/maniflex/events/nats`
+> — so the core module stays dependency-light. Pin each one explicitly in `go.mod`.
+
+> **NATS: one bus binds one JetStream stream.** `nats.New(nc, stream)` ties a bus
+> to a single stream for both publish and subscribe, and JetStream rejects two
+> streams whose subjects overlap. A service that publishes its own subjects while
+> consuming another service's subjects needs a stream-ownership decision — either
+> a shared stream, or consume from the owning service's stream. Create the stream
+> yourself (scoped to your business subjects, not `">"`); `New` does not create it.
+
 ---
 
 ## Job queue
@@ -151,6 +162,12 @@ go w.Run(ctx)
 cancel()
 w.Shutdown(shutdownCtx)
 ```
+
+> **Migrate before you launch background goroutines.** `server.Go(fn)` (and a bare
+> `go w.Run(ctx)`) starts running immediately, but `AutoMigrate` only runs inside
+> `Start()`. A worker that touches a table before `Start()` migrates it races table
+> creation. When you launch workers yourself, call `server.MigrateOnly(ctx)` after
+> `SetDB` and **before** starting them so the tables exist.
 
 `Result` carries an optional `URL` (pre-signed storage URL for file outputs)
 and `Output` (small structured JSON). Both are surfaced through the status model

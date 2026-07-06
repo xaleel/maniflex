@@ -20,15 +20,34 @@ rows, err := ctx.RawQuery(
 )
 ```
 
-`rows` is a `[]map[string]any` with column-name keys. Use driver-appropriate
-placeholders (`$1`, `$2` for Postgres; `?` for SQLite). **Never** interpolate
-values into the query string — that's a SQL injection.
+`rows` is a `[]map[string]any` with column-name keys. Placeholders are rebound to
+the adapter's dialect, so `?` works on both SQLite and Postgres (`$1`, `$2`).
+**Never** interpolate values into the query string — that's a SQL injection.
 
 `ctx.RawExec` is the same shape for non-`SELECT` statements and returns the
-number of rows affected.
+number of rows affected. `ctx.RawQuery` also returns the rows from a
+data-modifying statement with a `RETURNING` clause (e.g. `UPDATE … RETURNING id`).
 
 When `ctx.Tx` is non-nil, both methods participate in the active transaction
 automatically.
+
+### Portability pitfalls
+
+Hand-written SQL runs on both SQLite and Postgres, which differ in ways the ORM
+normally hides:
+
+- **Parameterise booleans.** `WHERE active = 1` works on SQLite but errors on
+  Postgres (`operator does not exist: boolean = integer`). Bind a Go `bool`
+  instead: `WHERE active = ?`, `true`.
+- **Know your column names.** A column's name comes from the field's `db` tag,
+  else its `json` tag, else the snake-cased field name. A camelCase `json` tag
+  (`json:"orderId"`) produces a **camelCase column** (`orderId`) — and Postgres
+  folds unquoted identifiers in hand-written SQL to lowercase, so `orderId`
+  silently won't match. Keep raw SQL to snake_case columns, or set an explicit
+  `db:"snake_case"`. SQLite is case-insensitive, so this only bites on Postgres.
+- **Pin table names.** Physical table names are pluralised implicitly
+  (`VisitorDay` → `visitor_days`). When you reference tables in raw SQL, set
+  `ModelConfig.TableName` so the name can't drift from what your SQL expects.
 
 ## Structured aggregation: `ctx.Aggregate`
 

@@ -408,12 +408,15 @@ func (c *ServerContext) BeginTx(ctx context.Context, opts *TxOptions) (Tx, error
 	return tx, nil
 }
 
-// RawQuery executes a parameterised SELECT query and returns each row as a
-// column-name → value map. When ctx.Tx is active the query participates in
-// the transaction; otherwise it uses the adapter's read pool.
+// RawQuery executes a parameterised statement that returns rows and returns each
+// row as a column-name → value map. This is a SELECT, a CTE-SELECT, or a
+// data-modifying statement with a RETURNING clause (e.g.
+// UPDATE … RETURNING id — a "claim-and-fetch" pattern). When ctx.Tx is active
+// the query participates in the transaction; otherwise a plain SELECT uses the
+// read pool and a RETURNING write uses the write pool.
 //
-// Use driver-appropriate placeholders ($1/$2 for Postgres, ? for SQLite).
-// Never interpolate values directly into the query string.
+// Placeholders are rebound to the adapter's dialect, so `?` works on both SQLite
+// and Postgres ($N). Never interpolate values directly into the query string.
 func (c *ServerContext) RawQuery(query string, args ...any) ([]Row, error) {
 	if rt, ok := c.Tx.(rawableT); ok {
 		return rt.RawQueryContext(c.Ctx, strings.TrimSpace(query), args...)

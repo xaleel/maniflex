@@ -4,13 +4,24 @@ import (
 	stdsql "database/sql"
 	"context"
 	"fmt"
+	"strings"
 )
 
-// Migrate creates the job_queue table if it does not exist.
-// Call this once at startup before creating a Queue.
-// driver must be "postgres" or "sqlite".
-func Migrate(ctx context.Context, db *stdsql.DB, driver string) error {
+// Migrate creates the job queue table if it does not exist.
+// Call this once at startup before creating a Queue. driver must be "postgres"
+// or "sqlite". Pass WithTableName to migrate a non-default table (the table and
+// its indexes are renamed consistently so multiple queues can share a database).
+func Migrate(ctx context.Context, db *stdsql.DB, driver string, opts ...Option) error {
+	cfg := newConfig(opts)
 	isPG := driver == "postgres"
+
+	// rename rewrites the default table/index identifiers to the configured table.
+	rename := func(s string) string {
+		if cfg.table == defaultTableName {
+			return s
+		}
+		return strings.ReplaceAll(s, defaultTableName, cfg.table)
+	}
 
 	tsType := "TEXT"
 	if isPG {
@@ -39,7 +50,7 @@ func Migrate(ctx context.Context, db *stdsql.DB, driver string) error {
   "completed_at" %[1]s       NULL
 )`, tsType)
 
-	if _, err := db.ExecContext(ctx, ddl); err != nil {
+	if _, err := db.ExecContext(ctx, rename(ddl)); err != nil {
 		return fmt.Errorf("jobs/sql: migrate: %w", err)
 	}
 
@@ -52,7 +63,7 @@ func Migrate(ctx context.Context, db *stdsql.DB, driver string) error {
 		`CREATE INDEX IF NOT EXISTS "job_queue_group_key_status"  ON "job_queue" ("group_key","status")`,
 	}
 	for _, idx := range indexes {
-		if _, err := db.ExecContext(ctx, idx); err != nil {
+		if _, err := db.ExecContext(ctx, rename(idx)); err != nil {
 			return fmt.Errorf("jobs/sql: migrate index: %w", err)
 		}
 	}

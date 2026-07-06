@@ -70,6 +70,17 @@ type WorkerConfig struct {
 	EventBus any
 }
 
+// unhandledRequeueDelay is how long a job of an unhandled type waits before it
+// becomes claimable again, so requeuing it doesn't hot-loop while a worker that
+// handles the type picks it up. Defaults to 5s (or EmptyQueueBackoff if larger).
+func (w *Worker) unhandledRequeueDelay() time.Duration {
+	const d = 5 * time.Second
+	if w.cfg.EmptyQueueBackoff > d {
+		return w.cfg.EmptyQueueBackoff
+	}
+	return d
+}
+
 // LeaseRenewer is an optional interface Source adapters may implement to allow
 // the worker to extend a job's lease while it is running.
 type LeaseRenewer interface {
@@ -249,9 +260,15 @@ func (w *Worker) handle(ctx context.Context, j Job) {
 
 	h, ok := w.cfg.Handlers[j.Type]
 	if !ok {
+		// A type-restricted worker sharing a table with other workers must not
+		// destroy job types it doesn't handle. Requeue (Nack) so a worker that
+		// does handle this type can claim it, instead of dead-lettering it.
 		err := fmt.Errorf("no handler registered for job type %q", j.Type)
-		logger.Error("[jobs] " + err.Error())
-		w.markDead(ctx, j, err)
+		logger.Warn("[jobs] requeuing job of unhandled type", slog.String("type", j.Type), slog.String("job_id", j.ID))
+		if nackErr := w.cfg.Source.Nack(context.Background(), j.ID, err, w.unhandledRequeueDelay()); nackErr != nil {
+			logger.Error("[jobs] requeue of unhandled type failed",
+				slog.String("job_id", j.ID), slog.String("error", nackErr.Error()))
+		}
 		return
 	}
 

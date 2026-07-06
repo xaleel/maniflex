@@ -8,6 +8,12 @@ layers. This page collects the practical checklist.
 - **Use `auth.JWTAuth` with an asymmetric algorithm** (`RS256` / `ES256`) when
   tokens are issued by an external provider. Symmetric `HS256` works when the
   signing service and the API share infrastructure.
+- **Use `auth.JWKSAuth(jwksURL, opts…)` when the issuer publishes a rotating
+  JWK Set** (`/.well-known/jwks.json`). It fetches and caches the keys, selects
+  the signing key by the token's `kid`, and refetches on an unknown `kid` so key
+  rotation needs no redeploy. All `JWTOptions` (Issuer, Audience, claim mappings,
+  ClockSkew) apply. Prefer this over pinning a single static `PublicKey` against
+  an issuer that rotates. RSA (`RS256/384/512`) and EC (`ES256/384/512`) supported.
 - **Set `JWTOptions.Issuer` and `Audience`** so tokens issued for another
   audience are rejected.
 - **Set `JWTOptions.TenantClaim`** for multi-tenant APIs — the verified value
@@ -23,6 +29,18 @@ server.Pipeline.Auth.Register(auth.JWTAuth(secret, auth.JWTOptions{
     Audience:    "https://api.example.com",
     TenantClaim: "org_id",
 }), maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete))
+```
+
+Verifying tokens from an issuer that rotates its signing keys via JWKS:
+
+```go
+server.Pipeline.Auth.Register(auth.JWKSAuth(
+    "https://accounts.example.com/.well-known/jwks.json",
+    auth.JWTOptions{
+        Issuer:      "https://accounts.example.com",
+        Audience:    "https://api.example.com",
+        TenantClaim: "org_id",
+    }))
 ```
 
 ## Authorisation

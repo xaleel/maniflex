@@ -110,7 +110,22 @@ func JWTAuth(secret string, opts ...JWTOptions) maniflex.MiddlewareFunc {
 		opt = opts[0]
 	}
 	opt.applyDefaults()
+	return jwtMiddleware(secret, opt, staticResolver(opt.PublicKey))
+}
 
+// keyResolver returns the verification key for a token given its header "kid"
+// and "alg". A nil key means "verify with the HMAC secret". The static path
+// ignores kid; the JWKS path selects by kid.
+type keyResolver func(kid, alg string) (crypto.PublicKey, error)
+
+// staticResolver always returns the configured key (nil for HMAC), ignoring kid.
+func staticResolver(pub crypto.PublicKey) keyResolver {
+	return func(string, string) (crypto.PublicKey, error) { return pub, nil }
+}
+
+// jwtMiddleware is the shared verification core used by both JWTAuth (static
+// key) and JWKSAuth (kid-selected key from a rotating JWK Set).
+func jwtMiddleware(secret string, opt JWTOptions, resolve keyResolver) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
 		raw := ctx.Request.Header.Get(opt.Header)
 		if opt.Header == "Authorization" {
@@ -126,7 +141,7 @@ func JWTAuth(secret string, opts ...JWTOptions) maniflex.MiddlewareFunc {
 			return nil
 		}
 
-		claims, err := parseJWT(raw, secret, opt.PublicKey)
+		claims, err := parseJWT(raw, secret, resolve)
 		if err != nil {
 			ctx.Abort(http.StatusUnauthorized, "INVALID_TOKEN", err.Error())
 			return nil
@@ -372,7 +387,7 @@ func BlockOperation(ops ...maniflex.Operation) maniflex.MiddlewareFunc {
 // signing algorithm is selected from the token header and must match the key
 // material supplied; mismatches are rejected to avoid algorithm-confusion
 // attacks (e.g. an HS256 token forged against an RSA public key).
-func parseJWT(token, secret string, pub crypto.PublicKey) (map[string]any, error) {
+func parseJWT(token, secret string, resolve keyResolver) (map[string]any, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("malformed token: expected 3 parts")
@@ -384,6 +399,7 @@ func parseJWT(token, secret string, pub crypto.PublicKey) (map[string]any, error
 	}
 	var hdr struct {
 		Alg string `json:"alg"`
+		Kid string `json:"kid"`
 	}
 	if err := json.Unmarshal(headerBytes, &hdr); err != nil {
 		return nil, fmt.Errorf("malformed token header: %w", err)
@@ -395,6 +411,10 @@ func parseJWT(token, secret string, pub crypto.PublicKey) (map[string]any, error
 		return nil, fmt.Errorf("malformed token signature")
 	}
 
+	pub, err := resolve(hdr.Kid, hdr.Alg)
+	if err != nil {
+		return nil, err
+	}
 	if err := verifySignature(hdr.Alg, signingInput, sig, secret, pub); err != nil {
 		return nil, err
 	}

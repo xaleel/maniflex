@@ -53,6 +53,15 @@ own database work (via `ctx.GetModel`, `ctx.RawExec`, or directly).
 trimmed-out steps with `ForOperation(maniflex.OpAction)` does not run; only `Auth`
 and `Response` middleware do.
 
+> **DB-step middlewares don't cover actions.** Anything registered on
+> `Pipeline.DB` — including `db.RateLimit`, `db.AuditLog`, `db.ForceFilter`, and
+> `db.Tenancy` — is silently skipped for action routes. For an all-action service
+> this means zero rate limiting and zero audit records unless you wire them per
+> action. Use the action-flavoured variants in the action's own `Middleware`
+> list: `db.RateLimitAction(cfg)` (keys on the caller + method/path) and
+> `db.AuditLogAction(sink)` (records actor/resource/result from the action
+> context). Scope ownership by hand (e.g. a filter you apply in the handler).
+
 ## Per-action middleware
 
 Actions can carry their own middleware list, which runs between `Auth` and the

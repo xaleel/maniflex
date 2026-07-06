@@ -59,8 +59,7 @@ func newRealtimeStack(t *testing.T, hubCfg realtime.HubConfig) *realtimeStack {
 	}
 
 	srv := maniflex.New(maniflex.Config{
-		PathPrefix:  "/api",
-		AutoMigrate: true,
+		PathPrefix: "/api",
 	})
 	srv.MustRegister(testutil.User{}, testutil.Post{})
 

@@ -25,7 +25,7 @@ import (
 func openServer(t *testing.T) (*maniflex.Server, string) {
 	t.Helper()
 	path, _ := tempDB(t)
-	s := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+	s := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 	db, err := sqlite.Open(path, s.Registry())
 	if err != nil {
 		t.Fatalf("sqlite.Open: %v", err)
@@ -253,7 +253,7 @@ func TestMigrate(t *testing.T) {
 
 	t.Run("nil_db_adapter_returns_error", func(t *testing.T) {
 		t.Parallel()
-		s := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		err := maniflex.Migrate(s, nil)
 		if err == nil {
 			t.Fatal("expected error when DB adapter is nil")
@@ -267,7 +267,7 @@ func TestMigrate(t *testing.T) {
 		path, cleanup := tempDB(t)
 		defer cleanup()
 
-		s := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s.MustRegister(productV1{}, maniflex.ModelConfig{TableName: "products"})
 		db, err := sqlite.Open(path, s.Registry())
 		if err != nil {

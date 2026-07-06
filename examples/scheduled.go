@@ -47,8 +47,7 @@ type Banner struct {
 
 func main() {
 	server := maniflex.New(maniflex.Config{
-		PathPrefix:  "/api",
-		AutoMigrate: true,
+		PathPrefix: "/api",
 	})
 	server.MustRegister(Article{}, Banner{})
 

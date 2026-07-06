@@ -303,10 +303,10 @@ type shutdownOptions struct {
 
 // shutdownServer holds a running Maniflex server started on a random free port.
 type shutdownServer struct {
-	url    string              // e.g. "http://127.0.0.1:54321"
-	server *maniflex.Server            // direct handle for calling Shutdown()
-	cancel context.CancelFunc  // cancels the StartWithContext context
-	done   <-chan error         // receives the return value of StartWithContext
+	url    string             // e.g. "http://127.0.0.1:54321"
+	server *maniflex.Server   // direct handle for calling Shutdown()
+	cancel context.CancelFunc // cancels the StartWithContext context
+	done   <-chan error       // receives the return value of StartWithContext
 }
 
 // newShutdownServer starts a real Maniflex server on a random free TCP port and
@@ -332,7 +332,6 @@ func newShutdownServer(t *testing.T, opts shutdownOptions) *shutdownServer {
 	server := maniflex.New(maniflex.Config{
 		Port:            port,
 		PathPrefix:      "/api",
-		AutoMigrate:     true,
 		ShutdownTimeout: opts.timeout,
 	})
 	server.MustRegister(testutil.DefaultModels()...)

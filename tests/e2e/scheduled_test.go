@@ -62,7 +62,7 @@ func newSchedServer(t *testing.T, clock func() time.Time) *e2eSchedSetup {
 	//
 	// Since testutil.Server doesn't expose the Server, we create a standalone runner
 	// pointed at the same DB and registry by creating a minimal Maniflex wrapper.
-	mfxSrv := maniflex.New(maniflex.Config{AutoMigrate: false})
+	mfxSrv := maniflex.New(maniflex.Config{DisableAutoMigrate: true})
 	mfxSrv.MustRegister(e2eArticle{}, e2eBanner{})
 	mfxSrv.SetDB(capturedDB)
 

@@ -18,7 +18,7 @@ import (
 // on it, and returns the panel handler plus the underlying server.
 func adminPanel(t *testing.T, cfg admin.Config) (http.Handler, *maniflex.Server) {
 	t.Helper()
-	server := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: true})
+	server := maniflex.New(maniflex.Config{PathPrefix: "/api"})
 	server.MustRegister(testutil.User{}, testutil.Post{}, testutil.Comment{})
 
 	db, err := sqlite.Open(":memory:", server.Registry())

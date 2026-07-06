@@ -74,9 +74,8 @@ func main() {
 	// Bodies is opt-in (may log sensitive fields) and set explicitly here so
 	// we can see parsed body field names in the Deserialize step.
 	server := maniflex.New(maniflex.Config{
-		Port:        8081,
-		AutoMigrate: true,
-		Logger:      debugLogger,
+		Port:   8081,
+		Logger: debugLogger,
 		Trace: maniflex.PipelineTrace{
 			Enabled: true, // → Steps + Timings + Aborts
 			Bodies:  true, // also log parsed body field names

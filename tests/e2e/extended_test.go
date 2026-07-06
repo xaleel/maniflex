@@ -694,7 +694,7 @@ func TestMedium_UniqueFieldSelfExclusion(t *testing.T) {
 		rawDB.Exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
 		t.Cleanup(func() { rawDB.Close() })
 
-		server := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		server := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		for _, m := range models {
 			server.MustRegister(m)
 		}

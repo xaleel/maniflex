@@ -153,7 +153,7 @@ func TestAutoMigrate(t *testing.T) {
 		defer cleanup()
 
 		// First boot: create table with V1 schema
-		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s1.MustRegister(productV1{}, maniflex.ModelConfig{TableName: "products"})
 		a1 := openAdapter(t, path, s1.Registry())
 		s1.SetDB(a1)
@@ -169,7 +169,7 @@ func TestAutoMigrate(t *testing.T) {
 		}
 
 		// Second boot: migrate to V2 (adds price, in_stock, category)
-		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s2.MustRegister(productV2{}, maniflex.ModelConfig{TableName: "products"})
 		a2 := openAdapter(t, path, s2.Registry())
 		s2.SetDB(a2)
@@ -190,7 +190,7 @@ func TestAutoMigrate(t *testing.T) {
 		defer cleanup()
 
 		// Boot V2
-		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s1.MustRegister(productV2{}, maniflex.ModelConfig{TableName: "products"})
 		a1 := openAdapter(t, path, s1.Registry())
 		if err := a1.AutoMigrate(context.Background(), s1.Registry()); err != nil {
@@ -198,7 +198,7 @@ func TestAutoMigrate(t *testing.T) {
 		}
 
 		// Boot V3 (adds nullable *string description)
-		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s2.MustRegister(productV3{}, maniflex.ModelConfig{TableName: "products"})
 		a2 := openAdapter(t, path, s2.Registry())
 		if err := a2.AutoMigrate(context.Background(), s2.Registry()); err != nil {
@@ -218,7 +218,7 @@ func TestAutoMigrate(t *testing.T) {
 		defer cleanup()
 
 		// Create table and insert a row at V1 schema
-		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s1.MustRegister(productV1{}, maniflex.ModelConfig{TableName: "products"})
 		a1 := openAdapter(t, path, s1.Registry())
 		s1.SetDB(a1)
@@ -237,7 +237,7 @@ func TestAutoMigrate(t *testing.T) {
 		id := resp.ID()
 
 		// Migrate to V2
-		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s2.MustRegister(productV2{}, maniflex.ModelConfig{TableName: "products"})
 		a2 := openAdapter(t, path, s2.Registry())
 		if err := a2.AutoMigrate(context.Background(), s2.Registry()); err != nil {
@@ -264,7 +264,7 @@ func TestAutoMigrate(t *testing.T) {
 		defer cleanup()
 
 		// Create V1 (name only) and insert a row
-		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s1.MustRegister(productV1{}, maniflex.ModelConfig{TableName: "products"})
 		a1 := openAdapter(t, path, s1.Registry())
 		s1.SetDB(a1)
@@ -279,7 +279,7 @@ func TestAutoMigrate(t *testing.T) {
 		id := ts1.MustID(ts1.POST("/products", map[string]any{"name": "Widget"}))
 
 		// Migrate to V4 (adds status with default:"active")
-		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s2.MustRegister(productV4{}, maniflex.ModelConfig{TableName: "products"})
 		a2 := openAdapter(t, path, s2.Registry())
 		if err := a2.AutoMigrate(context.Background(), s2.Registry()); err != nil {
@@ -304,7 +304,7 @@ func TestAutoMigrate(t *testing.T) {
 		path, cleanup := tempDB(t)
 		defer cleanup()
 
-		s := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s.MustRegister(productV2{}, maniflex.ModelConfig{TableName: "products"})
 		a := openAdapter(t, path, s.Registry())
 
@@ -328,7 +328,7 @@ func TestAutoMigrate(t *testing.T) {
 		path, cleanup := tempDB(t)
 		defer cleanup()
 
-		s := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s.MustRegister(productV1{}, maniflex.ModelConfig{TableName: "products"})
 		a := openAdapter(t, path, s.Registry())
 
@@ -350,7 +350,7 @@ func TestAutoMigrate(t *testing.T) {
 		defer cleanup()
 
 		// Create with V2 (has price, in_stock, category)
-		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s1.MustRegister(productV2{}, maniflex.ModelConfig{TableName: "products"})
 		a1 := openAdapter(t, path, s1.Registry())
 		if err := a1.AutoMigrate(context.Background(), s1.Registry()); err != nil {
@@ -370,7 +370,7 @@ func TestAutoMigrate(t *testing.T) {
 		slog.SetDefault(slog.New(handler))
 		t.Cleanup(func() { slog.SetDefault(oldDefault) })
 
-		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s2.MustRegister(productV1{}, maniflex.ModelConfig{TableName: "products"})
 		a2 := openAdapter(t, path, s2.Registry())
 		if err := a2.AutoMigrate(context.Background(), s2.Registry()); err != nil {
@@ -416,7 +416,7 @@ func TestAutoMigrate(t *testing.T) {
 		defer cleanup()
 
 		// Boot V2, insert a row
-		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s1.MustRegister(productV2{}, maniflex.ModelConfig{TableName: "products"})
 		a1 := openAdapter(t, path, s1.Registry())
 		s1.SetDB(a1)
@@ -433,7 +433,7 @@ func TestAutoMigrate(t *testing.T) {
 		}))
 
 		// Re-migrate with V1 (no price/in_stock/category in struct) — must not error.
-		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s2.MustRegister(productV1{}, maniflex.ModelConfig{TableName: "products"})
 		a2 := openAdapter(t, path, s2.Registry())
 		if err := a2.AutoMigrate(context.Background(), s2.Registry()); err != nil {
@@ -468,7 +468,7 @@ func TestAutoMigrate(t *testing.T) {
 		const n = 5
 		errs := make([]error, n)
 		var wg sync.WaitGroup
-		si := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		si := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		si.MustRegister(productV2{}, maniflex.ModelConfig{TableName: "products"})
 		ai := openAdapter(t, path, si.Registry())
 		for i := range n {
@@ -517,7 +517,7 @@ func TestAutoMigrate(t *testing.T) {
 		defer cleanup()
 
 		// Boot V1 for two models
-		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s1.MustRegister(
 			productV1{}, maniflex.ModelConfig{TableName: "products"},
 			itemV1{}, maniflex.ModelConfig{TableName: "items"},
@@ -528,7 +528,7 @@ func TestAutoMigrate(t *testing.T) {
 		}
 
 		// Boot V2 for both models
-		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s2.MustRegister(
 			productV2{}, maniflex.ModelConfig{TableName: "products"},
 			itemV2{}, maniflex.ModelConfig{TableName: "items"},
@@ -554,7 +554,7 @@ func TestAutoMigrate(t *testing.T) {
 		defer cleanup()
 
 		// First: create with V1 via sqlite.Open
-		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s1.MustRegister(productV1{}, maniflex.ModelConfig{TableName: "products"})
 		db1, err := sqlite.Open(path, s1.Registry())
 		if err != nil {
@@ -567,7 +567,7 @@ func TestAutoMigrate(t *testing.T) {
 		db1.Close()
 
 		// Second: migrate to V2 via sqlite.Open
-		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: false})
+		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
 		s2.MustRegister(productV2{}, maniflex.ModelConfig{TableName: "products"})
 		db2, err := sqlite.Open(path, s2.Registry())
 		if err != nil {

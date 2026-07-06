@@ -49,7 +49,7 @@ func newTestServer(t *testing.T, models []any, batchSize int) *testServer {
 	now := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
 	nowFunc := func() time.Time { return now }
 
-	server := maniflex.New(maniflex.Config{AutoMigrate: true})
+	server := maniflex.New(maniflex.Config{})
 	server.MustRegister(models...)
 
 	db, err := sqlite.Open(":memory:", server.Registry())

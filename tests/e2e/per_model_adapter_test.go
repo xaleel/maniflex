@@ -99,8 +99,7 @@ func TestPerModelAdapter(t *testing.T) {
 		t.Cleanup(func() { dbA.Close(); dbB.Close() })
 
 		server := maniflex.New(maniflex.Config{
-			PathPrefix:  "/api",
-			AutoMigrate: true,
+			PathPrefix: "/api",
 		})
 		server.MustRegister(
 			testutil.User{}, maniflex.ModelConfig{Adapter: dbA},
@@ -136,7 +135,7 @@ func TestPerModelAdapter(t *testing.T) {
 		}
 		t.Cleanup(func() { dbA.Close() })
 
-		server := maniflex.New(maniflex.Config{AutoMigrate: true})
+		server := maniflex.New(maniflex.Config{})
 		server.MustRegister(
 			testutil.User{}, maniflex.ModelConfig{Adapter: dbA},
 			testutil.Post{}, // no adapter, no Config.DB → error
@@ -279,11 +278,11 @@ func TestPerModelAdapter(t *testing.T) {
 // ── fixture ──────────────────────────────────────────────────────────────────
 
 type splitFixture struct {
-	server          *maniflex.Server
-	ts              *httptest.Server
+	server           *maniflex.Server
+	ts               *httptest.Server
 	dbA, dbB, global maniflex.DBAdapter
-	client          *http.Client
-	t               *testing.T
+	client           *http.Client
+	t                *testing.T
 }
 
 type splitOpts struct {
@@ -310,9 +309,8 @@ func newSplitFixture(t *testing.T, opts splitOpts) *splitFixture {
 	}
 
 	server := maniflex.New(maniflex.Config{
-		PathPrefix:  "/api",
-		DB:          global,
-		AutoMigrate: true,
+		PathPrefix: "/api",
+		DB:         global,
 	})
 
 	regs := []any{

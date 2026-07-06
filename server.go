@@ -232,7 +232,7 @@ func (c *Server) migrate(ctx context.Context) error {
 		}
 	}
 
-	if !c.cfg.AutoMigrate {
+	if c.cfg.DisableAutoMigrate {
 		return nil
 	}
 

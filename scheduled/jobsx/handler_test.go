@@ -22,7 +22,7 @@ type jobxArticle struct {
 
 func newRunner(t *testing.T) *scheduled.Runner {
 	t.Helper()
-	server := maniflex.New(maniflex.Config{AutoMigrate: true})
+	server := maniflex.New(maniflex.Config{})
 	server.MustRegister(jobxArticle{})
 
 	db, err := sqlite.Open(":memory:", server.Registry())

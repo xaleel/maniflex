@@ -138,7 +138,6 @@ func main() {
 	//   ANALYTICS_HEALTH_CHECK_DB=true
 	cfg := maniflex.ConfigFromEnv("ANALYTICS")
 
-	cfg.AutoMigrate = true
 	cfg.HealthCheckDB = true
 	if cfg.ServiceName == "" {
 		cfg.ServiceName = "analytics"

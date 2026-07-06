@@ -136,19 +136,43 @@ type SQLExecer interface {
 // longer see it as a duplicate of the original) and publish errors are
 // logged rather than silently swallowed.
 func DeliverWithRetry(ctx context.Context, pub Publisher, sub Subscription, e Event) {
+	var lastErr error
 	for attempt := 0; attempt <= sub.MaxRetry; attempt++ {
-		if err := sub.Handler(ctx, e); err == nil {
+		err := sub.Handler(ctx, e)
+		if err == nil {
 			return
 		}
-		if attempt < sub.MaxRetry && sub.Backoff != nil {
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(sub.Backoff(attempt + 1)):
+		lastErr = err
+		// WARN on each attempt that will be retried; the final failure is
+		// reported once by the exhaustion ERROR below. Without this a handler
+		// that fails every time would drop events in total silence (NFR-1).
+		if attempt < sub.MaxRetry {
+			slog.Default().Warn("events: handler failed, retrying",
+				slog.String("type", e.Type),
+				slog.String("id", e.ID),
+				slog.Int("attempt", attempt+1),
+				slog.Int("max_attempts", sub.MaxRetry+1),
+				slog.String("error", err.Error()))
+			if sub.Backoff != nil {
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(sub.Backoff(attempt + 1)):
+				}
 			}
 		}
 	}
+	errStr := ""
+	if lastErr != nil {
+		errStr = lastErr.Error()
+	}
 	if sub.DLQ != "" {
+		slog.Default().Error("events: handler failed after all retries, dead-lettering",
+			slog.String("type", e.Type),
+			slog.String("id", e.ID),
+			slog.Int("attempts", sub.MaxRetry+1),
+			slog.String("dlq_type", sub.DLQ),
+			slog.String("error", errStr))
 		dlq := e
 		dlq.ID = newID() // fresh ID so downstream dedupers see this as a new event
 		dlq.Type = sub.DLQ
@@ -165,6 +189,12 @@ func DeliverWithRetry(ctx context.Context, pub Publisher, sub Subscription, e Ev
 				slog.String("original_id", e.ID),
 				slog.String("error", err.Error()))
 		}
+	} else {
+		slog.Default().Error("events: handler failed after all retries, event dropped (no DLQ configured)",
+			slog.String("type", e.Type),
+			slog.String("id", e.ID),
+			slog.Int("attempts", sub.MaxRetry+1),
+			slog.String("error", errStr))
 	}
 }
 

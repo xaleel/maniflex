@@ -83,6 +83,29 @@ import (
 // During startup, after opening the DB:
 queue := jobssql.New(db)
 if err := jobssql.Migrate(ctx, db); err != nil { /* ... */ }
+```
+
+### Lanes and secrets
+
+- **Separate lanes:** run an isolated queue on its own table so a type-restricted
+  worker can't interfere with other jobs. Pass `WithTableName` to **both** `New`
+  and `Migrate` (indexes are renamed to match, so two queues share one DB):
+
+  ```go
+  otp := jobssql.New(db, jobssql.WithTableName("otp_jobs"))
+  jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName("otp_jobs"))
+  ```
+
+- **Encrypt payloads at rest:** payloads are stored as cleartext JSON by default.
+  Pass `WithPayloadCipher(cipher)` (any `Encrypt([]byte)`/`Decrypt([]byte)`
+  implementation) to encrypt the payload column; stored values are prefixed
+  `encq:` and decrypted transparently on dequeue.
+
+- **Unhandled types are requeued, not killed:** a worker that lacks a handler for
+  a job's type now requeues it (so another worker can claim it) instead of
+  dead-lettering it — safe for a type-restricted worker sharing a table.
+
+```go
 
 // Inside a pipeline middleware or action handler:
 id, err := queue.Enqueue(ctx, jobs.Job{

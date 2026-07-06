@@ -41,16 +41,68 @@ type sqlExecer interface {
 // when there is no active Server transaction.
 var txFromContext func(context.Context) sqlExecer
 
+const defaultTableName = "job_queue"
+
+// PayloadCipher encrypts and decrypts the job payload column at rest. Provide one
+// via WithPayloadCipher when jobs may carry sensitive data; without it payloads
+// are stored as cleartext JSON.
+type PayloadCipher interface {
+	Encrypt(plaintext []byte) ([]byte, error)
+	Decrypt(ciphertext []byte) ([]byte, error)
+}
+
+// Option configures a Queue (and, via the same options, Migrate).
+type Option func(*config)
+
+type config struct {
+	table  string
+	cipher PayloadCipher
+}
+
+func newConfig(opts []Option) config {
+	c := config{table: defaultTableName}
+	for _, o := range opts {
+		o(&c)
+	}
+	if c.table == "" {
+		c.table = defaultTableName
+	}
+	return c
+}
+
+// WithTableName runs the queue on a table other than the default "job_queue",
+// so two independent queues (e.g. an isolated OTP lane) can share one database.
+// Pass the same option to both New and Migrate. Index names are derived from the
+// table name so they don't collide.
+func WithTableName(name string) Option { return func(c *config) { c.table = name } }
+
+// WithPayloadCipher encrypts the payload column at rest with the given cipher.
+// The stored value is prefixed "encq:" so encrypted and legacy cleartext rows can
+// coexist. Pass the same cipher to New wherever the queue is read or written.
+func WithPayloadCipher(c PayloadCipher) Option { return func(cfg *config) { cfg.cipher = c } }
+
 // Queue is both a jobs.Queue (producer) and a jobs.Source (consumer).
 // It also implements jobs.Cancellable, jobs.Inspector, and jobs.LeaseRenewer.
 type Queue struct {
 	db     *stdsql.DB
-	isPG   bool   // true = Postgres, false = SQLite
+	isPG   bool // true = Postgres, false = SQLite
+	table  string
+	cipher PayloadCipher
 }
 
 // New creates a Queue backed by db. The driver is auto-detected from db.Driver().
-func New(db *stdsql.DB) *Queue {
-	return &Queue{db: db, isPG: detectPostgres(db)}
+func New(db *stdsql.DB, opts ...Option) *Queue {
+	c := newConfig(opts)
+	return &Queue{db: db, isPG: detectPostgres(db), table: c.table, cipher: c.cipher}
+}
+
+// q rewrites the default quoted "job_queue" table reference to the configured
+// table. A no-op when the default table is used.
+func (q *Queue) q(query string) string {
+	if q.table == defaultTableName {
+		return query
+	}
+	return strings.ReplaceAll(query, `"`+defaultTableName+`"`, `"`+q.table+`"`)
 }
 
 func detectPostgres(db *stdsql.DB) bool {
@@ -89,7 +141,7 @@ func (q *Queue) enqueueAt(ctx context.Context, j jobs.Job, at time.Time) (string
 	if j.MaxRetry == 0 {
 		j.MaxRetry = 3
 	}
-	payload, err := marshalPayload(j.Payload)
+	payload, err := q.marshalPayload(j.Payload)
 	if err != nil {
 		return "", err
 	}
@@ -114,12 +166,12 @@ func (q *Queue) enqueueAt(ctx context.Context, j jobs.Job, at time.Time) (string
 	// Outbox path: run through the active Server transaction when available.
 	if txFromContext != nil {
 		if exec := txFromContext(ctx); exec != nil {
-			_, err = exec.ExecContext(ctx, query, p.Args()...)
+			_, err = exec.ExecContext(ctx, q.q(query), p.Args()...)
 			return j.ID, err
 		}
 	}
 
-	_, err = q.db.ExecContext(ctx, query, p.Args()...)
+	_, err = q.db.ExecContext(ctx, q.q(query), p.Args()...)
 	return j.ID, err
 }
 
@@ -165,12 +217,12 @@ RETURNING "id","type","payload","trace_id","actor_id","tenant_id","max_retry","p
 		p.Add(nowStr), p.Add(nowStr), p.Add(n),
 		p.Add(leaseUntil), p.Add(nowStr),
 	)
-	rows, err := q.db.QueryContext(ctx, query, p.Args()...)
+	rows, err := q.db.QueryContext(ctx, q.q(query), p.Args()...)
 	if err != nil {
 		return nil, fmt.Errorf("jobs/sql: dequeue: %w", err)
 	}
 	defer rows.Close()
-	return scanJobs(rows)
+	return q.scanJobs(rows)
 }
 
 func (q *Queue) dequeueSQLite(ctx context.Context, n int, nowStr, leaseUntil string) ([]jobs.Job, error) {
@@ -195,7 +247,7 @@ WHERE "id" IN (
 		p.Add(nowStr), p.Add(nowStr),
 		p.Add(n),
 	)
-	if _, err := q.db.ExecContext(ctx, updateQ, p.Args()...); err != nil {
+	if _, err := q.db.ExecContext(ctx, q.q(updateQ), p.Args()...); err != nil {
 		return nil, fmt.Errorf("jobs/sql: dequeue update: %w", err)
 	}
 
@@ -209,21 +261,21 @@ ORDER BY "priority" DESC, "created_at" ASC
 LIMIT %s`,
 		p2.Add(leaseUntil), p2.Add(n),
 	)
-	rows, err := q.db.QueryContext(ctx, selectQ, p2.Args()...)
+	rows, err := q.db.QueryContext(ctx, q.q(selectQ), p2.Args()...)
 	if err != nil {
 		return nil, fmt.Errorf("jobs/sql: dequeue select: %w", err)
 	}
 	defer rows.Close()
-	return scanJobs(rows)
+	return q.scanJobs(rows)
 }
 
 func (q *Queue) Ack(ctx context.Context, id string) error {
 	p := q.newPH()
 	now := ts(time.Now())
-	_, err := q.db.ExecContext(ctx, fmt.Sprintf(
+	_, err := q.db.ExecContext(ctx, q.q(fmt.Sprintf(
 		`UPDATE "job_queue" SET "status"='succeeded',"completed_at"=%s,"updated_at"=%s WHERE "id"=%s`,
 		p.Add(now), p.Add(now), p.Add(id),
-	), p.Args()...)
+	)), p.Args()...)
 	return err
 }
 
@@ -236,7 +288,7 @@ func (q *Queue) Nack(ctx context.Context, id string, jobErr error, delay time.Du
 	var attempts, maxRetry int
 	p := q.newPH()
 	row := q.db.QueryRowContext(ctx,
-		fmt.Sprintf(`SELECT "attempts","max_retry" FROM "job_queue" WHERE "id"=%s`, p.Add(id)),
+		q.q(fmt.Sprintf(`SELECT "attempts","max_retry" FROM "job_queue" WHERE "id"=%s`, p.Add(id))),
 		p.Args()...,
 	)
 	if err := row.Scan(&attempts, &maxRetry); err != nil {
@@ -249,17 +301,17 @@ func (q *Queue) Nack(ctx context.Context, id string, jobErr error, delay time.Du
 	p = q.newPH()
 	now := ts(time.Now())
 	if attempts >= maxRetry {
-		_, err := q.db.ExecContext(ctx, fmt.Sprintf(
+		_, err := q.db.ExecContext(ctx, q.q(fmt.Sprintf(
 			`UPDATE "job_queue" SET "status"='dead',"last_error"=%s,"updated_at"=%s WHERE "id"=%s`,
 			p.Add(errMsg), p.Add(now), p.Add(id),
-		), p.Args()...)
+		)), p.Args()...)
 		return err
 	}
 	nb := ts(time.Now().Add(delay))
-	_, err := q.db.ExecContext(ctx, fmt.Sprintf(
+	_, err := q.db.ExecContext(ctx, q.q(fmt.Sprintf(
 		`UPDATE "job_queue" SET "status"='failed',"last_error"=%s,"not_before"=%s,"lease_until"=NULL,"updated_at"=%s WHERE "id"=%s`,
 		p.Add(errMsg), p.Add(nb), p.Add(now), p.Add(id),
-	), p.Args()...)
+	)), p.Args()...)
 	return err
 }
 
@@ -270,10 +322,10 @@ func (q *Queue) Dead(ctx context.Context, id string, jobErr error) error {
 	}
 	p := q.newPH()
 	now := ts(time.Now())
-	_, err := q.db.ExecContext(ctx, fmt.Sprintf(
+	_, err := q.db.ExecContext(ctx, q.q(fmt.Sprintf(
 		`UPDATE "job_queue" SET "status"='dead',"last_error"=%s,"updated_at"=%s WHERE "id"=%s`,
 		p.Add(errMsg), p.Add(now), p.Add(id),
-	), p.Args()...)
+	)), p.Args()...)
 	return err
 }
 
@@ -283,10 +335,10 @@ func (q *Queue) RenewLease(ctx context.Context, id string, d time.Duration) erro
 	p := q.newPH()
 	until := ts(time.Now().Add(d))
 	now := ts(time.Now())
-	_, err := q.db.ExecContext(ctx, fmt.Sprintf(
+	_, err := q.db.ExecContext(ctx, q.q(fmt.Sprintf(
 		`UPDATE "job_queue" SET "lease_until"=%s,"updated_at"=%s WHERE "id"=%s AND "status"='running'`,
 		p.Add(until), p.Add(now), p.Add(id),
-	), p.Args()...)
+	)), p.Args()...)
 	return err
 }
 
@@ -295,10 +347,10 @@ func (q *Queue) RenewLease(ctx context.Context, id string, d time.Duration) erro
 func (q *Queue) Cancel(ctx context.Context, id string) error {
 	p := q.newPH()
 	now := ts(time.Now())
-	res, err := q.db.ExecContext(ctx, fmt.Sprintf(
+	res, err := q.db.ExecContext(ctx, q.q(fmt.Sprintf(
 		`UPDATE "job_queue" SET "status"='cancelled',"updated_at"=%s WHERE "id"=%s AND "status" IN ('enqueued','failed')`,
 		p.Add(now), p.Add(id),
-	), p.Args()...)
+	)), p.Args()...)
 	if err != nil {
 		return err
 	}
@@ -312,15 +364,15 @@ func (q *Queue) Cancel(ctx context.Context, id string) error {
 
 func (q *Queue) Get(ctx context.Context, id string) (jobs.JobState, error) {
 	p := q.newPH()
-	rows, err := q.db.QueryContext(ctx, fmt.Sprintf(
+	rows, err := q.db.QueryContext(ctx, q.q(fmt.Sprintf(
 		`SELECT "id","type","payload","trace_id","actor_id","tenant_id","max_retry","priority","not_before","group_key","headers","attempts","status","last_error","created_at","updated_at","completed_at"
 FROM "job_queue" WHERE "id"=%s LIMIT 1`, p.Add(id),
-	), p.Args()...)
+	)), p.Args()...)
 	if err != nil {
 		return jobs.JobState{}, err
 	}
 	defer rows.Close()
-	states, err := scanJobStates(rows)
+	states, err := q.scanJobStates(rows)
 	if err != nil {
 		return jobs.JobState{}, err
 	}
@@ -358,12 +410,12 @@ func (q *Queue) List(ctx context.Context, qry jobs.ListQuery) ([]jobs.JobState, 
 FROM "job_queue"%s ORDER BY "created_at" DESC LIMIT %s OFFSET %s`,
 		where, p.Add(limit), p.Add(qry.Offset),
 	)
-	rows, err := q.db.QueryContext(ctx, query, p.Args()...)
+	rows, err := q.db.QueryContext(ctx, q.q(query), p.Args()...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	return scanJobStates(rows)
+	return q.scanJobStates(rows)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -391,11 +443,37 @@ func parseTS(s string) *time.Time {
 	return &t
 }
 
-func marshalPayload(p json.RawMessage) (string, error) {
+const encPayloadPrefix = "encq:"
+
+func (q *Queue) marshalPayload(p json.RawMessage) (string, error) {
 	if len(p) == 0 {
 		return "{}", nil
 	}
-	return string(p), nil
+	if q.cipher == nil {
+		return string(p), nil
+	}
+	ciphertext, err := q.cipher.Encrypt([]byte(p))
+	if err != nil {
+		return "", fmt.Errorf("jobs/sql: encrypt payload: %w", err)
+	}
+	return encPayloadPrefix + hex.EncodeToString(ciphertext), nil
+}
+
+// unmarshalPayload reverses marshalPayload: decrypts an "encq:"-prefixed value
+// when a cipher is configured, and passes cleartext (legacy) rows through.
+func (q *Queue) unmarshalPayload(stored string) (json.RawMessage, error) {
+	if q.cipher == nil || !strings.HasPrefix(stored, encPayloadPrefix) {
+		return json.RawMessage(stored), nil
+	}
+	raw, err := hex.DecodeString(strings.TrimPrefix(stored, encPayloadPrefix))
+	if err != nil {
+		return nil, fmt.Errorf("jobs/sql: decode payload: %w", err)
+	}
+	plaintext, err := q.cipher.Decrypt(raw)
+	if err != nil {
+		return nil, fmt.Errorf("jobs/sql: decrypt payload: %w", err)
+	}
+	return json.RawMessage(plaintext), nil
 }
 
 func marshalHeaders(h map[string]string) (string, error) {
@@ -406,7 +484,7 @@ func marshalHeaders(h map[string]string) (string, error) {
 	return string(b), err
 }
 
-func scanJobs(rows *stdsql.Rows) ([]jobs.Job, error) {
+func (q *Queue) scanJobs(rows *stdsql.Rows) ([]jobs.Job, error) {
 	var out []jobs.Job
 	for rows.Next() {
 		var (
@@ -418,10 +496,14 @@ func scanJobs(rows *stdsql.Rows) ([]jobs.Job, error) {
 			&maxRetry, &priority, &notBefore, &groupKey, &headers, &attempts); err != nil {
 			return nil, err
 		}
+		decoded, err := q.unmarshalPayload(payload)
+		if err != nil {
+			return nil, err
+		}
 		j := jobs.Job{
 			ID:        id,
 			Type:      typ,
-			Payload:   json.RawMessage(payload),
+			Payload:   decoded,
 			TraceID:   traceID,
 			ActorID:   actorID,
 			TenantID:  tenantID,
@@ -441,7 +523,7 @@ func scanJobs(rows *stdsql.Rows) ([]jobs.Job, error) {
 	return out, rows.Err()
 }
 
-func scanJobStates(rows *stdsql.Rows) ([]jobs.JobState, error) {
+func (q *Queue) scanJobStates(rows *stdsql.Rows) ([]jobs.JobState, error) {
 	var out []jobs.JobState
 	for rows.Next() {
 		var (
@@ -459,10 +541,14 @@ func scanJobStates(rows *stdsql.Rows) ([]jobs.JobState, error) {
 		); err != nil {
 			return nil, err
 		}
+		decoded, err := q.unmarshalPayload(payload)
+		if err != nil {
+			return nil, err
+		}
 		j := jobs.Job{
 			ID:       id,
 			Type:     typ,
-			Payload:  json.RawMessage(payload),
+			Payload:  decoded,
 			TraceID:  traceID,
 			ActorID:  actorID,
 			TenantID: tenantID,

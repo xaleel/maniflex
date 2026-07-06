@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -1902,12 +1901,16 @@ func (r RawSqlResult) Rows() (*sql.Rows, error) {
 }
 
 func (a *Adapter) Raw(ctx context.Context, query string, args ...any) maniflex.RawResult {
-	qLower := strings.ToLower(query)
-	re := regexp.MustCompile(`\)\s*select`)
-	isSelect := strings.HasPrefix(qLower, "select") ||
-		(strings.HasPrefix(qLower, "with") && re.MatchString(qLower))
-	if isSelect {
+	query = rebind(a.driver, query)
+	switch classifyRaw(query) {
+	case rawSelect:
 		rows, err := a.readDb.QueryContext(ctx, query, args...)
+		return RawSqlResult{rowsVal: rows, rowsErr: err}
+	case rawReturning:
+		// A data-modifying statement with RETURNING yields a result set and must
+		// run on the write pool. Routing it through QueryContext (not ExecContext)
+		// is what preserves the returned rows.
+		rows, err := a.writeDb.QueryContext(ctx, query, args...)
 		return RawSqlResult{rowsVal: rows, rowsErr: err}
 	}
 	res, err := a.writeDb.ExecContext(ctx, query, args...)

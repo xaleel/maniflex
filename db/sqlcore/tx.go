@@ -51,7 +51,7 @@ func (t *txAdapter) ExecContext(ctx context.Context, query string, args ...any) 
 // RawQueryContext satisfies the maniflex.rawableT interface, routing ServerContext.RawQuery
 // through the active transaction.
 func (t *txAdapter) RawQueryContext(ctx context.Context, query string, args ...any) ([]map[string]any, error) {
-	rows, err := t.tx.QueryContext(ctx, query, args...)
+	rows, err := t.tx.QueryContext(ctx, rebind(t.driver, query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("tx raw query: %w", err)
 	}
@@ -62,7 +62,7 @@ func (t *txAdapter) RawQueryContext(ctx context.Context, query string, args ...a
 // RawExecContext satisfies the maniflex.rawableT interface, routing ServerContext.RawExec
 // through the active transaction.
 func (t *txAdapter) RawExecContext(ctx context.Context, query string, args ...any) (int64, error) {
-	res, err := t.tx.ExecContext(ctx, query, args...)
+	res, err := t.tx.ExecContext(ctx, rebind(t.driver, query), args...)
 	if err != nil {
 		return 0, fmt.Errorf("tx raw exec: %w", err)
 	}

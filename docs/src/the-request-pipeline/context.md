@@ -209,8 +209,8 @@ a raw query, or take a row lock — has four entry points, all routed through
 | Method | Purpose |
 |---|---|
 | `GetModel(name string) *ModelAccessor` | CRUD on any registered model (`.List` / `.Read` / `.Create` / `.Update` / `.Delete`) |
-| `RawQuery(sql string, args ...any) ([]map[string]any, error)` | parameterised `SELECT` |
-| `RawExec(sql string, args ...any) (int64, error)` | parameterised non-`SELECT` |
+| `RawQuery(sql string, args ...any) ([]map[string]any, error)` | parameterised `SELECT`, CTE-`SELECT`, or a data-modifying statement with `RETURNING` (e.g. `UPDATE … RETURNING id`) |
+| `RawExec(sql string, args ...any) (int64, error)` | parameterised non-`SELECT` (returns rows affected) |
 | `LockForUpdate(modelName, id string) (map[string]any, error)` | pessimistic row lock; requires `ctx.Tx` |
 
 `GetModel` returns an accessor whose methods route through `ctx.Tx` when set,
@@ -234,6 +234,10 @@ maniflex.Delete[User](ctx, id)
 Results that are **not** a registered model — raw SQL, aggregates, recursive
 queries — use `maniflex.Row` (an alias for `map[string]any`); `RawQuery`,
 `Aggregate`, and `RecursiveQuery` return `[]maniflex.Row`.
+
+Placeholders in raw SQL are rebound to the adapter's dialect, so `?` works on
+both SQLite and Postgres (`$N`). Always pass values as `args` — never interpolate
+them into the query string.
 
 ## Logging
 

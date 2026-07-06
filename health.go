@@ -117,12 +117,13 @@ func distinctAdapters(cfg *Config, reg *Registry) []DBAdapter {
 		seen[a] = true
 		out = append(out, a)
 	}
+	// Always include the global adapter, even when no model is registered yet —
+	// otherwise a bootstrapping server with a reachable DB reports db:"unknown".
+	add(cfg.DB)
 	if reg != nil {
 		for _, m := range reg.All() {
 			add(m.ResolveAdapter(cfg.DB))
 		}
-	} else {
-		add(cfg.DB)
 	}
 	return out
 }

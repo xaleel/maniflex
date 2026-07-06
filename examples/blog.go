@@ -53,9 +53,9 @@ type Post struct {
 	Title  string `json:"title"  mfx:"required,filterable,sortable"`
 	Body   string `json:"body"   mfx:"required"`
 	Status string `json:"status" mfx:"required,filterable,sortable,enum:draft|published|archived"`
-	// BelongsTo User — FK convention: UserID → User
-	// Populated via ?include=user
-	UserID string `json:"user_id"  mfx:"required,filterable"`
+	// BelongsTo User — mfx:"relation" infers the target from the field name
+	// (UserID → User). Populated via ?include=user.
+	UserID string `json:"user_id"  mfx:"required,filterable,relation"`
 	Views  int    `json:"views"    mfx:"readonly,filterable,sortable"`
 	// HasMany — populated via ?include=comments
 	Comments []Comment `json:"comments,omitempty"`
@@ -66,8 +66,8 @@ type Post struct {
 type Comment struct {
 	maniflex.BaseModel
 	Body     string `json:"body"     mfx:"required"`
-	PostID   string `json:"post_id"  mfx:"required,filterable,immutable"`
-	UserID   string `json:"user_id"  mfx:"required,filterable"`
+	PostID   string `json:"post_id"  mfx:"required,filterable,immutable,relation"`
+	UserID   string `json:"user_id"  mfx:"required,filterable,relation"`
 	Approved bool   `json:"approved" mfx:"filterable,sortable"`
 }
 

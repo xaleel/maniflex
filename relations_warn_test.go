@@ -34,8 +34,8 @@ func TestWarnDanglingRelations(t *testing.T) {
 	if !strings.Contains(out, "OwnerID") || !strings.Contains(out, "Owner") {
 		t.Fatalf("expected a warning naming the dangling OwnerID→Owner relation, got: %q", out)
 	}
-	if !strings.Contains(out, "norelation") {
-		t.Errorf("warning should suggest the norelation tag, got: %q", out)
+	if !strings.Contains(out, "relation") {
+		t.Errorf("warning should mention the mfx:\"relation\" tag, got: %q", out)
 	}
 	if strings.Contains(out, "Account") {
 		t.Errorf("registered target Account must not warn: %q", out)

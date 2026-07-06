@@ -29,7 +29,7 @@ type Post struct {
 	Body     string    `json:"body"     db:"body"    mfx:"required"`
 	Status   string    `json:"status"   db:"status"  mfx:"required,filterable,sortable,enum:draft|published|archived"`
 	Views    int       `json:"views"    db:"views"   mfx:"readonly,filterable,sortable,default:0"`
-	UserID   string    `json:"user_id"  db:"user_id" mfx:"required,filterable"`
+	UserID   string    `json:"user_id"  db:"user_id" mfx:"required,filterable,relation"`
 	Comments []Comment `json:"comments,omitempty"`
 }
 
@@ -38,8 +38,8 @@ type Post struct {
 type Comment struct {
 	maniflex.BaseModel
 	Body     string `json:"body"     db:"body"     mfx:"required"`
-	PostID   string `json:"post_id"  db:"post_id"  mfx:"required,filterable,immutable"`
-	UserID   string `json:"user_id"  db:"user_id"  mfx:"required,filterable"`
+	PostID   string `json:"post_id"  db:"post_id"  mfx:"required,filterable,immutable,relation"`
+	UserID   string `json:"user_id"  db:"user_id"  mfx:"required,filterable,relation"`
 	Approved bool   `json:"approved" db:"approved" mfx:"filterable,sortable,default:false"`
 }
 

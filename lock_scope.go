@@ -3,6 +3,7 @@ package maniflex
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 )
 
 // LockScopeSpec records one mfx:"lock_scope:ModelName" directive resolved at
@@ -52,11 +53,12 @@ func validateLockScopes(reg *Registry) error {
 }
 
 // warnDanglingRelations logs a warning for every convention-inferred BelongsTo
-// relation — a "<Name>ID" field auto-promoted to a relation — whose target model
-// was never registered. This is almost always a microservice storing a foreign
-// id by design (e.g. UserID when users live in another service); tagging the
-// field mfx:"norelation" silences the inference. It only warns: a missing target
-// is not fatal, the FK column is still created and usable.
+// relation — a field tagged mfx:"relation" whose target model was never
+// registered (remove the tag if it's a plain foreign id). It also warns when an
+// inferred relation is declared on a field whose name does not end in "ID", since
+// the target can't be derived by stripping the suffix — a planned strict mode
+// will reject this; use mfx:"relation:Target" instead. Warnings only: neither is
+// fatal, the FK column is still created and usable.
 func warnDanglingRelations(reg *Registry, logger *slog.Logger) {
 	for _, model := range reg.All() {
 		for i := range model.Relations {
@@ -64,11 +66,19 @@ func warnDanglingRelations(reg *Registry, logger *slog.Logger) {
 			if !rel.Convention || rel.Kind != BelongsTo {
 				continue
 			}
+			if !strings.HasSuffix(rel.FieldName, "ID") {
+				logger.Warn("[maniflex] mfx:\"relation\" on a field whose name does not end in "+
+					"\"ID\" — the target model was inferred from the whole field name; a future "+
+					"strict mode will reject this, use mfx:\"relation:Target\" to be explicit",
+					slog.String("model", model.Name),
+					slog.String("field", rel.FieldName),
+					slog.String("inferred_target", rel.RelatedModel))
+			}
 			if _, ok := reg.Get(rel.RelatedModel); ok {
 				continue
 			}
-			logger.Warn("[maniflex] convention relation targets an unregistered model — "+
-				"tag the field mfx:\"norelation\" if it is a plain foreign id, not a relation",
+			logger.Warn("[maniflex] mfx:\"relation\" targets an unregistered model — "+
+				"remove the tag if it is a plain foreign id, not a relation",
 				slog.String("model", model.Name),
 				slog.String("field", rel.FieldName),
 				slog.String("target_model", rel.RelatedModel))

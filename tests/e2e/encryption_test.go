@@ -144,7 +144,7 @@ func TestEncryption_HMACColumnsNotExposedInResponse(t *testing.T) {
 		"name":        "Hmac Test",
 	}))
 
-	for key := range srv.GET("/patients/"+id).Data() {
+	for key := range srv.GET("/patients/" + id).Data() {
 		if strings.HasSuffix(key, "_hmac") {
 			t.Errorf("response contains HMAC column %q — must never be exposed", key)
 		}
@@ -174,7 +174,6 @@ func TestEncryption_RotateEncryptionKey(t *testing.T) {
 
 	server := maniflex.New(maniflex.Config{
 		PathPrefix:  "/api",
-		AutoMigrate: true,
 		KeyProvider: kp,
 	})
 	server.MustRegister(Patient{})

@@ -152,7 +152,7 @@ type rawableT interface {
 // carrying pagination, filters, sorts, and relation includes.
 type DBAdapter interface {
 	// AutoMigrate creates or updates tables/collections for the given models.
-	// Called once on Server.Start() when Config.AutoMigrate is true.
+	// Called once on Server.Start() unless Config.DisableAutoMigrate is set.
 	AutoMigrate(ctx context.Context, reg RegistryAccessor) error
 
 	// BeginTx starts a database transaction with the given options.

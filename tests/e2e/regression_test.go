@@ -217,7 +217,7 @@ func TestCritical_UniqueConstraint(t *testing.T) {
 		rawDB.Exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
 		t.Cleanup(func() { rawDB.Close() })
 
-		server := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: true})
+		server := maniflex.New(maniflex.Config{PathPrefix: "/api"})
 		server.MustRegister(testutil.User{})
 
 		adapter := sqlcore.New(rawDB, rawDB, maniflex.SQLite, server.Registry())

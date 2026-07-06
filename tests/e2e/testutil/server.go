@@ -105,14 +105,14 @@ func NewServer(t testing.TB, opts Options) *Server {
 	}
 
 	server := maniflex.New(maniflex.Config{
-		PathPrefix:    prefix,
-		AutoMigrate:   autoMigrate,
-		PanicLogger:   opts.PanicLogger,
-		QueryTimeout:  opts.QueryTimeout,
-		HealthCheckDB: opts.HealthCheckDB,
-		HealthTimeout: opts.HealthTimeout,
-		FilesConfig:   filesConfig,
-		KeyProvider:   opts.KeyProvider,
+		PathPrefix:         prefix,
+		DisableAutoMigrate: !autoMigrate,
+		PanicLogger:        opts.PanicLogger,
+		QueryTimeout:       opts.QueryTimeout,
+		HealthCheckDB:      opts.HealthCheckDB,
+		HealthTimeout:      opts.HealthTimeout,
+		FilesConfig:        filesConfig,
+		KeyProvider:        opts.KeyProvider,
 	})
 	server.MustRegister(models...)
 

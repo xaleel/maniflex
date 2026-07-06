@@ -146,10 +146,10 @@ func TestHealthCheck(t *testing.T) {
 		hangAdapter := &hangingPinger{done: hangDone}
 
 		server := maniflex.New(maniflex.Config{
-			PathPrefix:    "/api",
-			AutoMigrate:   false,
-			HealthCheckDB: true,
-			HealthTimeout: 50 * time.Millisecond,
+			PathPrefix:         "/api",
+			DisableAutoMigrate: true,
+			HealthCheckDB:      true,
+			HealthTimeout:      50 * time.Millisecond,
 		})
 		server.MustRegister(testutil.DefaultModels()...)
 
@@ -266,10 +266,10 @@ func TestHealthCheck(t *testing.T) {
 		t.Parallel()
 
 		server := maniflex.New(maniflex.Config{
-			PathPrefix:    "/api",
-			AutoMigrate:   false,
-			HealthCheckDB: true,
-			HealthTimeout: time.Second,
+			PathPrefix:         "/api",
+			DisableAutoMigrate: true,
+			HealthCheckDB:      true,
+			HealthTimeout:      time.Second,
 		})
 
 		// Global DB (healthy).
@@ -313,10 +313,10 @@ func TestHealthCheck(t *testing.T) {
 		adapter := &togglePinger{shouldFail: &failPing}
 
 		server := maniflex.New(maniflex.Config{
-			PathPrefix:    "/api",
-			AutoMigrate:   false,
-			HealthCheckDB: true,
-			HealthTimeout: time.Second,
+			PathPrefix:         "/api",
+			DisableAutoMigrate: true,
+			HealthCheckDB:      true,
+			HealthTimeout:      time.Second,
 		})
 		server.MustRegister(testutil.DefaultModels()...)
 
@@ -362,10 +362,10 @@ func TestHealthCheck(t *testing.T) {
 		t.Parallel()
 
 		server := maniflex.New(maniflex.Config{
-			PathPrefix:    "/api",
-			AutoMigrate:   false,
-			HealthCheckDB: true,
-			HealthTimeout: time.Second,
+			PathPrefix:         "/api",
+			DisableAutoMigrate: true,
+			HealthCheckDB:      true,
+			HealthTimeout:      time.Second,
 		})
 		// Intentionally register NO models.
 		realDB, err := sqlite.Open(":memory:", server.Registry())

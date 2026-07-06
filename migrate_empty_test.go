@@ -19,7 +19,7 @@ import (
 // No models registered → nothing to migrate → no error, even with AutoMigrate
 // on and no DB configured. This is the scaffolding tutorial's first runnable app.
 func TestMigrateOnly_NoModelsBoots(t *testing.T) {
-	server := maniflex.New(maniflex.Config{AutoMigrate: true})
+	server := maniflex.New(maniflex.Config{})
 	if err := server.MigrateOnly(context.Background()); err != nil {
 		t.Fatalf("empty app should migrate cleanly, got: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestMigrateOnly_NoModelsBoots(t *testing.T) {
 // adapter resolves to it (no Config.DB, no per-model adapter). The error must
 // name the offending model so the message stays actionable.
 func TestMigrateOnly_ModelWithoutAdapterStillErrors(t *testing.T) {
-	server := maniflex.New(maniflex.Config{AutoMigrate: true})
+	server := maniflex.New(maniflex.Config{})
 	if err := server.Register(indexedModel{}); err != nil {
 		t.Fatalf("register: %v", err)
 	}

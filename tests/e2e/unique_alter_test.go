@@ -36,7 +36,7 @@ const alterItemsTable = "alter_items"
 // and seeds `rows` rows. Returns after closing so a second adapter can reopen.
 func migrateV1AndSeed(t *testing.T, dbPath string, rows int) {
 	t.Helper()
-	srv := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: true})
+	srv := maniflex.New(maniflex.Config{PathPrefix: "/api"})
 	db, err := sqlite.Open(dbPath, srv.Registry())
 	if err != nil {
 		t.Fatalf("open v1: %v", err)
@@ -61,7 +61,7 @@ func migrateV1AndSeed(t *testing.T, dbPath string, rows int) {
 // column). Returns the still-open adapter and the migration error (nil on success).
 func migrateV2(t *testing.T, dbPath string) (maniflex.DBAdapter, error) {
 	t.Helper()
-	srv := maniflex.New(maniflex.Config{PathPrefix: "/api", AutoMigrate: true})
+	srv := maniflex.New(maniflex.Config{PathPrefix: "/api"})
 	db, err := sqlite.Open(dbPath, srv.Registry())
 	if err != nil {
 		t.Fatalf("open v2: %v", err)

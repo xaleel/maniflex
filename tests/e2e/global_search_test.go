@@ -373,9 +373,9 @@ func TestGlobalSearchWarnsIneffectiveMiddleware(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	server := maniflex.New(maniflex.Config{
-		Logger:      logger,
-		PathPrefix:  "/api",
-		AutoMigrate: false,
+		Logger:             logger,
+		PathPrefix:         "/api",
+		DisableAutoMigrate: true,
 	})
 	server.MustRegister(SearchArticle{}, maniflex.ModelConfig{GlobalSearchable: true})
 	db, err := sqlite.Open(":memory:", server.Registry())

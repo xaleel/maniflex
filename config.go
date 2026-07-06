@@ -226,8 +226,11 @@ type Config struct {
 	// DB is the database adapter to use. Required before calling Start().
 	DB DBAdapter
 
-	// AutoMigrate runs schema creation/migration on Start(). Default: true.
-	AutoMigrate bool
+	// DisableAutoMigrate turns off schema creation/migration on Start() and
+	// MigrateOnly(). Migration runs by default; set this to true to skip it (e.g.
+	// when migrations are managed out of band). Replaces the old AutoMigrate bool,
+	// whose zero value (false) could not honour the documented "default on".
+	DisableAutoMigrate bool
 
 	// ShutdownTimeout is the maximum duration Start() waits for in-flight
 	// requests to complete after a shutdown signal is received before forcing

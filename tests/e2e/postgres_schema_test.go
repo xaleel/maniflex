@@ -40,7 +40,7 @@ func TestPostgresSchemaAutoCreate(t *testing.T) {
 	}
 	schema := "mfx_autocreate_" + hex.EncodeToString(b[:])
 
-	srv := maniflex.New(maniflex.Config{AutoMigrate: false})
+	srv := maniflex.New(maniflex.Config{DisableAutoMigrate: true})
 	srv.MustRegister(productV1{}, maniflex.ModelConfig{TableName: "products"})
 
 	db, err := postgres.OpenWithConfig(dsn, "", srv.Registry(),

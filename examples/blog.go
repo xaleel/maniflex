@@ -82,7 +82,6 @@ func main() {
 	server := maniflex.New(maniflex.Config{
 		Port:        8080,
 		PathPrefix:  "/api",
-		AutoMigrate: true,
 		FilesConfig: maniflex.FilesConfig{Storage: fs},
 	})
 

@@ -214,7 +214,6 @@ func testServerConfig(t *testing.T) maniflex.Config {
 	return maniflex.Config{
 		Port:            freePort(t),
 		PathPrefix:      "/api",
-		AutoMigrate:     true,
 		ShutdownTimeout: 5 * time.Second,
 	}
 }
@@ -230,7 +229,6 @@ func newLifecycleServer(t *testing.T, setup func(*maniflex.Server), cfg maniflex
 	if cfg.PathPrefix == "" {
 		cfg.PathPrefix = "/api"
 	}
-	cfg.AutoMigrate = true
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = 5 * time.Second
 	}

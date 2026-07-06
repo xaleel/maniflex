@@ -144,7 +144,7 @@ type FieldTags struct {
 	JSONName  string
 	DBName    string
 	OmitEmpty bool
-	Ignore    bool // mfx:"-" or json:"-"
+	Ignore    bool // db:"-" or mfx:"-" (excludes the field from persistence — no column)
 }
 
 // parseFieldTags derives FieldTags from a struct field's reflect.StructTag.
@@ -154,11 +154,14 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 	// ---- json tag ----
 	if jt := field.Tag.Get("json"); jt != "" {
 		parts := strings.SplitN(jt, ",", 2)
-		if parts[0] == "-" {
-			t.Ignore = true
-			return t
-		}
-		if parts[0] != "" {
+		switch {
+		case parts[0] == "-":
+			// json:"-" hides the field from API responses (Hidden) and marks it
+			// server-owned (Readonly), but keeps it as a real column. To exclude a
+			// field from persistence entirely use db:"-" or mfx:"-".
+			t.Hidden = true
+			t.Readonly = true
+		case parts[0] != "":
 			t.JSONName = parts[0]
 		}
 		if len(parts) > 1 && strings.Contains(parts[1], "omitempty") {

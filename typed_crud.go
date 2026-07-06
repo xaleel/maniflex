@@ -16,7 +16,52 @@ package maniflex
 import (
 	"fmt"
 	"reflect"
+	"strings"
 )
+
+// decryptTypedResult converts an adapter result (*T) to plaintext when the model
+// has mfx:"encrypted" fields, going through the map bridge so the same decrypt
+// logic as the HTTP path applies. A no-op passthrough for unencrypted models.
+func decryptTypedResult[T any](ctx *ServerContext, meta *ModelMeta, v any) (*T, error) {
+	if v == nil {
+		return nil, nil
+	}
+	if !meta.HasEncryptedFields() {
+		return typedOf[T](v)
+	}
+	m := recordToMap(meta, v)
+	if err := decryptForRead(ctx.Ctx, ctx.keyProvider, meta, m); err != nil {
+		return nil, err
+	}
+	rec, err := mapToRecord(meta, m)
+	if err != nil {
+		return nil, err
+	}
+	return typedOf[T](rec)
+}
+
+// encryptedWriteRecord builds a bridge record from a *T for an encrypted model,
+// with its mfx:"encrypted" fields encrypted (and {field}_hmac companions filled).
+// present receives every written column (including the hmac companions).
+func encryptedWriteRecord[T any](ctx *ServerContext, meta *ModelMeta, record *T) (any, map[string]struct{}, error) {
+	data := recordToMap(meta, record)
+	if err := encryptForWrite(ctx.Ctx, ctx.keyProvider, meta, data); err != nil {
+		return nil, nil, err
+	}
+	present := make(map[string]struct{}, len(meta.Fields)+len(data))
+	for i := range meta.Fields {
+		if col := meta.Fields[i].Tags.DBName; col != "id" {
+			present[col] = struct{}{}
+		}
+	}
+	for k := range data {
+		if strings.HasSuffix(k, "_hmac") {
+			present[k] = struct{}{}
+		}
+	}
+	rec, err := mapToRecord(meta, data)
+	return rec, present, err
+}
 
 // modelExec resolves the model meta for T and the adapter/tx to route through,
 // mirroring ctx.GetModel's per-model-adapter + same-adapter-tx rules.
@@ -79,7 +124,7 @@ func List[T any](ctx *ServerContext, q *QueryParams) ([]*T, error) {
 	}
 	out := make([]*T, len(items))
 	for i, it := range items {
-		if out[i], err = typedOf[T](it); err != nil {
+		if out[i], err = decryptTypedResult[T](ctx, meta, it); err != nil {
 			return nil, err
 		}
 	}
@@ -101,7 +146,7 @@ func Read[T any](ctx *ServerContext, id string) (*T, error) {
 	if err != nil {
 		return nil, err
 	}
-	return typedOf[T](v)
+	return decryptTypedResult[T](ctx, meta, v)
 }
 
 // Create inserts record (a *T) and returns the stored representation, scanned
@@ -111,17 +156,26 @@ func Create[T any](ctx *ServerContext, record *T) (*T, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Encrypted models write through the map bridge so mfx:"encrypted" fields are
+	// encrypted (and *_hmac companions written) instead of stored as plaintext by
+	// the struct fast-path. Unencrypted models keep the direct struct write.
+	var write any = record
+	if meta.HasEncryptedFields() {
+		if write, _, err = encryptedWriteRecord(ctx, meta, record); err != nil {
+			return nil, err
+		}
+	}
 	var v any
 	if tx != nil {
-		v, err = tx.Create(ctx.Ctx, meta, record)
+		v, err = tx.Create(ctx.Ctx, meta, write)
 	} else {
-		v, err = a.Create(ctx.Ctx, meta, record)
+		v, err = a.Create(ctx.Ctx, meta, write)
 	}
 	if err != nil {
 		return nil, err
 	}
 	// The write path returns a bridge record; re-read via the scanStruct path so
-	// the caller gets fully-populated struct fields.
+	// the caller gets fully-populated (and decrypted) struct fields.
 	return Read[T](ctx, fmt.Sprint(recordToMap(meta, v)["id"]))
 }
 
@@ -133,21 +187,27 @@ func Update[T any](ctx *ServerContext, id string, record *T) (*T, error) {
 	if err != nil {
 		return nil, err
 	}
+	var write any = record
 	present := make(map[string]struct{}, len(meta.Fields))
 	for i := range meta.Fields {
 		if col := meta.Fields[i].Tags.DBName; col != "id" {
 			present[col] = struct{}{}
 		}
 	}
+	if meta.HasEncryptedFields() {
+		if write, present, err = encryptedWriteRecord(ctx, meta, record); err != nil {
+			return nil, err
+		}
+	}
 	if tx != nil {
-		_, err = tx.Update(ctx.Ctx, meta, id, record, present)
+		_, err = tx.Update(ctx.Ctx, meta, id, write, present)
 	} else {
-		_, err = a.Update(ctx.Ctx, meta, id, record, present)
+		_, err = a.Update(ctx.Ctx, meta, id, write, present)
 	}
 	if err != nil {
 		return nil, err
 	}
-	// Re-read via the scanStruct path for a fully-populated result.
+	// Re-read via the scanStruct path for a fully-populated (decrypted) result.
 	return Read[T](ctx, id)
 }
 

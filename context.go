@@ -221,6 +221,11 @@ type ServerContext struct {
 	// reg is the model registry, used by QueryModel. Set by the handler.
 	reg RegistryAccessor
 
+	// keyProvider encrypts/decrypts mfx:"encrypted" fields for the non-pipeline
+	// access paths (typed maniflex.Create/Read and ctx.GetModel). The handler sets
+	// it from Config.KeyProvider; background contexts set it via SetKeyProvider.
+	keyProvider KeyProvider
+
 	// logger is the framework-level logger seeded from Config.Logger.
 	// It is set by the handler before the pipeline runs.
 	logger *slog.Logger
@@ -554,9 +559,10 @@ func (c *ServerContext) GetModel(modelName string) *ModelAccessor {
 		tx = nil
 	}
 	return &ModelAccessor{
-		meta: meta,
-		exec: dbExec{adapter: targetAdapter, tx: tx},
-		ctx:  c.Ctx,
+		meta:        meta,
+		exec:        dbExec{adapter: targetAdapter, tx: tx},
+		ctx:         c.Ctx,
+		keyProvider: c.keyProvider,
 	}
 }
 
@@ -564,10 +570,11 @@ func (c *ServerContext) GetModel(modelName string) *ModelAccessor {
 // registered model. Obtain one via ServerContext.GetModel. All methods route
 // through the active transaction (ctx.Tx) when one is set.
 type ModelAccessor struct {
-	meta *ModelMeta
-	exec dbExec
-	ctx  context.Context
-	err  error // set when GetModel could not resolve the model
+	meta        *ModelMeta
+	exec        dbExec
+	ctx         context.Context
+	keyProvider KeyProvider // encrypts/decrypts mfx:"encrypted" fields off the pipeline
+	err         error       // set when GetModel could not resolve the model
 }
 
 // List returns a page of records matching q. q may be nil (defaults to page 1,
@@ -580,7 +587,15 @@ func (a *ModelAccessor) List(q *QueryParams) ([]map[string]any, error) {
 		q = &QueryParams{Page: 1, Limit: defaultLimit}
 	}
 	rows, _, err := a.exec.FindMany(a.ctx, a.meta, q)
-	return rows, err
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if err := decryptForRead(a.ctx, a.keyProvider, a.meta, row); err != nil {
+			return nil, err
+		}
+	}
+	return rows, nil
 }
 
 // Read returns the single record identified by id.
@@ -589,7 +604,14 @@ func (a *ModelAccessor) Read(id string) (map[string]any, error) {
 	if a.err != nil {
 		return nil, a.err
 	}
-	return a.exec.FindByID(a.ctx, a.meta, id, &QueryParams{})
+	row, err := a.exec.FindByID(a.ctx, a.meta, id, &QueryParams{})
+	if err != nil {
+		return nil, err
+	}
+	if err := decryptForRead(a.ctx, a.keyProvider, a.meta, row); err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 
 // Create inserts a new record and returns the stored representation.
@@ -598,7 +620,17 @@ func (a *ModelAccessor) Create(data map[string]any) (map[string]any, error) {
 	if a.err != nil {
 		return nil, a.err
 	}
-	return a.exec.Create(a.ctx, a.meta, data)
+	if err := encryptForWrite(a.ctx, a.keyProvider, a.meta, data); err != nil {
+		return nil, err
+	}
+	row, err := a.exec.Create(a.ctx, a.meta, data)
+	if err != nil {
+		return nil, err
+	}
+	if err := decryptForRead(a.ctx, a.keyProvider, a.meta, row); err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 
 // Update applies a partial patch to the record identified by id and returns
@@ -608,7 +640,17 @@ func (a *ModelAccessor) Update(id string, data map[string]any) (map[string]any, 
 	if a.err != nil {
 		return nil, a.err
 	}
-	return a.exec.Update(a.ctx, a.meta, id, data)
+	if err := encryptForWrite(a.ctx, a.keyProvider, a.meta, data); err != nil {
+		return nil, err
+	}
+	row, err := a.exec.Update(a.ctx, a.meta, id, data)
+	if err != nil {
+		return nil, err
+	}
+	if err := decryptForRead(a.ctx, a.keyProvider, a.meta, row); err != nil {
+		return nil, err
+	}
+	return row, nil
 }
 
 // Delete removes (or soft-deletes) the record identified by id.
@@ -816,6 +858,15 @@ func NewBackground(ctx context.Context, adapter DBAdapter, reg RegistryAccessor)
 		reg:     reg,
 	}
 }
+
+// SetKeyProvider wires the KeyProvider used to encrypt/decrypt mfx:"encrypted"
+// fields on the typed (maniflex.Create/Read) and ctx.GetModel paths. The HTTP
+// pipeline sets this automatically; call it on a NewBackground context (workers,
+// CLIs) that reads or writes encrypted models, e.g.
+//
+//	bg := maniflex.NewBackground(ctx, srv.DB(), srv.Registry())
+//	bg.SetKeyProvider(srv.KeyProvider())
+func (c *ServerContext) SetKeyProvider(kp KeyProvider) { c.keyProvider = kp }
 
 // ── Sentinel errors ───────────────────────────────────────────────────────────
 

@@ -60,7 +60,8 @@
 # Advanced Topics
 
 - [Custom Endpoints (Actions)](advanced-topics/actions.md)
-- [Raw Queries & Query Models](advanced-topics/raw-queries.md)
+- [Raw Queries, Aggregates, & Recursion](advanced-topics/raw-queries.md)
+- [Model Accessor](advanced-topics/model-accessor.md)
 - [Batch Operations & Sagas](advanced-topics/batch-saga.md)
 - [Events & Background Jobs](advanced-topics/events-jobs.md)
 - [Realtime / WebSockets](advanced-topics/realtime.md)

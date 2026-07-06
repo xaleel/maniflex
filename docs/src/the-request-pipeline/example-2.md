@@ -69,7 +69,6 @@ func main() {
     server := maniflex.New(maniflex.Config{
         Port:        8080,
         PathPrefix:  "/api",
-        AutoMigrate: true,
     })
 
     server.MustRegister(Organization{}, Member{}, Project{})

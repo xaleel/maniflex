@@ -94,6 +94,12 @@ InternalScore float64 `json:"internal_score" mfx:"hidden"`
 A field that is both `readonly` and not `hidden` is the opposite case: visible
 in responses, never accepted from the client.
 
+**`json:"-"`** is treated as hidden **and** read-only: the field stays a real,
+persisted column that the server owns, but it never appears in API responses and
+is never accepted from the client. This matches the Go convention that `json:"-"`
+affects serialization, not schema. To exclude a field from the database entirely
+(no column), use `db:"-"` or `mfx:"-"` instead.
+
 ## Record-locking directives
 
 These freeze a _whole record_ — not just a field — once its state matches a
@@ -213,27 +219,27 @@ duplicates before deploying.
 
 ## Relation directives
 
-A field may declare a relationship to another model. The legacy ID-suffix
-convention (a `UserID` field implies a relation to `User`) needs no tag; the
-directives below configure explicit relations.
+A field may declare a relationship to another model. Relations are **opt-in** —
+an `<Name>ID` field is a plain column unless you tag it.
 
 | Directive                       | Effect                                                                                                 |
 | ------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `relation:Name`                 | marks the field as an explicit relation; `Name` is the companion struct field carrying the target type |
+| `relation`                      | marks an FK field as a `BelongsTo`; the target is inferred from the field name (`AuthorID` → `Author`) |
+| `relation:Name`                 | explicit relation; `Name` is the companion struct field carrying the target type                       |
 | `relation:Name;onDelete:action` | sets the referential action — `cascade`, `setNull`, or `restrict`                                      |
 | `through:Model`                 | on a slice field, declares a many-to-many relation through the named junction model                    |
-| `norelation`                    | opt a convention-FK field (name ends in `ID`) out of the automatic relation; keep it a plain column    |
+| `norelation`                    | **deprecated no-op** — relations are no longer inferred from the `ID` suffix, so nothing to opt out of  |
 
 `onDelete` sub-options are joined to the `relation:` directive with a semicolon,
 not a comma. Relationships are covered in full in [Relations](relations.md).
 
-By default a field whose name ends in `ID` (e.g. `UserID`) implies a `BelongsTo`
-relation to the matching model (`User`). Use `norelation` when the column is just
-an identifier — an external reference, an opaque token — that should not be
-resolved as a relation:
+A field whose name ends in `ID` (e.g. `UserID`) is a plain scalar column unless
+tagged `mfx:"relation"`. So a value column that merely ends in `ID` — an external
+reference, an opaque token — needs no special tag:
 
 ```go
-ExternalID string `json:"external_id" mfx:"norelation"` // stays a scalar column
+ExternalID string `json:"external_id"` // just a string, not a relation
+UserID     string `json:"user_id" mfx:"relation"` // → User (opt in)
 ```
 
 ## File upload directives
@@ -336,7 +342,7 @@ filtering/sorting behaviour.
 | `hidden` `writeonly`                                         | response visibility   |
 | `filterable` `sortable` `searchable` `cursor_field:…`        | querying              |
 | `unique` `index`                                             | schema                |
-| `relation:…` `through:…` `norelation`                        | relations             |
+| `relation` `relation:…` `through:…`                          | relations             |
 | `file` `max_size:` `accept:` `auto_delete:false` `file_acl:` | file upload           |
 | `encrypted` `key:…`                                          | encryption            |
 | `scheduled;…`                                                | scheduled transitions |

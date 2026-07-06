@@ -8,56 +8,41 @@ maniflex recognises three kinds:
 
 | Kind | Direction | Declared by |
 |---|---|---|
-| **BelongsTo** | this row holds the FK | `UserID` field (convention) or `mfx:"relation:Name"` (explicit) |
+| **BelongsTo** | this row holds the FK | an FK field tagged `mfx:"relation"` (or `mfx:"relation:Name"`) |
 | **HasMany** | the other table holds the FK | a slice field of the related type |
 | **ManyToMany** | a junction table connects both sides | a slice field with `mfx:"through:Junction"` |
 
-## BelongsTo (convention)
+## BelongsTo
 
-The simplest case: a field whose name is the related model name plus `ID`. No
-tag is required.
+Relations are **opt-in**: tag the foreign-key field `mfx:"relation"`. The target
+model is inferred from the field name with the trailing `ID` stripped
+(`UserID` → `User`).
 
 ```go
 type Post struct {
     maniflex.BaseModel
     Title  string `json:"title" mfx:"required"`
-    UserID string `json:"user_id" mfx:"required,filterable"` // → User
+    UserID string `json:"user_id" mfx:"required,filterable,relation"` // → User
 }
 ```
 
-`UserID` is treated as a foreign key to `User`. The relation is keyed `user`
-(snake-case of the trimmed field name) — that is the value used in `?include=`,
-in nested filters (`?filter=user.role:eq:admin`), and in nested sorts
-(`?sort=user.name:asc`).
+`UserID` is a foreign key to `User`, keyed `user` (snake-case of the trimmed
+field name) — the value used in `?include=`, in nested filters
+(`?filter=user.role:eq:admin`), and in nested sorts (`?sort=user.name:asc`).
 
-The FK field itself is also a regular column. Tag it `filterable` if clients
-need to query by it, exactly like any scalar.
+The FK field is also a regular column. Tag it `filterable` if clients need to
+query by it, exactly like any scalar.
 
-### Opting out of the convention
+> **Note:** an `<Name>ID` field is a plain scalar column **unless** you tag it
+> `mfx:"relation"`. A value column that merely ends in `ID` — `ExternalID`,
+> `CloudEventID`, a third-party token — stays a plain column with no relation and
+> no `?include=` key. (The legacy `mfx:"norelation"` opt-out is now a deprecated
+> no-op, kept only so existing models compile.)
 
-Sometimes a field ends in `ID` but is not a foreign key — an external reference,
-an opaque token, a third-party identifier. Tag it `mfx:"norelation"` to keep it a
-plain scalar column with no relation, no `?include=` key, and no entry in the
-generated OpenAPI relations:
-
-```go
-ExternalID string `json:"external_id" mfx:"norelation"` // just a string, not → External
-```
-
-This is especially common in microservices, where you store a foreign id whose
-owning model lives in **another service** (e.g. `UserID` when users are owned by
-auth-svc). If a convention `…ID` field points at a model that was never
-registered, the framework logs a warning at startup:
-
-```text
-WARN [maniflex] convention relation targets an unregistered model — tag the field
-mfx:"norelation" if it is a plain foreign id, not a relation
-  model=Order field=UserID target_model=User
-```
-
-The column is still created and fully usable — the warning only flags that the
-inferred relation has no target. Tag the field `mfx:"norelation"` to declare it a
-plain foreign id and silence the warning.
+When the field name doesn't match the target model, name it explicitly with
+`mfx:"relation:Target"`. A bare `mfx:"relation"` on a field that doesn't end in
+`ID` warns at startup (there's no suffix to strip); a future strict mode will
+reject it.
 
 ### Including the related row
 
@@ -144,14 +129,14 @@ type Tag struct {
 // The junction model — register it just like any other.
 type ProductTag struct {
     maniflex.BaseModel
-    ProductID string `json:"product_id" mfx:"required,filterable"`
-    TagID     string `json:"tag_id"     mfx:"required,filterable"`
+    ProductID string `json:"product_id" mfx:"required,filterable,relation"`
+    TagID     string `json:"tag_id"     mfx:"required,filterable,relation"`
 }
 ```
 
-All three models must be registered. The junction columns follow the BelongsTo
-convention (`ProductID`, `TagID`), so the framework can resolve which side of
-the join goes where.
+All three models must be registered. The junction's FK columns are declared as
+BelongsTo relations (`mfx:"relation"` on `ProductID` and `TagID`), so the
+framework can resolve which side of the join goes where.
 
 `?include=tags` on a product follows the junction and returns the related tags
 directly; the junction rows are hidden from the response.

@@ -26,16 +26,21 @@ type Bus struct {
 	stream string // JetStream stream name
 }
 
-// New creates a NATS JetStream Bus. stream is the JetStream stream name that
-// must already exist (or be created via New with auto-create).
-// subject prefix uses dot notation: event Type "invoice.created" maps to
-// subject "invoice.created" (subscribed as "invoice.>" for wildcard).
+// New creates a NATS JetStream Bus. stream is the name of a JetStream stream
+// that you must create yourself before using the bus — New does not create it
+// (it only obtains a JetStreamContext). Subject prefix uses dot notation: event
+// Type "invoice.created" maps to subject "invoice.created" (subscribed as
+// "invoice.>" for wildcard).
 //
-// The JetStream stream should be configured with subject filter ">":
+// Scope the stream to the real business subjects you publish — NOT ">". A ">"
+// filter captures NATS system subjects too, so the server only accepts it with
+// NoAck:true, which is incompatible with this adapter's AckExplicit consumers
+// (at-least-once delivery). A consumer with a ">" filter still binds fine to a
+// scoped stream.
 //
 //	js.AddStream(&nats.StreamConfig{
 //	    Name:     "events",
-//	    Subjects: []string{">"},
+//	    Subjects: []string{"invoice.>", "order.>"}, // your namespaces, not ">"
 //	})
 func New(nc *natsclient.Conn, stream string) (*Bus, error) {
 	js, err := nc.JetStream()

@@ -90,7 +90,7 @@ emitted by `AutoMigrate` use a portable subset of SQL.
 
 ## AutoMigrate
 
-When `Config.AutoMigrate` is true (the default), the adapter:
+Unless `Config.DisableAutoMigrate` is set (migration runs by default), the adapter:
 
 1. Creates any table that does not yet exist for a registered model.
 2. Adds any column that exists on the struct but not in the table.
@@ -100,7 +100,7 @@ When `Config.AutoMigrate` is true (the default), the adapter:
    `mfx:"scheduled"` fields.
 
 `AutoMigrate` is suitable for development and many small deployments. For
-larger systems, set `AutoMigrate: false` and manage the schema with a
+larger systems, set `DisableAutoMigrate: true` and manage the schema with a
 dedicated migration tool.
 
 ## The `DBAdapter` interface

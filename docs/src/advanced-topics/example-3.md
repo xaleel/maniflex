@@ -180,7 +180,10 @@ and updates its status. The worker uses the same registered models:
 
 ```go
 func runOutboxWorker(server *maniflex.Server) {
-    events := server.ModelAccessor("OutboxEvent")
+    // Background workers have no ServerContext — build one with NewBackground,
+    // then use ctx.GetModel (or the typed maniflex.List/Read helpers).
+    bg := maniflex.NewBackground(context.Background(), server.DB(), server.Registry())
+    events := bg.GetModel("OutboxEvent")
     for range time.Tick(2 * time.Second) {
         rows, _ := events.List(&maniflex.QueryParams{
             Filters: []*maniflex.FilterExpr{{

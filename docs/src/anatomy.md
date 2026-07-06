@@ -25,7 +25,7 @@ type Message struct {
 }
 
 func main() {
-    server := maniflex.New(maniflex.Config{Port: 8080, PathPrefix: "/api", AutoMigrate: true})
+    server := maniflex.New(maniflex.Config{Port: 8080, PathPrefix: "/api"})
     server.MustRegister(Message{})
 
     if db, err := sqlite.Open("./app.db", server.Registry()); err == nil {
@@ -115,7 +115,7 @@ func Load() maniflex.Config {
     return maniflex.Config{
         Port:        envInt("PORT", 8080),
         PathPrefix:  "/api",
-        AutoMigrate: env("APP_ENV", "dev") != "production",
+        DisableAutoMigrate: env("APP_ENV", "dev") == "production",
     }
 }
 ```

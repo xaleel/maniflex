@@ -31,7 +31,7 @@ Each is its own module. Import only what you use.
 ## The four-step lifecycle (fixed order)
 
 ```go
-server := maniflex.New(maniflex.Config{Port: 8080, PathPrefix: "/api", AutoMigrate: true})
+server := maniflex.New(maniflex.Config{Port: 8080, PathPrefix: "/api"})
 server.MustRegister(User{}, Post{})                    // 1. populate registry
 db, _ := sqlite.Open("./app.db", server.Registry())    // 2. adapter reads registry
 server.SetDB(db)                                       // 3. inject adapter
@@ -458,7 +458,7 @@ type Config struct {
     PathPrefix      string         // default "/api"
     ServiceName     string         // adds "service" attr to logs, X-Service-Name header
     DB              DBAdapter      // required before Start
-    AutoMigrate     bool           // default true
+    DisableAutoMigrate bool        // migration runs by default; set to skip it
     QueryTimeout    time.Duration  // per-request DB deadline; 0 = unlimited
     ShutdownTimeout time.Duration  // default 30s
     Logger          *slog.Logger
@@ -585,8 +585,10 @@ server.Pipeline.Deserialize.Register(func(ctx *maniflex.ServerContext, next func
 
 ### Background worker reading registered models
 ```go
-// In a goroutine launched alongside server.Start():
-events := server.ModelAccessor("OutboxEvent")
+// In a goroutine launched alongside server.Start(). Background code has no
+// ServerContext — build one with NewBackground, then use ctx.GetModel.
+bg := maniflex.NewBackground(context.Background(), server.DB(), server.Registry())
+events := bg.GetModel("OutboxEvent")
 rows, _ := events.List(&maniflex.QueryParams{
     Filters: []*maniflex.FilterExpr{{Field: "status", Operator: maniflex.OpEq, Value: "pending"}},
     Limit:   20,
@@ -647,7 +649,7 @@ main.go             server.MustRegister(auth.Models, orders.Models, catalog.Mode
 ```go
 func newTestServer(t *testing.T) (*httptest.Server, *maniflex.Server) {
     t.Helper()
-    server := maniflex.New(maniflex.Config{Port: 0, PathPrefix: "/api", AutoMigrate: true})
+    server := maniflex.New(maniflex.Config{Port: 0, PathPrefix: "/api"})
     server.MustRegister(User{}, Post{})
     db, err := sqlite.Open(":memory:", server.Registry())
     if err != nil { t.Fatal(err) }

@@ -51,7 +51,6 @@ if err != nil {
 server := maniflex.New(maniflex.Config{
     Port:        8080,
     PathPrefix:  "/api",
-    AutoMigrate: true,
     FileStorage: fs,
 })
 ```

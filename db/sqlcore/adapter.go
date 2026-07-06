@@ -447,17 +447,6 @@ func (a *Adapter) addColumn(ctx context.Context, exec sqlExec, table string, f m
 		}
 	}
 
-	if f.Tags.Unique && f.Tags.DBName != "id" {
-		// UNIQUE constraints cannot be added via ALTER TABLE ADD COLUMN in some
-		// dialects. We omit it here and note it in the log; callers can add an
-		// index manually if uniqueness is required on an existing table.
-		a.getLogger().Warn("AutoMigrate: UNIQUE constraint skipped on new column — "+
-			"add a UNIQUE INDEX manually if required",
-			slog.String("table", table),
-			slog.String("column", f.Tags.DBName),
-		)
-	}
-
 	// Postgres supports IF NOT EXISTS (avoiding a race if two instances start up
 	// at the same time). SQLite does not, so we execute the ALTER and treat
 	// "duplicate column name" as a safe no-op.
@@ -467,11 +456,29 @@ func (a *Adapter) addColumn(ctx context.Context, exec sqlExec, table string, f m
 	} else {
 		query = fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s", q(table), col)
 	}
-	_, err := exec.ExecContext(ctx, query)
-	if err != nil && isDuplicateColumnError(err) {
-		return nil
+	if _, err := exec.ExecContext(ctx, query); err != nil && !isDuplicateColumnError(err) {
+		return err
 	}
-	return err
+
+	// An inline UNIQUE cannot be added via ALTER TABLE ADD COLUMN portably, so we
+	// add it as a separate UNIQUE INDEX (mirroring the create-table + HMAC paths),
+	// making create and alter equivalent. If existing rows already violate the
+	// constraint the index build fails — we surface that as a migration error
+	// (naming the table/column) rather than silently dropping a constraint the
+	// caller's correctness may depend on.
+	if f.Tags.Unique && f.Tags.DBName != "id" {
+		idxName := "uidx_" + table + "_" + f.Tags.DBName
+		idxQuery := fmt.Sprintf(
+			"CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s(%s)",
+			idxName, q(table), q(f.Tags.DBName))
+		if _, err := exec.ExecContext(ctx, idxQuery); err != nil {
+			return fmt.Errorf(
+				"AutoMigrate: cannot add UNIQUE constraint on new column %s.%s "+
+					"(existing rows may already violate it): %w",
+				table, f.Tags.DBName, err)
+		}
+	}
+	return nil
 }
 
 // isDuplicateColumnError reports whether err indicates that an ALTER TABLE

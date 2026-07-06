@@ -204,6 +204,13 @@ field (databases index unique columns implicitly), a `ModelConfig.Indices` entry
 or a scheduled-column auto-index — so adding it is always safe. Indexing a
 foreign-key column (e.g. `mfx:"index"` on `UserID`) is a common, valid use.
 
+`unique` is enforced on both the create-table and the add-column (`ALTER TABLE`)
+paths — AutoMigrate creates a `UNIQUE INDEX` named `uidx_<table>_<column>` in both
+cases. Adding a `unique` column to a table that already holds rows with duplicate
+values in that column **fails migration** (the index build errors, naming the
+table and column) rather than silently dropping the constraint; resolve the
+duplicates before deploying.
+
 ## Relation directives
 
 A field may declare a relationship to another model. The legacy ID-suffix

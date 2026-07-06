@@ -599,6 +599,13 @@ func (c *Server) SetKeyProvider(kp KeyProvider) {
 	c.steps.keyProvider = kp
 }
 
+// KeyProvider returns the configured KeyProvider (nil if none). Use it to wire a
+// background ServerContext for typed access to encrypted models:
+//
+//	bg := maniflex.NewBackground(ctx, srv.DB(), srv.Registry())
+//	bg.SetKeyProvider(srv.KeyProvider())
+func (c *Server) KeyProvider() KeyProvider { return c.cfg.KeyProvider }
+
 // SetDB injects or replaces the database adapter after construction.
 // This allows the two-step init pattern:
 //

@@ -96,6 +96,7 @@ func (h *handlers) buildContext(w http.ResponseWriter, r *http.Request, meta *Mo
 		// holding a direct reference to the adapter.
 		adapter:     h.steps.adapter,
 		reg:         h.steps.reg,
+		keyProvider: h.steps.keyProvider,
 		logger:      h.cfg.logger(),
 		serviceName: h.cfg.ServiceName,
 		trace:       h.cfg.traceConfig(),

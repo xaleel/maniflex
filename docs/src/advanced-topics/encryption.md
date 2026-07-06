@@ -49,6 +49,28 @@ For columns that need to be queryable but contain sensitive data, store a
 non-sensitive lookup key (a hashed identifier) in a separate field and
 encrypt only the payload.
 
+## Access paths
+
+Encryption is applied on every access path, not just HTTP:
+
+- **HTTP pipeline** — automatic.
+- **Typed helpers** (`maniflex.Create` / `Read` / `Update` / `List`) and
+  **`ctx.GetModel(name)`** — encrypt on write and decrypt on read using the
+  `ServerContext`'s KeyProvider (set automatically inside a request).
+- **Background workers / CLIs** using `maniflex.NewBackground(...)` — call
+  `bg.SetKeyProvider(srv.KeyProvider())` so typed access to encrypted models
+  encrypts and decrypts:
+
+  ```go
+  bg := maniflex.NewBackground(ctx, srv.DB(), srv.Registry())
+  bg.SetKeyProvider(srv.KeyProvider())
+  p, _ := maniflex.Read[Patient](bg, id) // decrypted
+  ```
+
+The raw adapter (`srv.DB().Create/FindMany`) is deliberately encryption-agnostic
+— it stores and returns ciphertext verbatim, which is what `RotateEncryptionKey`
+relies on. Use the typed helpers or `ctx.GetModel` for transparent crypto.
+
 ## Configuring a KeyProvider
 
 `maniflex.Config.KeyProvider` must be set before any model with encrypted

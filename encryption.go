@@ -117,6 +117,35 @@ func decryptFields(ctx context.Context, kp KeyProvider, model *ModelMeta, data m
 	return nil
 }
 
+// encryptForWrite encrypts a write map's mfx:"encrypted" fields when the model
+// declares any. It is the shared entry point for the non-pipeline write paths
+// (typed maniflex.Create/Update and ctx.GetModel), mirroring what the HTTP DB
+// step does. Returns an error if encrypted fields are present but no KeyProvider
+// is configured. No-op for models without encrypted fields.
+func encryptForWrite(ctx context.Context, kp KeyProvider, model *ModelMeta, data map[string]any) error {
+	if !model.HasEncryptedFields() {
+		return nil
+	}
+	if kp == nil {
+		return fmt.Errorf("maniflex: model %q has mfx:\"encrypted\" fields but no KeyProvider is configured", model.Name)
+	}
+	return encryptFields(ctx, kp, model, data)
+}
+
+// decryptForRead decrypts a read map's mfx:"encrypted" fields in place. With no
+// KeyProvider it still strips the {field}_hmac companion columns so they never
+// surface. No-op for models without encrypted fields.
+func decryptForRead(ctx context.Context, kp KeyProvider, model *ModelMeta, data map[string]any) error {
+	if !model.HasEncryptedFields() {
+		return nil
+	}
+	if kp == nil {
+		stripHMACColumns(model, data)
+		return nil
+	}
+	return decryptFields(ctx, kp, model, data)
+}
+
 // stripHMACColumns removes {field}_hmac keys from data for all encrypted fields
 // that carry a unique constraint. Called on reads when no KeyProvider is set so
 // HMAC columns are never surfaced through the API.

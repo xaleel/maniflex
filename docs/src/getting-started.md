@@ -68,7 +68,6 @@ func main() {
     server := maniflex.New(maniflex.Config{
         Port:        8080,
         PathPrefix:  "/api",
-        AutoMigrate: true,
     })
 
     // 2. Register models — this populates the registry.
@@ -89,7 +88,7 @@ func main() {
 }
 ```
 
-`AutoMigrate: true` creates and updates tables to match your structs on
+Migration (on by default) creates and updates tables to match your structs on
 startup — convenient for development. For an in-memory database that resets on
 every run, pass `":memory:"` to `sqlite.Open`.
 

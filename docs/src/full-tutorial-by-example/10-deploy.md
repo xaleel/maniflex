@@ -53,7 +53,7 @@ func loadConfig() maniflex.Config {
         PathPrefix:  envStr("PATH_PREFIX", "/api"),
         ServiceName: envStr("SERVICE_NAME", "bookstore"),
 
-        AutoMigrate:     envStr("AUTO_MIGRATE", "true") == "true",
+        DisableAutoMigrate: envStr("AUTO_MIGRATE", "true") != "true",
         QueryTimeout:    envDuration("QUERY_TIMEOUT", 30*time.Second),
         ShutdownTimeout: envDuration("SHUTDOWN_TIMEOUT", 30*time.Second),
 
@@ -73,7 +73,7 @@ Pick whichever style fits your team — both produce the same `maniflex.Config`.
 
 ## Production-safe migrations
 
-`AutoMigrate: true` is convenient in development. In production, the
+Migration runs by default (convenient in development). In production, the
 prevailing pattern is:
 
 1. Disable `AutoMigrate` on every instance.
@@ -173,7 +173,7 @@ nothing else in the framework requires a C toolchain.
 |                                     | Setting                                                       |
 | ----------------------------------- | ------------------------------------------------------------- |
 | Database                            | `maniflex/db/postgres` with `WriteURL` and optional `ReadURL` |
-| Migrations                          | `AutoMigrate: false` + external migration tool                |
+| Migrations                          | `DisableAutoMigrate: true` + external migration tool                |
 | Logger                              | JSON handler                                                  |
 | `Config.ServiceName`                | the service name                                              |
 | `Config.QueryTimeout`               | bounded (e.g. `30s`)                                          |

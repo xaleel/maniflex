@@ -29,7 +29,7 @@ per-field `Changes` diff. See [Audit Logging](../advanced-topics/audit.md).
 [ServerContext](../the-request-pipeline/context.md).
 
 **AutoMigrate.** The startup phase that creates and alters tables to match
-registered models. Enabled by default via `Config.AutoMigrate`. See
+registered models. Runs by default; disable with `Config.DisableAutoMigrate`. See
 [Database Backends](../deployment/databases.md).
 
 ## B

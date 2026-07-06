@@ -7,7 +7,6 @@ sensible default; populate only the ones that differ from those defaults.
 server := maniflex.New(maniflex.Config{
     Port:        8080,
     PathPrefix:  "/api",
-    AutoMigrate: true,
 })
 ```
 
@@ -31,7 +30,7 @@ serving options.
 | Field | Default | Purpose |
 |---|---|---|
 | `DB` | nil | the default `DBAdapter`. Usually set via `server.SetDB(db)` after `MustRegister`. Optional when every model has its own `ModelConfig.Adapter` — see [Per-model adapter routing](databases.md#per-model-adapter-routing) |
-| `AutoMigrate` | `true` | run schema migration on startup |
+| `DisableAutoMigrate` | `false` | skip schema migration on startup (migration runs by default) |
 | `DBWriteURL` | `""` | DSN for the primary database (informational; populated by `ConfigFromEnv`) |
 | `DBReadURL` | `""` | DSN for the read replica (informational) |
 | `QueryTimeout` | `0` (unlimited) | per-request deadline applied to all DB calls; exceeding it produces `504 TIMEOUT` |
@@ -105,6 +104,6 @@ override individual fields in code where needed.
 
 ```go
 cfg := maniflex.ConfigFromEnv()
-cfg.AutoMigrate = false  // disable for production
+cfg.DisableAutoMigrate = true  // disable for production
 server := maniflex.New(cfg)
 ```

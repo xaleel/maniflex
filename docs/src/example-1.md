@@ -51,7 +51,6 @@ func main() {
     server := maniflex.New(maniflex.Config{
         Port:        8080,
         PathPrefix:  "/api",
-        AutoMigrate: true,
     })
 
     // 2. Register both models — populates the registry.
@@ -89,7 +88,7 @@ Every field choice maps to a tag covered in [Getting Started](getting-started.md
 | `Name` | `filterable,sortable` | optional; queryable and sortable |
 
 `maniflex.BaseModel` adds `id`, `created_at`, and `updated_at` to both structs, so
-those are never declared by hand. With `AutoMigrate: true`, the `posts` and
+those are never declared by hand. With migration on by default, the `posts` and
 `subscribers` tables are created to match on startup.
 
 ## The endpoints you get

@@ -32,7 +32,6 @@ func newTestServer(t *testing.T) (*httptest.Server, *maniflex.Server) {
     server := maniflex.New(maniflex.Config{
         Port:        0,
         PathPrefix:  "/api",
-        AutoMigrate: true,
     })
 
     server.MustRegister(

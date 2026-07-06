@@ -3,7 +3,22 @@
 A field tagged `mfx:"file"` accepts an uploaded file alongside the model's
 JSON. The column stores an opaque *storage key*; the bytes live in a
 configured `FileStorage` backend. Standalone upload, download, and delete
-endpoints are also mounted when storage is configured.
+endpoints can also be mounted (see [Standalone file endpoints](#standalone-file-endpoints)).
+
+> **Config changed.** File settings now live under a single
+> `Config.FilesConfig` struct (`maniflex.FilesConfig`). The old flat
+> `Config.FileStorage`, `Config.FileSignedURLTTL`, and `Config.FileMiddleware`
+> fields have been removed. The mapping is:
+>
+> | Old (`Config.…`) | New (`Config.FilesConfig.…`) |
+> |---|---|
+> | `FileStorage` | `Storage` |
+> | `FileSignedURLTTL` | `SignedURLTTL` |
+> | `FileMiddleware` | `BeforeMiddlewares` |
+> | *(implied by `FileStorage != nil`)* | `MountEndpoints` — **now explicit**, see the [footgun](#mountendpoints-is-explicit) |
+>
+> New: `KeyGen` (custom storage-key layout) and `AfterMiddlewares`
+> (post-handler observation).
 
 ## Declaring a file field
 
@@ -53,7 +68,9 @@ Configure the signed-URL lifetime once on `Config`:
 
 ```go
 maniflex.New(maniflex.Config{
-    FileSignedURLTTL: 15 * time.Minute, // default: 1h
+    FilesConfig: maniflex.FilesConfig{
+        SignedURLTTL: 15 * time.Minute, // default: 1h
+    },
 })
 ```
 
@@ -64,8 +81,9 @@ the AWS 7-day maximum.
 
 ## Configuring storage
 
-Uploads require a `FileStorage` implementation on `maniflex.Config`. The framework
-ships one backend; bring your own for cloud storage.
+Uploads require a `FileStorage` implementation, set on
+`Config.FilesConfig.Storage`. The framework ships one backend; bring your own
+for cloud storage.
 
 ```go
 import "github.com/xaleel/maniflex/storage"
@@ -76,16 +94,59 @@ if err != nil {
 }
 
 server := maniflex.New(maniflex.Config{
-    Port:        8080,
-    FileStorage: fs,
+    Port: 8080,
+    FilesConfig: maniflex.FilesConfig{
+        Storage:        fs,
+        MountEndpoints: true, // mount POST/GET/DELETE /files — see the footgun below
+    },
 })
 ```
 
-`FileStorage` is a small interface — `Store`, `Retrieve`, `Delete`, `Exists` —
-making S3, R2, GCS, or any other key-value store straightforward to adapt.
+`FileStorage` is a small interface — `Store`, `Retrieve`, `Delete`, `Exists`,
+`URL` — making S3, R2, GCS, or any other key-value store straightforward to
+adapt.
 
-When `FileStorage` is `nil`, model endpoints still accept JSON, but multipart
+When `Storage` is `nil`, model endpoints still accept JSON, but multipart
 uploads and the standalone `/files` routes respond with `501 Not Implemented`.
+
+### `MountEndpoints` is explicit
+
+`MountEndpoints` gates only the **standalone** `/files` routes and defaults to
+`false`. Setting `Storage` alone is **not** enough to mount them:
+
+| You set | Multipart on `mfx:"file"` fields | Per-model attachment routes | Standalone `/files` |
+|---|---|---|---|
+| `Storage` only | ✅ enabled | ✅ mounted | ❌ **not mounted (404)** |
+| `Storage` + `MountEndpoints: true` | ✅ enabled | ✅ mounted | ✅ mounted |
+| `MountEndpoints: true`, `Storage` nil | ❌ 501 | ❌ 501 | ✅ mounted, returns 501 |
+
+> **Migration footgun.** Before this release a non-nil `FileStorage`
+> auto-mounted `/files`. That is no longer implied — if you relied on the
+> standalone endpoints, add `MountEndpoints: true`. Model file fields and
+> per-model attachment routes remain gated on `Storage` alone and are
+> unaffected.
+
+### Custom storage keys with `KeyGen`
+
+By default a `POST /files` upload is stored under
+`uploads/<uuid>/<sanitised-filename>`. Override `KeyGen` to control the layout —
+for example, to shard by tenant read from the request context:
+
+```go
+FilesConfig: maniflex.FilesConfig{
+    Storage:        fs,
+    MountEndpoints: true,
+    KeyGen: func(ctx *maniflex.ServerContext, h *multipart.FileHeader) string {
+        tenant := ctx.Auth.Claims["tenant"] // populated by a BeforeMiddleware
+        return fmt.Sprintf("%s/%s", tenant, h.Filename)
+    },
+},
+```
+
+The returned string is used **verbatim** as the storage key — sanitise any
+user-supplied component yourself (the default uses `sanitizeFilename`). `KeyGen`
+applies only to the standalone `POST /files` route; per-model attachment keys
+are framework-generated.
 
 ### S3, R2, MinIO, DigitalOcean Spaces
 
@@ -173,7 +234,7 @@ In tests, seed the key into the shared storage before referencing it.
 
 ## Standalone file endpoints
 
-When `FileStorage` is configured, three routes are mounted under `PathPrefix`:
+When `MountEndpoints` is `true`, three routes are mounted under `PathPrefix`:
 
 | Method | Path | Action |
 |---|---|---|
@@ -190,16 +251,19 @@ The returned `key` is the value to store in a `file`-tagged column.
 return `404`.
 
 These endpoints are storage-key-addressed and have **no built-in auth**
-when `Config.FileMiddleware` is empty. Set it to wrap the routes with the
+when `BeforeMiddlewares` is empty. Set it to wrap the routes with the
 same pipeline middleware (e.g. JWT, role checks) that protects your model
 endpoints:
 
 ```go
 maniflex.New(maniflex.Config{
-    FileStorage: fs,
-    FileMiddleware: []maniflex.MiddlewareFunc{
-        auth.JWTAuth(secret, auth.JWTOptions{}),
-        auth.RequireRole("admin"),
+    FilesConfig: maniflex.FilesConfig{
+        Storage:        fs,
+        MountEndpoints: true,
+        BeforeMiddlewares: []maniflex.MiddlewareFunc{
+            auth.JWTAuth(secret, auth.JWTOptions{}),
+            auth.RequireRole("admin"),
+        },
     },
 })
 ```
@@ -207,10 +271,36 @@ maniflex.New(maniflex.Config{
 Each middleware sees a synthesised `ServerContext` (Request, Writer, Ctx,
 RequestID, logger — no Model/Operation, since these routes are outside
 the model pipeline). Aborting the context short-circuits the request
-before the file handler runs. Leaving `FileMiddleware` empty keeps the
+before the file handler runs. Leaving `BeforeMiddlewares` empty keeps the
 pre-fix behaviour for backward compatibility, but production deployments
 should populate it — anyone who guesses a key could otherwise delete
 arbitrary files.
+
+### Before vs. after middleware
+
+`BeforeMiddlewares` run **before** the handler and own request control: they
+can authenticate, populate `ctx.Auth`, or short-circuit (abort / set
+`ctx.Response`) to replace the response entirely.
+
+`AfterMiddlewares` run **after** the handler has served the request. Because
+the handler streams its response (status, headers, body) straight to the
+client, the response is already committed by the time an after-middleware runs —
+so they are for **observation and side effects only** (audit logging, metrics,
+cleanup), never for altering the response. Read the outcome with:
+
+```go
+AfterMiddlewares: []maniflex.MiddlewareFunc{
+    func(ctx *maniflex.ServerContext, next func() error) error {
+        status := ctx.Writer.(interface{ Status() int }).Status()
+        log.Printf("file request completed: %d", status)
+        return next()
+    },
+},
+```
+
+Setting `ctx.Response` from an after-middleware is ignored (and logged) rather
+than corrupting the already-sent body. To alter, replace, or block the
+response, use `BeforeMiddlewares`.
 
 ## Per-model attachment routes
 
@@ -239,9 +329,10 @@ Response codes:
 | `404 FILE_NOT_FOUND` | the field references a key that is missing from storage |
 | `401 / 403` | whatever the Auth middleware decided |
 
-The route is only mounted when `Config.FileStorage` is configured; with no
-storage backend, the route is absent and requests return `404` from the
-router.
+The route is only mounted when `Config.FilesConfig.Storage` is configured; with
+no storage backend, the route is absent and requests return `404` from the
+router. (Unlike the standalone `/files` endpoints, per-model attachment routes
+do not require `MountEndpoints`.)
 
 Internally this is dispatched as a new operation, `maniflex.OpReadAttachment`.
 Middleware filtered by `ForOperation(OpRead)` does **not** apply to
@@ -307,4 +398,4 @@ ship with the app.
 | Source | uploaded at runtime | committed to the repo |
 | Storage | `FileStorage` backend | local disk |
 | URL | `/files/<key>` | `/static/<path>` |
-| Configured by | `Config.FileStorage` | a `static/` directory |
+| Configured by | `Config.FilesConfig.Storage` | a `static/` directory |

@@ -49,16 +49,16 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 		// Each handler is wrapped in cfg.FileMiddleware so callers can apply
 		// auth (e.g. auth.JWTAuth) to the standalone /files routes — the
 		// per-model attachment routes already run through the full pipeline.
-		if cfg.FileStorage != nil {
-			fh := newFileHandlers(cfg.FileStorage)
-			r.Method(http.MethodPost, "/files", wrapFileMiddleware(cfg, fh.Upload()))
-			r.Method(http.MethodGet, "/files/*", wrapFileMiddleware(cfg, fh.Serve()))
-			r.Method(http.MethodDelete, "/files/*", wrapFileMiddleware(cfg, fh.Delete()))
+		if cfg.FilesConfig.MountEndpoints {
+			fh := newFileHandlers(cfg.FilesConfig)
+			r.Method(http.MethodPost, "/files", wrapFileMiddleware(cfg, fh.Upload))
+			r.Method(http.MethodGet, "/files/*", wrapFileMiddleware(cfg, fh.Serve))
+			r.Method(http.MethodDelete, "/files/*", wrapFileMiddleware(cfg, fh.Delete))
 		}
 
 		// One sub-router per registered model. Headless models register fully but
 		// mount no REST routes, freeing their table path for a custom action.
-		storageConfigured := cfg.FileStorage != nil
+		storageConfigured := cfg.FilesConfig.Storage != nil
 		for _, meta := range reg.All() {
 			if meta.Config.Headless {
 				continue

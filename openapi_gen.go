@@ -53,7 +53,7 @@ func GenerateSpec(reg RegistryAccessor, cfg *Config, actions []ActionConfig, sea
 	}
 
 	// Add standalone file endpoints when storage is configured
-	if cfg.FileStorage != nil {
+	if cfg.FilesConfig.MountEndpoints {
 		buildFileEndpointPaths(spec)
 	}
 
@@ -247,7 +247,7 @@ func buildModelPaths(spec *OpenAPISpec, m *ModelMeta, cfg *Config) {
 	// For models with file fields, offer both JSON and multipart content types.
 	createContent := jsonContent(ref(m.Name + "Create"))
 	updateContent := jsonContent(ref(m.Name + "Update"))
-	if m.HasFileFields() && cfg.FileStorage != nil {
+	if m.HasFileFields() && cfg.FilesConfig.Storage != nil {
 		createContent = withMultipartContent(createContent, spec, m, "Create")
 		updateContent = withMultipartContent(updateContent, spec, m, "Update")
 	}
@@ -342,7 +342,7 @@ func buildModelPaths(spec *OpenAPISpec, m *ModelMeta, cfg *Config) {
 
 	// Per-model attachment routes (3B.3a): one path per mfx:"file" field,
 	// mounted only when storage is configured (matches router.go behaviour).
-	if cfg.FileStorage != nil {
+	if cfg.FilesConfig.Storage != nil {
 		for _, ff := range m.FileFields() {
 			fieldName := ff.Tags.JSONName
 			respContent := map[string]OASMediaType{

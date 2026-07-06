@@ -65,6 +65,11 @@ type Options struct {
 	FileStorage maniflex.FileStorage
 	// FileMiddleware wraps the standalone /files endpoints.
 	FileMiddleware []maniflex.MiddlewareFunc
+	// FilesConfig, when non-nil, is used verbatim as maniflex.Config.FilesConfig,
+	// overriding the FileStorage/FileMiddleware convenience fields above. Use it
+	// to exercise the full FilesConfig surface (KeyGen, MountEndpoints,
+	// AfterMiddlewares) that the convenience fields don't reach.
+	FilesConfig *maniflex.FilesConfig
 	// KeyProvider sets the encryption key provider for mfx:"encrypted" fields.
 	KeyProvider maniflex.KeyProvider
 }
@@ -90,16 +95,24 @@ func NewServer(t testing.TB, opts Options) *Server {
 		models = DefaultModels()
 	}
 
+	filesConfig := maniflex.FilesConfig{
+		Storage:           opts.FileStorage,
+		MountEndpoints:    opts.FileStorage != nil,
+		BeforeMiddlewares: opts.FileMiddleware,
+	}
+	if opts.FilesConfig != nil {
+		filesConfig = *opts.FilesConfig
+	}
+
 	server := maniflex.New(maniflex.Config{
-		PathPrefix:     prefix,
-		AutoMigrate:    autoMigrate,
-		PanicLogger:    opts.PanicLogger,
-		QueryTimeout:   opts.QueryTimeout,
-		HealthCheckDB:  opts.HealthCheckDB,
-		HealthTimeout:  opts.HealthTimeout,
-		FileStorage:    opts.FileStorage,
-		FileMiddleware: opts.FileMiddleware,
-		KeyProvider:    opts.KeyProvider,
+		PathPrefix:    prefix,
+		AutoMigrate:   autoMigrate,
+		PanicLogger:   opts.PanicLogger,
+		QueryTimeout:  opts.QueryTimeout,
+		HealthCheckDB: opts.HealthCheckDB,
+		HealthTimeout: opts.HealthTimeout,
+		FilesConfig:   filesConfig,
+		KeyProvider:   opts.KeyProvider,
 	})
 	server.MustRegister(models...)
 

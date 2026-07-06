@@ -60,9 +60,9 @@ func New(cfg Config) *Server {
 
 	reg := newRegistry()
 	steps := newDefaultSteps(cfg.DB, reg)
-	steps.storage = cfg.FileStorage
+	steps.storage = cfg.FilesConfig.Storage
 	steps.keyProvider = cfg.KeyProvider
-	steps.signedURLTTL = cfg.FileSignedURLTTL
+	steps.signedURLTTL = cfg.FilesConfig.SignedURLTTL
 	oasSteps := newOASDefaultSteps(reg, &cfg)
 	pipeline := newPipeline(steps, oasSteps)
 
@@ -449,7 +449,7 @@ func (c *Server) Handler() http.Handler {
 		// registered (commonly a foreign id that should be mfx:"norelation").
 		warnDanglingRelations(c.registry, c.cfg.logger())
 		// Auto-register file cleanup middleware for models with file fields
-		if c.cfg.FileStorage != nil {
+		if c.cfg.FilesConfig.Storage != nil {
 			c.registerFileCleanup()
 		}
 		// Warn about middleware registered on a pipeline step its operation can
@@ -489,7 +489,7 @@ func (c *Server) registerFileCleanup() {
 		}
 
 		modelName := meta.Name
-		storage := c.cfg.FileStorage
+		storage := c.cfg.FilesConfig.Storage
 
 		// Before-DB: capture old file keys before the record is deleted
 		captureOldKeys := func(ctx *ServerContext, next func() error) error {
@@ -585,7 +585,7 @@ func (c *Server) DB() DBAdapter {
 //	fs, _ := storage.NewLocalStorage("./uploads")
 //	server.SetStorage(fs)
 func (c *Server) SetStorage(fs FileStorage) {
-	c.cfg.FileStorage = fs
+	c.cfg.FilesConfig.Storage = fs
 	c.steps.storage = fs
 }
 

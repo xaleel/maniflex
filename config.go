@@ -308,38 +308,7 @@ type Config struct {
 	// string to route reads to the write primary. Populated by ConfigFromEnv.
 	DBReadURL string
 
-	// FileStorage is the storage backend for file uploads. When nil, models
-	// with mfx:"file" fields will reject multipart file uploads with 501.
-	// Set before calling Start(), or use SetStorage() for two-step init.
-	//
-	// Use storage.NewLocalStorage(path) for disk-based storage, or implement
-	// the FileStorage interface for S3, R2, GCS, etc.
-	FileStorage FileStorage
-
-	// FileSignedURLTTL is the default time-to-live for pre-signed URLs generated
-	// for mfx:"file_acl:signed" fields. Default: DefaultFileSignedURLTTL (1 hour).
-	FileSignedURLTTL time.Duration
-
-	// FileMiddleware wraps the standalone /files endpoints (POST /files,
-	// GET /files/*, DELETE /files/*) with the supplied pipeline middleware
-	// chain. Middlewares run in slice order; any that sets ctx.Response
-	// short-circuits the request before the file handler runs.
-	//
-	// Empty (the default) leaves /files unauthenticated — backward-compatible
-	// with pre-fix behaviour but unsafe for production: anyone who guesses a
-	// key can delete arbitrary files. Recommended production setup:
-	//
-	//	maniflex.Config{
-	//	    FileStorage:    storage.NewLocalStorage("./uploads"),
-	//	    FileMiddleware: []maniflex.MiddlewareFunc{
-	//	        auth.JWTAuth("...", auth.JWTOptions{}),
-	//	        auth.RequireRole("admin"),
-	//	    },
-	//	}
-	//
-	// Per-model attachment routes (mfx:"file" fields on a registered model)
-	// already run through the full Auth / DB pipeline and are unaffected.
-	FileMiddleware []MiddlewareFunc
+	FilesConfig FilesConfig
 
 	// KeyProvider is the encryption key provider for mfx:"encrypted" fields.
 	// When nil, any attempt to create or update a record with encrypted fields

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,19 +17,27 @@ import (
 // fileHandlers holds standalone file upload/download/delete handlers.
 // These operate outside the model pipeline (like the health endpoint).
 type fileHandlers struct {
-	storage FileStorage
+	config FilesConfig
 }
 
-func newFileHandlers(storage FileStorage) *fileHandlers {
-	return &fileHandlers{storage: storage}
+func DefaultKeyGen(_ *ServerContext, header *multipart.FileHeader) string {
+	return fmt.Sprintf("uploads/%s/%s", uuid.New().String(),
+		sanitizeFilename(header.Filename))
+}
+
+func newFileHandlers(config FilesConfig) *fileHandlers {
+	if config.KeyGen == nil {
+		config.KeyGen = DefaultKeyGen
+	}
+	return &fileHandlers{config}
 }
 
 // Upload handles POST /files — standalone file upload not tied to a model.
 // Accepts multipart/form-data with a single "file" field.
 // Returns 201 with {"data": {"key":"...","content_type":"...","size":123,"filename":"..."}}.
-func (fh *fileHandlers) Upload() http.HandlerFunc {
+func (fh *fileHandlers) Upload(ctx *ServerContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if fh.storage == nil {
+		if fh.config.Storage == nil {
 			writeJSONError(w, http.StatusNotImplemented, "NO_STORAGE",
 				"file storage not configured")
 			return
@@ -49,8 +58,7 @@ func (fh *fileHandlers) Upload() http.HandlerFunc {
 		}
 		defer file.Close()
 
-		key := fmt.Sprintf("uploads/%s/%s", uuid.New().String(),
-			sanitizeFilename(header.Filename))
+		key := fh.config.KeyGen(ctx, header)
 
 		meta := FileMeta{
 			Key:         key,
@@ -59,7 +67,7 @@ func (fh *fileHandlers) Upload() http.HandlerFunc {
 			Filename:    header.Filename,
 		}
 
-		if err := fh.storage.Store(r.Context(), key, file, meta); err != nil {
+		if err := fh.config.Storage.Store(r.Context(), key, file, meta); err != nil {
 			writeJSONError(w, http.StatusInternalServerError, "STORE_ERROR",
 				fmt.Sprintf("failed to store file: %s", err.Error()))
 			return
@@ -74,9 +82,9 @@ func (fh *fileHandlers) Upload() http.HandlerFunc {
 }
 
 // Serve handles GET /files/* — streams a file from storage to the client.
-func (fh *fileHandlers) Serve() http.HandlerFunc {
+func (fh *fileHandlers) Serve(ctx *ServerContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if fh.storage == nil {
+		if fh.config.Storage == nil {
 			writeJSONError(w, http.StatusNotImplemented, "NO_STORAGE",
 				"file storage not configured")
 			return
@@ -95,7 +103,7 @@ func (fh *fileHandlers) Serve() http.HandlerFunc {
 			return
 		}
 
-		rc, meta, err := fh.storage.Retrieve(r.Context(), uriDecoded)
+		rc, meta, err := fh.config.Storage.Retrieve(r.Context(), uriDecoded)
 		if err != nil {
 			if errors.Is(err, ErrFileNotFound) {
 				writeJSONError(w, http.StatusNotFound, "FILE_NOT_FOUND",
@@ -131,9 +139,9 @@ func writeFileResponse(w http.ResponseWriter, meta FileMeta, rc io.Reader) {
 
 // Delete handles DELETE /files/* — removes a file from storage.
 // Returns 204 No Content on success.
-func (fh *fileHandlers) Delete() http.HandlerFunc {
+func (fh *fileHandlers) Delete(ctx *ServerContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if fh.storage == nil {
+		if fh.config.Storage == nil {
 			writeJSONError(w, http.StatusNotImplemented, "NO_STORAGE",
 				"file storage not configured")
 			return
@@ -151,7 +159,7 @@ func (fh *fileHandlers) Delete() http.HandlerFunc {
 		// hit a successful 204 and the other returned a 500 "DELETE_ERROR".
 		// Translating ErrFileNotFound here keeps the missing-key 404 contract
 		// without the extra round-trip.
-		if err := fh.storage.Delete(r.Context(), key); err != nil {
+		if err := fh.config.Storage.Delete(r.Context(), key); err != nil {
 			if errors.Is(err, ErrFileNotFound) {
 				writeJSONError(w, http.StatusNotFound, "FILE_NOT_FOUND",
 					fmt.Sprintf("file %q not found", key))
@@ -179,47 +187,108 @@ func (fh *fileHandlers) Delete() http.HandlerFunc {
 // to the wire and the file handler is not called. When a middleware returns
 // an error, the response is a generic 500 — middleware that wants a specific
 // status should call ctx.Abort instead of returning.
-func wrapFileMiddleware(cfg *Config, h http.HandlerFunc) http.Handler {
-	if len(cfg.FileMiddleware) == 0 {
-		return h
-	}
-	chain := append([]MiddlewareFunc(nil), cfg.FileMiddleware...)
+func wrapFileMiddleware(cfg *Config, hf func(ctx *ServerContext) http.HandlerFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The file handlers stream directly to the wire (Serve does io.Copy of
+		// arbitrarily large files), so the response is committed the moment the
+		// handler runs. obs records the outcome without buffering the body,
+		// letting AfterMiddlewares observe the result and guarding against a
+		// double-write when ctx.Response is set after the body is already sent.
+		obs := &responseObserver{ResponseWriter: w}
 		ctx := &ServerContext{
 			Request:     r,
-			Writer:      w,
+			Writer:      obs,
 			Ctx:         r.Context(),
 			RequestID:   r.Header.Get("X-Request-Id"),
 			logger:      cfg.logger(),
 			serviceName: cfg.ServiceName,
 			trace:       cfg.traceConfig(),
 		}
+		if len(cfg.FilesConfig.BeforeMiddlewares)+len(cfg.FilesConfig.AfterMiddlewares) == 0 {
+			hf(ctx).ServeHTTP(obs, r)
+			return
+		}
 
-		i := 0
+		ib := 0
+		ia := 0
 		var run func() error
 		run = func() error {
 			if ctx.Response != nil {
-				return nil // a prior middleware short-circuited
+				return nil // a prior before-middleware short-circuited
 			}
-			if i >= len(chain) {
-				h.ServeHTTP(w, r)
-				return nil
+			if ib >= len(cfg.FilesConfig.BeforeMiddlewares) {
+				// run handler once, after all BeforeMiddlewares have passed
+				if ia == 0 {
+					hf(ctx).ServeHTTP(obs, r) // streams straight to the client
+				}
+				// all AfterMiddlewares ran
+				if ia >= len(cfg.FilesConfig.AfterMiddlewares) {
+					return nil
+				}
+				// run AfterMiddlewares
+				mw := cfg.FilesConfig.AfterMiddlewares[ia]
+				ia++
+				return mw(ctx, run)
 			}
-			mw := chain[i]
-			i++
+			mw := cfg.FilesConfig.BeforeMiddlewares[ib]
+			ib++
 			return mw(ctx, run)
 		}
 
 		if err := run(); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "INTERNAL",
-				"internal server error")
+			// Don't stack a 500 on top of an already-streamed body.
+			if !obs.wrote {
+				writeJSONError(obs, http.StatusInternalServerError, "INTERNAL",
+					"internal server error")
+			}
 			return
 		}
+
+		// The handler streams its response directly. Only fall back to writing
+		// ctx.Response when the handler never ran — i.e. a before-middleware
+		// short-circuited. An after-middleware that sets ctx.Response once the
+		// body is already on the wire cannot rewrite it; warn instead of
+		// emitting a corrupt double-write.
 		if ctx.Response != nil {
-			ctx.Response.Write(w)
+			if obs.wrote {
+				cfg.logger().Warn("file middleware: ctx.Response set after the response was already sent; ignoring",
+					"status", obs.status)
+			} else {
+				ctx.Response.Write(obs)
+			}
 		}
 	})
 }
+
+// responseObserver wraps the ResponseWriter to record the handler's outcome
+// (status code + whether anything was written) WITHOUT buffering the body, so
+// file downloads still stream straight to the client. AfterMiddlewares read
+// this via ctx.Writer to observe the result; because the body is already on
+// the wire, they can run side effects (audit, metrics, cleanup) but cannot
+// rewrite a response the handler has already committed.
+type responseObserver struct {
+	http.ResponseWriter
+	status int
+	wrote  bool
+}
+
+func (o *responseObserver) WriteHeader(code int) {
+	if !o.wrote {
+		o.status, o.wrote = code, true
+	}
+	o.ResponseWriter.WriteHeader(code)
+}
+
+func (o *responseObserver) Write(b []byte) (int, error) {
+	if !o.wrote {
+		o.status, o.wrote = http.StatusOK, true
+	}
+	return o.ResponseWriter.Write(b)
+}
+
+// Status reports the status code the handler sent (0 if nothing was written).
+// After-middlewares can read it with ctx.Writer.(interface{ Status() int }).
+func (o *responseObserver) Status() int { return o.status }
 
 // writeJSONError writes a maniflex-style error envelope.
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {

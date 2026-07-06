@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime/multipart"
 	"time"
 )
 
@@ -38,6 +39,96 @@ type FileMeta struct {
 	ContentType string `json:"content_type"`
 	Size        int64  `json:"size"`
 	Filename    string `json:"filename"`
+}
+
+// FilesConfig groups all file-upload/storage settings under Config.FilesConfig.
+// It supersedes the flat Config.FileStorage / FileSignedURLTTL / FileMiddleware
+// fields removed in this release.
+//
+// Minimal setup — enable model file fields and the standalone /files endpoints:
+//
+//	maniflex.New(maniflex.Config{
+//	    FilesConfig: maniflex.FilesConfig{
+//	        Storage:        storage.NewLocalStorage("./uploads"),
+//	        MountEndpoints: true, // required: see the field doc below
+//	    },
+//	})
+type FilesConfig struct {
+	// Storage is the storage backend for file uploads. When nil, models with
+	// mfx:"file" fields reject multipart uploads with 501, and the standalone
+	// /files endpoints (if mounted) return 501. Set before calling Start(), or
+	// use SetStorage() for two-step init.
+	//
+	// Use storage.NewLocalStorage(path) for disk-based storage, or implement
+	// the FileStorage interface for S3, R2, GCS, etc.
+	Storage FileStorage
+
+	// MountEndpoints controls whether the standalone /files routes (POST /files,
+	// GET /files/*, DELETE /files/*) are mounted. It defaults to false and is
+	// NOT implied by setting Storage — you must opt in explicitly.
+	//
+	// Footgun: setting only Storage enables per-model attachment routes and
+	// multipart handling on mfx:"file" fields, but leaves the standalone /files
+	// endpoints unmounted (requests 404). If you relied on the pre-FilesConfig
+	// behaviour where a non-nil FileStorage auto-mounted /files, set this true.
+	//
+	// Mounting with Storage still nil is allowed: the routes exist but every
+	// request returns 501 NO_STORAGE until a backend is configured.
+	MountEndpoints bool
+
+	// SignedURLTTL is the default time-to-live for pre-signed URLs generated
+	// for mfx:"file_acl:signed" fields. Default: DefaultFileSignedURLTTL (1 hour).
+	SignedURLTTL time.Duration
+
+	// KeyGen derives the storage key for a standalone POST /files upload from the
+	// request context and the multipart header. When nil, DefaultKeyGen is used,
+	// producing "uploads/<uuid>/<sanitised-filename>". Override it to route
+	// uploads into a custom layout (e.g. per-tenant prefixes read from ctx.Auth).
+	//
+	// The returned string is used verbatim as the storage key; implementations
+	// are responsible for sanitising any user-supplied component (see
+	// sanitizeFilename / DefaultKeyGen for the framework's default).
+	KeyGen func(ctx *ServerContext, header *multipart.FileHeader) string
+
+	// BeforeMiddlewares run before the standalone /files endpoints (POST /files,
+	// GET /files/*, DELETE /files/*) with the supplied pipeline middleware
+	// chain. Middlewares run in slice order; any that sets ctx.Response
+	// short-circuits the request before the file handler runs.
+	//
+	// Empty (the default) leaves /files unauthenticated — backward-compatible
+	// with pre-fix behaviour but unsafe for production: anyone who guesses a
+	// key can delete arbitrary files. Recommended production setup:
+	//
+	//	maniflex.Config{
+	//	    FilesConfig: maniflex.FilesConfig{
+	//	        Storage:        storage.NewLocalStorage("./uploads"),
+	//	        MountEndpoints: true,
+	//	        BeforeMiddlewares: []maniflex.MiddlewareFunc{
+	//	            auth.JWTAuth("...", auth.JWTOptions{}),
+	//	            auth.RequireRole("admin"),
+	//	        },
+	//	    },
+	//	}
+	//
+	// Per-model attachment routes (mfx:"file" fields on a registered model)
+	// already run through the full Auth / DB pipeline and are unaffected.
+	BeforeMiddlewares []MiddlewareFunc
+
+	// AfterMiddlewares run after the standalone /files handler has served the
+	// request. They are for observation and side effects only — audit logging,
+	// metrics, cleanup — NOT for altering the response.
+	//
+	// The handler streams its response (status, headers, body) directly to the
+	// client, so by the time an AfterMiddleware runs the response is already
+	// committed to the wire and cannot be rewritten. Read the outcome via
+	// ctx.Writer.(interface{ Status() int }).Status(); a middleware that sets
+	// ctx.Response here is ignored (and logged) rather than corrupting the
+	// already-sent body. To alter or replace the response, or to block the
+	// request, use BeforeMiddlewares instead.
+	//
+	// Like BeforeMiddlewares, each runs in slice order and receives a next()
+	// callback it must invoke to run the remaining chain.
+	AfterMiddlewares []MiddlewareFunc
 }
 
 // FileStorage is the interface all file storage backends must implement.

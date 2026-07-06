@@ -83,7 +83,7 @@ func main() {
 		Port:        8080,
 		PathPrefix:  "/api",
 		AutoMigrate: true,
-		FileStorage: fs,
+		FilesConfig: maniflex.FilesConfig{Storage: fs},
 	})
 
 	// Step 2: register models — this populates the registry

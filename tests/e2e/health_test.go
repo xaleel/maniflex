@@ -13,6 +13,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -350,6 +351,47 @@ func TestHealthCheck(t *testing.T) {
 		if code := getHealth(); code != http.StatusOK {
 			t.Errorf("second check after recovery: got %d, want 200", code)
 		}
+	})
+
+	// ── DB health reported even before any model is registered ────────────────
+
+	t.Run("zero_models_with_db_reports_ok", func(t *testing.T) {
+		// The ping set used to be derived only from registered models, so a
+		// server with HealthCheckDB=true and a reachable DB but no models yet
+		// reported db:"unknown". Config.DB is now always in the ping set.
+		t.Parallel()
+
+		server := maniflex.New(maniflex.Config{
+			PathPrefix:    "/api",
+			AutoMigrate:   false,
+			HealthCheckDB: true,
+			HealthTimeout: time.Second,
+		})
+		// Intentionally register NO models.
+		realDB, err := sqlite.Open(":memory:", server.Registry())
+		if err != nil {
+			t.Fatalf("sqlite open: %v", err)
+		}
+		t.Cleanup(func() { realDB.Close() })
+		server.SetDB(realDB)
+
+		ts := httptest.NewServer(server.Handler())
+		t.Cleanup(ts.Close)
+
+		resp, err := http.Get(ts.URL + "/api/health")
+		if err != nil {
+			t.Fatalf("GET /health: %v", err)
+		}
+		t.Cleanup(func() { resp.Body.Close() })
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("zero-model health with a reachable DB must be 200, got %d", resp.StatusCode)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatalf("decode body: %v", err)
+		}
+		testutil.AssertEqual(t, "status", body["status"], "ok")
+		testutil.AssertEqual(t, "db", body["db"], "ok")
 	})
 }
 

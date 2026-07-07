@@ -50,10 +50,7 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 		// auth (e.g. auth.JWTAuth) to the standalone /files routes — the
 		// per-model attachment routes already run through the full pipeline.
 		if cfg.FilesConfig.MountEndpoints {
-			fh := newFileHandlers(cfg.FilesConfig)
-			r.Method(http.MethodPost, "/files", wrapFileMiddleware(cfg, fh.Upload))
-			r.Method(http.MethodGet, "/files/*", wrapFileMiddleware(cfg, fh.Serve))
-			r.Method(http.MethodDelete, "/files/*", wrapFileMiddleware(cfg, fh.Delete))
+			mountFileEndpoints(r, cfg, l)
 		}
 
 		// One sub-router per registered model. Headless models register fully but
@@ -76,6 +73,22 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 	mountStatic(r, cfg, l)
 
 	return r
+}
+
+// mountFileEndpoints registers the standalone /files upload/download/delete
+// routes. They bypass the model pipeline, so auth has to come from
+// FilesConfig.BeforeMiddlewares; an empty chain is warned about because it
+// leaves /files open to anyone who can reach the API (SEC-4).
+func mountFileEndpoints(r chi.Router, cfg *Config, l *slog.Logger) {
+	if len(cfg.FilesConfig.BeforeMiddlewares) == 0 {
+		l.Warn("standalone /files endpoints mounted without auth middleware; "+
+			"anyone who can reach the API can upload, download, or delete files",
+			slog.String("hint", "set FilesConfig.BeforeMiddlewares (e.g. auth.JWTAuth)"))
+	}
+	fh := newFileHandlers(cfg.FilesConfig)
+	r.Method(http.MethodPost, "/files", wrapFileMiddleware(cfg, fh.Upload))
+	r.Method(http.MethodGet, "/files/*", wrapFileMiddleware(cfg, fh.Serve))
+	r.Method(http.MethodDelete, "/files/*", wrapFileMiddleware(cfg, fh.Delete))
 }
 
 // mountStatic serves cfg.StaticDir under cfg.StaticPrefix at the router root

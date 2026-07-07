@@ -120,16 +120,53 @@ func (fh *fileHandlers) Serve(ctx *ServerContext) http.HandlerFunc {
 	}
 }
 
+// inlineSafeContentTypes lists the media types that are safe to render inline in
+// a browser (together with X-Content-Type-Options: nosniff). Anything not on the
+// list — notably text/html, image/svg+xml (SVG can carry inline <script>), and
+// XML — is served as an attachment so a stored file cannot run as script on the
+// API origin (stored XSS).
+var inlineSafeContentTypes = map[string]bool{
+	"image/png":       true,
+	"image/jpeg":      true,
+	"image/gif":       true,
+	"image/webp":      true,
+	"image/bmp":       true,
+	"image/x-icon":    true,
+	"application/pdf": true,
+	"text/plain":      true,
+}
+
+// inlineSafeContentType reports whether ct (a possibly parameterised media type
+// such as "text/plain; charset=utf-8") is on the inline allowlist.
+func inlineSafeContentType(ct string) bool {
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = ct[:i]
+	}
+	return inlineSafeContentTypes[strings.ToLower(strings.TrimSpace(ct))]
+}
+
 // writeFileResponse sets content headers from FileMeta and streams the body.
 // Shared by /files/* and the per-model attachment route (OpReadAttachment) so
 // the two paths emit identical headers.
+//
+// Security (SEC-4): the browser is told never to MIME-sniff the stored bytes
+// (X-Content-Type-Options: nosniff), and only known-safe content types are
+// served inline — everything else is forced to download (Content-Disposition:
+// attachment) so a stored HTML/SVG file cannot execute script on the API origin.
 func writeFileResponse(w http.ResponseWriter, meta FileMeta, rc io.Reader) {
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if meta.ContentType != "" {
 		w.Header().Set("Content-Type", meta.ContentType)
 	}
+	disposition := "attachment"
+	if inlineSafeContentType(meta.ContentType) {
+		disposition = "inline"
+	}
 	if meta.Filename != "" {
 		w.Header().Set("Content-Disposition",
-			fmt.Sprintf(`inline; filename="%s"`, meta.Filename))
+			fmt.Sprintf(`%s; filename="%s"`, disposition, meta.Filename))
+	} else {
+		w.Header().Set("Content-Disposition", disposition)
 	}
 	if meta.Size > 0 {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))

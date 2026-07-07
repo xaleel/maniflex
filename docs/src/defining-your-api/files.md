@@ -246,9 +246,12 @@ When `MountEndpoints` is `true`, three routes are mounted under `PathPrefix`:
 `{"data": {"key": "...", "content_type": "...", "size": ..., "filename": "..."}}`.
 The returned `key` is the value to store in a `file`-tagged column.
 
-`GET /files/{key...}` sets `Content-Type`, `Content-Disposition: inline`, and
-`Content-Length` from the stored metadata, then streams the body. Missing keys
-return `404`.
+`GET /files/{key...}` streams the body with `Content-Type` and `Content-Length`
+from the stored metadata. For safety it always sends `X-Content-Type-Options:
+nosniff` and serves only an allowlist of content types (common images, PDF,
+plain text) `inline`; everything else — including `text/html` and
+`image/svg+xml` — is sent as a `Content-Disposition: attachment` download so a
+stored file cannot execute script on the API origin. Missing keys return `404`.
 
 These endpoints are storage-key-addressed and have **no built-in auth**
 when `BeforeMiddlewares` is empty. Set it to wrap the routes with the
@@ -274,7 +277,8 @@ the model pipeline). Aborting the context short-circuits the request
 before the file handler runs. Leaving `BeforeMiddlewares` empty keeps the
 pre-fix behaviour for backward compatibility, but production deployments
 should populate it — anyone who guesses a key could otherwise delete
-arbitrary files.
+arbitrary files. The server logs a warning at startup when `/files` is
+mounted without `BeforeMiddlewares`.
 
 ### Before vs. after middleware
 

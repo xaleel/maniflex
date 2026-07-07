@@ -27,7 +27,7 @@ server.Pipeline.DB.Register(
     maniflex.ForModel("Order"),
     maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete),
 )
-server.Pipeline.Response.Register(response.CORSHeaders())
+server.Pipeline.Response.Register(response.CORSHeaders("https://app.example.com"))
 ```
 
 ## The request

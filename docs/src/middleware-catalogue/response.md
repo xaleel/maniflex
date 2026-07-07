@@ -8,13 +8,29 @@ headers, body transforms, redactions, and observability hooks — on the
 
 ### `CORSHeaders`
 
-Adds CORS headers to every response. Reasonable defaults; pass options to
-restrict origins, methods, or credentials.
+Adds CORS headers to every response. At least one origin is **required** — pass
+explicit origins (recommended) or `"*"` to allow any origin. Calling it with no
+origins panics at startup, so a permissive wildcard is never applied by accident.
 
 ```go
 import "github.com/xaleel/maniflex/middleware/response"
 
-server.Pipeline.Response.Register(response.CORSHeaders())
+// Explicit origins (recommended)
+server.Pipeline.Response.Register(response.CORSHeaders("https://app.example.com"))
+
+// Public API: opt in to any origin explicitly
+server.Pipeline.Response.Register(response.CORSHeaders("*"))
+```
+
+For credentials or custom allowed headers/methods/max-age, use
+`CORSHeadersWithConfig`. `AllowCredentials` cannot be combined with a `"*"`
+origin (browsers reject that combination) and panics if you try:
+
+```go
+server.Pipeline.Response.Register(response.CORSHeadersWithConfig(response.CORSConfig{
+    AllowOrigins:     []string{"https://app.example.com"},
+    AllowCredentials: true,
+}))
 ```
 
 ### `AddHeader`

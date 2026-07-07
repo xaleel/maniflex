@@ -368,7 +368,7 @@ db.AuditLog(sink)                            // AtPosition(After), or default Be
 db.Invalidate(cache, func(ctx) []string { return ["keys", ...] })  // AtPosition(After)
 
 // RESPONSE (Response step)
-response.CORSHeaders()
+response.CORSHeaders("https://app.example.com")  // origins required; "*" allowed but panics with credentials
 response.Cache(300)                          // AtPosition(After)
 response.TransformField("avatar_url", func(v any) any { return cdn+v.(string) })
 response.RedactField("phone", func(ctx) bool { return !ctx.HasRole("support") })

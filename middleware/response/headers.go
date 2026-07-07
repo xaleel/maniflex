@@ -19,8 +19,10 @@ import (
 
 // CORSConfig configures CORS header behaviour.
 type CORSConfig struct {
-	// AllowOrigins is the list of allowed origins. Use ["*"] to allow all.
-	// Default: ["*"]
+	// AllowOrigins is the list of allowed origins. It is REQUIRED: construction
+	// panics if it is empty, so a permissive wildcard is never applied by
+	// accident. Use ["*"] to explicitly allow any origin (public APIs only — it
+	// cannot be combined with AllowCredentials).
 	AllowOrigins []string
 	// AllowHeaders are the headers a browser may send. Default: common safe set.
 	AllowHeaders []string
@@ -29,6 +31,8 @@ type CORSConfig struct {
 	// MaxAge is the preflight cache duration in seconds. Default: 86400 (24h).
 	MaxAge int
 	// AllowCredentials sets Access-Control-Allow-Credentials. Default: false.
+	// It cannot be combined with a "*" wildcard origin (the Fetch spec forbids
+	// that combination); doing so panics at construction.
 	AllowCredentials bool
 }
 
@@ -44,17 +48,36 @@ var defaultAllowMethods = []string{
 // CORSHeaders sets CORS response headers on every response, and returns 200 for
 // OPTIONS preflight requests. Register this on the Response step with AtPosition(After).
 //
+// At least one origin is required — pass explicit origins (recommended) or "*"
+// to allow any origin. Calling it with no origins panics, so a permissive
+// wildcard is never applied by accident (SEC-6). For credentials or custom
+// allowed headers/methods/max-age, use CORSHeadersWithConfig.
+//
 //	server.Pipeline.Response.Register(
-//	    response.CORSHeaders(response.CORSConfig{AllowOrigins: []string{"https://myapp.com"}}),
+//	    response.CORSHeaders("https://myapp.com"),
 //	    maniflex.AtPosition(maniflex.After),
 //	)
-func CORSHeaders(cfg ...CORSConfig) maniflex.MiddlewareFunc {
-	c := CORSConfig{}
-	if len(cfg) > 0 {
-		c = cfg[0]
-	}
+func CORSHeaders(allowedOrigins ...string) maniflex.MiddlewareFunc {
+	return CORSHeadersWithConfig(CORSConfig{AllowOrigins: allowedOrigins})
+}
+
+// CORSHeadersWithConfig is CORSHeaders with full control over allowed headers,
+// methods, preflight max-age, and credentials. cfg.AllowOrigins is required
+// (empty panics), and a "*" origin combined with AllowCredentials panics because
+// browsers reject that combination.
+//
+//	server.Pipeline.Response.Register(
+//	    response.CORSHeadersWithConfig(response.CORSConfig{
+//	        AllowOrigins:     []string{"https://myapp.com"},
+//	        AllowCredentials: true,
+//	    }),
+//	    maniflex.AtPosition(maniflex.After),
+//	)
+func CORSHeadersWithConfig(cfg CORSConfig) maniflex.MiddlewareFunc {
+	c := cfg
 	if len(c.AllowOrigins) == 0 {
-		c.AllowOrigins = []string{"*"}
+		panic(`response.CORSHeaders: at least one allowed origin is required ` +
+			`(pass explicit origins, or "*" to allow any origin)`)
 	}
 	if len(c.AllowHeaders) == 0 {
 		c.AllowHeaders = defaultAllowHeaders
@@ -71,6 +94,11 @@ func CORSHeaders(cfg ...CORSConfig) maniflex.MiddlewareFunc {
 		originSet[o] = true
 	}
 	allowAll := originSet["*"]
+
+	if allowAll && c.AllowCredentials {
+		panic(`response.CORSHeaders: AllowCredentials cannot be combined with a ` +
+			`"*" wildcard origin (browsers reject it); list explicit origins instead`)
+	}
 
 	headerVal := strings.Join(c.AllowHeaders, ", ")
 	methodVal := strings.Join(c.AllowMethods, ", ")

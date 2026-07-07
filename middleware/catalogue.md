@@ -52,7 +52,7 @@ s.Pipeline.DB.Register(db.Invalidate(redisCache, func(ctx \*maniflex.ServerConte
 s.Pipeline.DB.Register(db.CacheQuery(cache, db.CacheConfig{TTL: 5 * time.Minute, KeyFunc: func(ctx *maniflex.ServerContext) string { return "posts:list:" + ctx.Request.URL.RawQuery }}), maniflex.ForOperation(maniflex.OpList, maniflex.OpRead))
 
 // ── Response ──────────────────────────────────────────────────────────────────
-s.Pipeline.Response.Register(response.CORSHeaders())
+s.Pipeline.Response.Register(response.CORSHeaders("https://app.example.com"))
 s.Pipeline.Response.Register(response.Cache(300), maniflex.ForOperation(maniflex.OpRead, maniflex.OpList), maniflex.AtPosition(maniflex.After))
 s.Pipeline.Response.Register(response.TransformField("avatar_url", func(v any) any { return cdnBase + v.(string) }))
 s.Pipeline.Response.Register(response.RedactField("phone", func(ctx *maniflex.ServerContext) bool { return !ctx.HasRole("support") }))

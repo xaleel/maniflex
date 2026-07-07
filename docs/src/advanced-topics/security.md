@@ -82,8 +82,9 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
 
 - **Set security headers globally** via `response.AddHeader`:
   `Strict-Transport-Security`, `X-Content-Type-Options`, `Referrer-Policy`.
-- **Configure CORS explicitly** with `response.CORSHeaders(opts)` — the
-  defaults are permissive for development.
+- **List CORS origins explicitly** with `response.CORSHeaders(origins...)` —
+  origins are required (there is no permissive wildcard default; it panics if you
+  pass none), and `"*"` cannot be combined with credentials.
 - **Cap rate-sensitive endpoints** with `db.RateLimit` so password resets and
   similar can't be brute-forced.
 
@@ -144,7 +145,7 @@ server.Pipeline.DB.Register(db.AuditLog(auditSink),
     maniflex.AtPosition(maniflex.After))
 
 // Response
-server.Pipeline.Response.Register(response.CORSHeaders(corsOpts))
+server.Pipeline.Response.Register(response.CORSHeaders("https://app.example.com"))
 server.Pipeline.Response.Register(
     response.AddHeader("Strict-Transport-Security", "max-age=63072000"))
 server.Pipeline.Response.Register(response.Logging(slog.Default()),

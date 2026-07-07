@@ -695,7 +695,7 @@ func TestMiddlewareStack(t *testing.T) {
 		srv := testutil.NewServer(t, testutil.Options{
 			Middleware: func(s *maniflex.Server) {
 				s.Pipeline.Response.Register(
-					response.CORSHeaders(response.CORSConfig{AllowOrigins: []string{"test_origin"}}),
+					response.CORSHeaders("test_origin"),
 					maniflex.AtPosition(maniflex.Before),
 				)
 			},
@@ -708,10 +708,39 @@ func TestMiddlewareStack(t *testing.T) {
 		t.Parallel()
 		srv := testutil.NewServer(t, testutil.Options{
 			Middleware: func(s *maniflex.Server) {
-				s.Pipeline.Response.Register(response.CORSHeaders(), maniflex.AtPosition(maniflex.Before))
+				s.Pipeline.Response.Register(response.CORSHeaders("*"), maniflex.AtPosition(maniflex.Before))
 			},
 		})
 		srv.Do("OPTIONS", srv.APIPath("/users"), nil).AssertStatus(http.StatusOK)
+	})
+
+	t.Run("cors_explicit_wildcard_emits_star", func(t *testing.T) {
+		t.Parallel()
+		srv := testutil.NewServer(t, testutil.Options{
+			Middleware: func(s *maniflex.Server) {
+				s.Pipeline.Response.Register(
+					response.CORSHeaders("*"),
+					maniflex.AtPosition(maniflex.Before),
+				)
+			},
+		})
+		resp := srv.GET("/users", map[string]string{"Origin": "https://anything.example"})
+		testutil.AssertEqual(t, "wildcard ACAO", resp.Header.Get("Access-Control-Allow-Origin"), "*")
+	})
+
+	t.Run("cors_non_allowlisted_origin_not_reflected", func(t *testing.T) {
+		t.Parallel()
+		srv := testutil.NewServer(t, testutil.Options{
+			Middleware: func(s *maniflex.Server) {
+				s.Pipeline.Response.Register(
+					response.CORSHeaders("https://allowed.example"),
+					maniflex.AtPosition(maniflex.Before),
+				)
+			},
+		})
+		resp := srv.GET("/users", map[string]string{"Origin": "https://evil.example"})
+		testutil.AssertEqual(t, "non-allowlisted ACAO must be empty",
+			resp.Header.Get("Access-Control-Allow-Origin"), "")
 	})
 
 	// ── response.AddHeader ────────────────────────────────────────────────────

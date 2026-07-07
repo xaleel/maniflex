@@ -18,6 +18,7 @@ import (
 	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"math/big"
@@ -293,9 +294,16 @@ func RequireRole(roles ...string) maniflex.MiddlewareFunc {
 
 // RequireOwner enforces that the authenticated user owns the resource being
 // written or read. On create it sets ownerField = ctx.Auth.UserID automatically.
-// On update/delete it fetches the record and compares ownerField to ctx.Auth.UserID.
+// On read, update, and delete it fetches the target record and compares its
+// ownerField to ctx.Auth.UserID, answering 404 (not 403, so the endpoint does
+// not reveal that the record exists) when the caller is not the owner.
 //
-// Users with a role in adminRoles bypass ownership checks entirely.
+// ownerField may be given as either the JSON or the DB column name of the owning
+// field. Users with a role in adminRoles bypass ownership checks entirely.
+//
+// RequireOwner scopes single-resource operations only. It does NOT scope list
+// endpoints — a collection GET still returns every record. Use db.ForceFilter or
+// db.Tenancy (registered on Pipeline.DB) to constrain list reads by owner.
 //
 //	server.Pipeline.Auth.Register(auth.RequireOwner("user_id", "admin"))
 func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFunc {
@@ -323,15 +331,45 @@ func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFu
 			ctx.SetField(ownerField, ctx.Auth.UserID)
 
 		case maniflex.OpUpdate, maniflex.OpDelete, maniflex.OpRead:
-			// The DB step hasn't run yet, so we must compare against what was
-			// stored in ctx.DBResult if this is an After-DB middleware.
-			// As a Before-DB middleware we can only set a forced filter.
-			// We encode ownership as a ForceFilter so the DB step handles it.
-			ctx.Set("_require_owner_field", ownerField)
-			ctx.Set("_require_owner_value", ctx.Auth.UserID)
+			// The adapter's update/delete are keyed by id alone (no query filter),
+			// so a forced filter cannot constrain a write. Fetch the target record
+			// and compare its owner field to the caller before the operation runs.
+			if abortOwnershipMismatch(ctx, ownerField) {
+				return nil
+			}
 		}
 		return next()
 	}
+}
+
+// abortOwnershipMismatch fetches the record targeted by a read/update/delete and
+// aborts the request when the authenticated caller is not its owner. A non-owner
+// or a missing record is answered 404 so the endpoint does not reveal whether the
+// record exists. Returns true when it has aborted (the caller must return nil).
+func abortOwnershipMismatch(ctx *maniflex.ServerContext, ownerField string) bool {
+	if ctx.Model == nil || ctx.ResourceID == "" {
+		return false
+	}
+	ownerCol := ownerField
+	if f := ctx.Model.FieldByJSONName(ownerField); f != nil {
+		ownerCol = f.Tags.DBName
+	} else if f := ctx.Model.FieldByDBName(ownerField); f != nil {
+		ownerCol = f.Tags.DBName
+	}
+	rec, err := ctx.GetModel(ctx.Model.Name).Read(ctx.ResourceID)
+	if err != nil {
+		if errors.Is(err, maniflex.ErrNotFound) {
+			ctx.Abort(http.StatusNotFound, "NOT_FOUND", "record not found")
+		} else {
+			ctx.Abort(http.StatusInternalServerError, "DB_ERROR", "ownership check failed")
+		}
+		return true
+	}
+	if fmt.Sprint(rec[ownerCol]) != ctx.Auth.UserID {
+		ctx.Abort(http.StatusNotFound, "NOT_FOUND", "record not found")
+		return true
+	}
+	return false
 }
 
 // ── AllowPublicRead ────────────────────────────────────────────────────────────

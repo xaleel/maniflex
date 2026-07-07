@@ -1,9 +1,10 @@
 package maniflex
 
 import (
+	crand "crypto/rand"
 	"database/sql"
 	"fmt"
-	"math/rand/v2"
+	"math/big"
 	"strings"
 	"time"
 	"unicode"
@@ -87,12 +88,28 @@ const UPPER_D = UPPER + DIGITS
 const LOWER_D = LOWER + DIGITS
 const ALPHANUM = UPPER + LOWER + DIGITS
 
+// RandomString returns a cryptographically-secure random string of the given
+// length, each character drawn uniformly (without modulo bias) from charset.
+// It is safe for tokens, session IDs, and other secrets. charset is indexed by
+// byte, so pass an ASCII charset such as ALPHANUM.
+//
+// A non-positive length or an empty charset returns "". It panics only if the
+// operating system's secure random source fails, which does not occur in normal
+// operation.
 func RandomString(length int, charset string) string {
-	r := ""
-	for range length {
-		r = r + string(charset[rand.Int32N(int32(len(charset)))])
+	if length <= 0 || len(charset) == 0 {
+		return ""
 	}
-	return r
+	n := big.NewInt(int64(len(charset)))
+	out := make([]byte, length)
+	for i := range out {
+		idx, err := crand.Int(crand.Reader, n)
+		if err != nil {
+			panic("maniflex.RandomString: crypto/rand failed: " + err.Error())
+		}
+		out[i] = charset[idx.Int64()]
+	}
+	return string(out)
 }
 
 // scanSQLRows scans all rows from a *sql.Rows into column-keyed maps.

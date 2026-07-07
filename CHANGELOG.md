@@ -10,6 +10,7 @@
 - **Security:** the client IP is no longer taken from `X-Forwarded-For`/`X-Real-IP` by default - opt in with `Config.TrustProxyHeaders` when running behind a trusted proxy.
 - **Security (breaking):** `response.CORSHeaders(origins ...string)` now requires explicit origins instead of defaulting to `*`, and refuses `*` combined with credentials (both panic); use `response.CORSHeadersWithConfig` for headers/methods/max-age/credentials.
 - **Security (breaking):** `auth.JWTAuth` now rejects tokens with no `exp` claim (`401 TOKEN_MISSING_EXPIRY`, opt out via `JWTOptions.AllowNoExpiry`) and refuses an empty HMAC secret (panics; warns when the secret is under 32 bytes).
+- **Security:** `maniflex.RandomString` now draws from `crypto/rand` (unbiased), making it safe for tokens/IDs; it previously used non-cryptographic `math/rand/v2`.
 
 ## v0.1.3 (2026-07-06)
 

@@ -153,9 +153,11 @@ page's Delete button).
 ## CSRF protection
 
 The panel uses **double-submit cookies**. On first form load a random 32-byte
-hex token is written to a `_csrf` cookie and embedded in a hidden form field.
-Every mutating `POST` verifies that both match before forwarding to the API.
-There is nothing to configure — it is always on.
+hex token is written to the CSRF cookie and mirrored in a hidden `_csrf` form
+field. Every mutating `POST` verifies that both match before forwarding to the
+API. The cookie is `HttpOnly` and `SameSite=Lax`, and is marked `Secure` when the
+panel is served over TLS — directly or behind a proxy that sets
+`X-Forwarded-Proto: https`. There is nothing to configure — it is always on.
 
 ## Model whitelist
 

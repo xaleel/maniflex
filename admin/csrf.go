@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
+	"strings"
 )
 
 // csrfCookie is the name of the double-submit CSRF cookie.
@@ -22,11 +23,16 @@ func ensureCSRF(w http.ResponseWriter, r *http.Request) string {
 		return c.Value
 	}
 	tok := randomToken()
+	// Mark the cookie Secure when the browser connection is TLS — either
+	// terminated in-process (r.TLS) or at a proxy that forwards
+	// X-Forwarded-Proto: https — so it can't ride a plaintext HTTP request (SEC-9).
+	secure := r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 	http.SetCookie(w, &http.Cookie{
 		Name:     csrfCookie,
 		Value:    tok,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 	})
 	return tok

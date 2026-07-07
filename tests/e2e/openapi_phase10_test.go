@@ -11,26 +11,28 @@ import (
 
 // ── 10.7: dangling $ref for unregistered relation targets ─────────────────────
 
-// P10Category is a registered model that P10Item legitimately references. Its
-// type name matches the P10CategoryID FK field so the convention resolves it.
+// P10Category is a registered model that P10Item references via an explicit
+// mfx:"relation" tag on P10CategoryID (target inferred by stripping "ID").
 type P10Category struct {
 	maniflex.BaseModel
 	Name string `json:"name"`
 }
 
-// P10Item has two convention FKs: P10CategoryID → P10Category (registered) and
-// RelatedID → Related (NOT registered, no companion field). The latter used to
-// produce a `related` property whose $ref pointed at a non-existent schema.
+// P10Item has two explicit relations: P10CategoryID → P10Category (registered)
+// and RelatedID → Related (NOT registered, no companion field). The latter must
+// not produce a `related` property whose $ref points at a non-existent schema.
+// (Since v0.1.3 relations are opt-in via mfx:"relation" — no longer inferred
+// from the ID suffix — so both FKs carry the tag explicitly.)
 type P10Item struct {
 	maniflex.BaseModel
 	Name          string `json:"name"`
-	P10CategoryID string `json:"p10_category_id"`
-	RelatedID     string `json:"related_id"`
+	P10CategoryID string `json:"p10_category_id" mfx:"relation"`
+	RelatedID     string `json:"related_id" mfx:"relation"`
 }
 
-// TestOpenAPI_NoDanglingRelationRef verifies that a convention FK to an
-// unregistered model is omitted from the response schema (10.7), while a
-// convention FK to a registered model is still embedded.
+// TestOpenAPI_NoDanglingRelationRef verifies that a relation to an unregistered
+// model is omitted from the response schema (10.7), while a relation to a
+// registered model is still embedded.
 func TestOpenAPI_NoDanglingRelationRef(t *testing.T) {
 	t.Parallel()
 	srv := testutil.NewServer(t, testutil.Options{

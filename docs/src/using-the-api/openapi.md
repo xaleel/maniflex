@@ -35,6 +35,12 @@ For every registered model, the spec includes:
   `filter`, `sort`, `include`.
 - **Field metadata** taken from `mfx:` tags — `enum`, `min`, `max`,
   `required`, `readOnly`, `writeOnly`.
+- **JSON / map fields** — a field whose type is a `map` with string keys is
+  documented as a free-form `{"type": "object"}`. This covers `map[string]any`,
+  `map[string]string`, and named types over them such as
+  `type JSONObject map[string]any` — the value type is not inspected. To emit a
+  more precise shape instead, give the type its own schema (see
+  [Schemas for custom types](#schemas-for-custom-types)).
 - **Relation fields** — for each relation to a *registered* model, the full
   response schema embeds the related schema by reference (`$ref`), shown when
   `?include=` requests it. A relation whose target model is not registered —
@@ -46,6 +52,50 @@ For every registered model, the spec includes:
 `hidden` fields are excluded entirely from every schema. `writeonly` fields
 appear in the create and update schemas with `writeOnly: true`, but not in the
 response shape.
+
+## Schemas for custom types
+
+Field types are mapped to OpenAPI schemas by their Go kind: strings, booleans,
+the integer and float families, `time.Time` (as `date-time`), and any
+string-keyed `map` (as a free-form `object`). A field whose type falls outside
+these — a custom struct, or any type with a non-obvious JSON representation — is
+**omitted** from the generated schema rather than guessed at.
+
+To document such a type, make it implement the `ObjectWithSchema` interface:
+
+```go
+type ObjectWithSchema interface {
+    Schema() *maniflex.OASSchema
+}
+```
+
+Whenever the generator encounters a field of that type it calls `Schema()` and
+uses the returned value verbatim — taking precedence over the built-in kind
+mapping, so this also lets you override the default `object` shape a JSON/map
+column would otherwise get. Either a value or a pointer receiver works.
+
+For example, to document a `Geo` JSON column as a structured object instead of a
+free-form one:
+
+```go
+type Geo struct {
+    Lat float64 `json:"lat"`
+    Lng float64 `json:"lng"`
+}
+
+func (Geo) Schema() *maniflex.OASSchema {
+    return &maniflex.OASSchema{
+        Type: "object",
+        Properties: map[string]*maniflex.OASSchema{
+            "lat": {Type: "number", Format: "double"},
+            "lng": {Type: "number", Format: "double"},
+        },
+    }
+}
+```
+
+A `Geo` field now renders with that exact shape in the response, create, and
+update schemas. A pointer field (`*Geo`) is additionally made nullable.
 
 ## Custom actions
 

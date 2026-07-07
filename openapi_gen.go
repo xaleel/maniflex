@@ -575,18 +575,31 @@ func singleEnvelopeSchema(modelName string) *OASSchema {
 
 // ── Type mapping ──────────────────────────────────────────────────────────────
 
+type ObjectWithSchema interface {
+	Schema() *OASSchema
+}
+
+func implements(t reflect.Type, iface reflect.Type) bool {
+	return t.Implements(iface) || reflect.PointerTo(t).Implements(iface)
+}
+
 // goTypeToSchema converts a reflect.Type to an OASSchema.
 // Returns nil for types that have no sensible JSON representation.
 func goTypeToSchema(t reflect.Type) *OASSchema {
-	isPtr := t.Kind() == reflect.Ptr
+	isPtr := t.Kind() == reflect.Pointer
 	if isPtr {
 		t = t.Elem()
 	}
 
 	var s *OASSchema
 
-	if t == reflect.TypeOf(time.Time{}) {
+	if implements(t, reflect.TypeFor[ObjectWithSchema]()) {
+		s = reflect.New(t).Interface().(ObjectWithSchema).Schema()
+	} else if t == reflect.TypeOf(time.Time{}) {
 		s = &OASSchema{Type: "string", Format: "date-time"}
+	} else if t.Kind() == reflect.Map && t.Key().Kind() == reflect.String {
+		// map[string]unknown
+		s = &OASSchema{Type: "object"}
 	} else {
 		switch t.Kind() {
 		case reflect.String:

@@ -27,6 +27,13 @@ algorithms (`RS256/384/512`) when `JWTOptions.PublicKey` is set — useful with
 external identity providers (Auth0, Okta, Cognito, etc.). `AuthMethod` on
 `ctx.Auth` is set to `"jwt"`.
 
+Tokens must carry an `exp` claim: one with no expiry is rejected
+(`401 TOKEN_MISSING_EXPIRY`), since it would otherwise be valid forever. Set
+`JWTOptions.AllowNoExpiry` to accept non-expiring tokens from issuers that
+deliberately mint them. On the HMAC path the signing secret must be non-empty (an
+empty secret panics at startup) and should be at least 32 bytes — a shorter
+secret is allowed but logs a warning.
+
 ## `APIKeyAuth`
 
 Validates a static API key from a request header. Each entry maps one key to

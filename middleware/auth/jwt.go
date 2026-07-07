@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"strings"
@@ -40,6 +41,12 @@ type JWTOptions struct {
 	// ClockSkew allows tokens to be this far past their expiry.
 	// Default: 0 (strict).
 	ClockSkew time.Duration
+
+	// AllowNoExpiry permits tokens that omit the "exp" claim. By default a token
+	// without exp is rejected (401 TOKEN_MISSING_EXPIRY) because it would be valid
+	// forever; set this only for issuers that deliberately mint non-expiring
+	// tokens (e.g. certain machine/service accounts).
+	AllowNoExpiry bool
 
 	// UserIDClaim is the JWT claim used to populate ctx.Auth.UserID.
 	// Default: "sub".
@@ -111,7 +118,34 @@ func JWTAuth(secret string, opts ...JWTOptions) maniflex.MiddlewareFunc {
 		opt = opts[0]
 	}
 	opt.applyDefaults()
+	// The secret is only used on the HMAC path; asymmetric (PublicKey) and JWKS
+	// verification ignore it and pass "". Guard it only when it is actually used.
+	if opt.PublicKey == nil {
+		checkHMACSecret(secret)
+	}
 	return jwtMiddleware(secret, opt, staticResolver(opt.PublicKey))
+}
+
+// minHMACSecretBytes is the recommended minimum length for an HS256 shared
+// secret: 32 bytes (256 bits), matching the SHA-256 output width.
+const minHMACSecretBytes = 32
+
+// checkHMACSecret guards the shared secret on the HMAC (HS256) verification path.
+// An empty secret provides no security and is refused outright with a panic at
+// construction; a non-empty secret shorter than the hash output is permitted but
+// warned about. It is only called when no PublicKey is configured — asymmetric
+// and JWKS verification ignore the secret.
+func checkHMACSecret(secret string) {
+	if secret == "" {
+		panic("auth.JWTAuth: empty HMAC secret provides no security; pass a strong " +
+			"secret (>=32 bytes), or set JWTOptions.PublicKey for asymmetric verification")
+	}
+	if len(secret) < minHMACSecretBytes {
+		slog.Default().Warn("auth.JWTAuth: HMAC secret is shorter than the recommended "+
+			"minimum; use at least 32 bytes for HS256",
+			slog.Int("length", len(secret)),
+			slog.Int("recommended_min", minHMACSecretBytes))
+	}
 }
 
 // keyResolver returns the verification key for a token given its header "kid"
@@ -128,17 +162,8 @@ func staticResolver(pub crypto.PublicKey) keyResolver {
 // key) and JWKSAuth (kid-selected key from a rotating JWK Set).
 func jwtMiddleware(secret string, opt JWTOptions, resolve keyResolver) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
-		raw := ctx.Request.Header.Get(opt.Header)
-		if opt.Header == "Authorization" {
-			if !strings.HasPrefix(raw, "Bearer ") {
-				ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",
-					"missing or malformed Authorization: Bearer <token> header")
-				return nil
-			}
-			raw = strings.TrimPrefix(raw, "Bearer ")
-		}
-		if raw == "" {
-			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED", "missing token")
+		raw, ok := readToken(ctx, opt)
+		if !ok {
 			return nil
 		}
 
@@ -148,52 +173,9 @@ func jwtMiddleware(secret string, opt JWTOptions, resolve keyResolver) maniflex.
 			return nil
 		}
 
-		now := time.Now()
-
-		// Expiry
-		if exp, ok := claims["exp"]; ok {
-			expF, _ := toFloat64(exp)
-			if time.Unix(int64(expF), 0).Add(opt.ClockSkew).Before(now) {
-				ctx.Abort(http.StatusUnauthorized, "TOKEN_EXPIRED", "token has expired")
-				return nil
-			}
-		}
-
-		// Not-before (RFC 7519 §4.1.5). A token bearing nbf in the future
-		// is not yet valid. Apply the same ClockSkew tolerance as exp.
-		if nbf, ok := claims["nbf"]; ok {
-			nbfF, _ := toFloat64(nbf)
-			if time.Unix(int64(nbfF), 0).Add(-opt.ClockSkew).After(now) {
-				ctx.Abort(http.StatusUnauthorized, "TOKEN_NOT_YET_VALID", "token not yet valid")
-				return nil
-			}
-		}
-
-		// Issued-at (RFC 7519 §4.1.6). An iat in the future is clock-skew
-		// or a bad issuer; reject so the request can't ride on a token that
-		// claims to have been issued in the future.
-		if iat, ok := claims["iat"]; ok {
-			iatF, _ := toFloat64(iat)
-			if time.Unix(int64(iatF), 0).Add(-opt.ClockSkew).After(now) {
-				ctx.Abort(http.StatusUnauthorized, "TOKEN_FUTURE_ISSUED", "token issued in the future")
-				return nil
-			}
-		}
-
-		// Issuer
-		if opt.Issuer != "" {
-			if iss, _ := claims["iss"].(string); iss != opt.Issuer {
-				ctx.Abort(http.StatusUnauthorized, "INVALID_TOKEN", "invalid issuer")
-				return nil
-			}
-		}
-
-		// Audience
-		if opt.Audience != "" {
-			if !audienceContains(claims["aud"], opt.Audience) {
-				ctx.Abort(http.StatusUnauthorized, "INVALID_TOKEN", "invalid audience")
-				return nil
-			}
+		if code, msg := validateRegisteredClaims(claims, opt, time.Now()); code != "" {
+			ctx.Abort(http.StatusUnauthorized, code, msg)
+			return nil
 		}
 
 		userID, _ := claims[opt.UserIDClaim].(string)
@@ -217,6 +199,72 @@ func jwtMiddleware(secret string, opt JWTOptions, resolve keyResolver) maniflex.
 		}
 		return next()
 	}
+}
+
+// readToken pulls the raw token from the configured header. For the default
+// Authorization header it requires the "Bearer " prefix. It returns (token, true)
+// on success, or ("", false) after aborting the request when the header is
+// missing or malformed.
+func readToken(ctx *maniflex.ServerContext, opt JWTOptions) (string, bool) {
+	raw := ctx.Request.Header.Get(opt.Header)
+	if opt.Header == "Authorization" {
+		if !strings.HasPrefix(raw, "Bearer ") {
+			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",
+				"missing or malformed Authorization: Bearer <token> header")
+			return "", false
+		}
+		raw = strings.TrimPrefix(raw, "Bearer ")
+	}
+	if raw == "" {
+		ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED", "missing token")
+		return "", false
+	}
+	return raw, true
+}
+
+// validateRegisteredClaims checks the standard registered claims — exp, nbf, iat
+// (against now, with opt.ClockSkew tolerance), plus iss and aud when configured.
+// It returns an (errCode, message) pair to abort the request with, or ("","")
+// when every claim is valid. A missing exp is rejected (TOKEN_MISSING_EXPIRY)
+// unless opt.AllowNoExpiry is set, since a token with no expiry is valid forever;
+// a malformed exp decodes to 0 and fails closed as expired.
+func validateRegisteredClaims(claims map[string]any, opt JWTOptions, now time.Time) (string, string) {
+	if exp, ok := claims["exp"]; ok {
+		expF, _ := toFloat64(exp)
+		if time.Unix(int64(expF), 0).Add(opt.ClockSkew).Before(now) {
+			return "TOKEN_EXPIRED", "token has expired"
+		}
+	} else if !opt.AllowNoExpiry {
+		return "TOKEN_MISSING_EXPIRY", "token has no expiry (exp) claim"
+	}
+
+	// Not-before (RFC 7519 §4.1.5): a token bearing nbf in the future is not yet
+	// valid. Issued-at (§4.1.6): an iat in the future means clock skew or a bad
+	// issuer. Both use the same ClockSkew tolerance as exp.
+	if nbf, ok := claims["nbf"]; ok {
+		nbfF, _ := toFloat64(nbf)
+		if time.Unix(int64(nbfF), 0).Add(-opt.ClockSkew).After(now) {
+			return "TOKEN_NOT_YET_VALID", "token not yet valid"
+		}
+	}
+	if iat, ok := claims["iat"]; ok {
+		iatF, _ := toFloat64(iat)
+		if time.Unix(int64(iatF), 0).Add(-opt.ClockSkew).After(now) {
+			return "TOKEN_FUTURE_ISSUED", "token issued in the future"
+		}
+	}
+
+	if opt.Issuer != "" {
+		if iss, _ := claims["iss"].(string); iss != opt.Issuer {
+			return "INVALID_TOKEN", "invalid issuer"
+		}
+	}
+	if opt.Audience != "" {
+		if !audienceContains(claims["aud"], opt.Audience) {
+			return "INVALID_TOKEN", "invalid audience"
+		}
+	}
+	return "", ""
 }
 
 // ── APIKeyAuth ─────────────────────────────────────────────────────────────────

@@ -161,6 +161,12 @@ func resolveNestedFilter(expr *FilterExpr, fieldPath string, model *ModelMeta, r
 		if !f.Tags.Filterable {
 			return nil, fmt.Errorf("field %q on model %s is not filterable (add mfx:\"filterable\" to the struct tag)", relKey, model.Name)
 		}
+		// The locale sub-key is targeted into a JSON-path expression by the query
+		// builder, so it is held to a strict allowlist and rejected here rather
+		// than reaching the SQL layer (SEC-1: SQL injection via the filter key).
+		if !isLocaleKey(nestedField) {
+			return nil, fmt.Errorf("invalid locale key %q in filter %q: must be a locale identifier ([A-Za-z_][A-Za-z0-9_-]*)", nestedField, fieldPath)
+		}
 		expr.Field = f.Tags.DBName
 		expr.IsLocale = true
 		expr.LocaleKey = nestedField
@@ -245,4 +251,33 @@ func resolveNestedSort(fieldPath string, dir SortDir, model *ModelMeta, reg Regi
 		RelationFK:    rel.FKColumn,
 		NestedField:   nf.Tags.DBName,
 	}, nil
+}
+
+// isLocaleKey reports whether s is a valid locale sub-key — a BCP-47-style
+// language tag made of letters, digits, '-' and '_', starting with a letter or
+// underscore (e.g. "en", "ar", "en-US", "zh_Hans").
+//
+// Locale keys are targeted into a JSON-path expression by the query builder
+// (name->>'<key>' on Postgres, json_extract(name,'$.<key>') on SQLite). The
+// builder binds the key as a parameter, but this allowlist is the primary,
+// defence-in-depth guard: it rejects an injection payload at parse time with a
+// clear 400 rather than letting it reach the SQL layer (SEC-1). The same
+// allowlist is intended to gate the locale sort path.
+func isLocaleKey(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		letter := r == '_' || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')
+		if i == 0 {
+			if !letter {
+				return false
+			}
+			continue
+		}
+		if !letter && !(r >= '0' && r <= '9') && r != '-' {
+			return false
+		}
+	}
+	return true
 }

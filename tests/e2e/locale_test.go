@@ -10,6 +10,7 @@ package e2e
 
 import (
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/xaleel/maniflex"
@@ -358,6 +359,43 @@ func TestSplit_FilterByLocaleSubkey(t *testing.T) {
 		AssertStatus(http.StatusOK).DataList()
 	if len(items) != 1 {
 		t.Errorf("filter name.ar=الصيدلية: got %d items, want 1", len(items))
+	}
+}
+
+// SEC-1: a locale sub-key in ?filter=<localeField>.<KEY>:op:val is concatenated
+// into the JSON-path SQL. An attacker-controlled KEY must be rejected at parse
+// time with a 400, never reach the SQL layer.
+func TestSplit_FilterByLocaleSubkey_InjectionRejected(t *testing.T) {
+	t.Parallel()
+	srv := splitServer(t)
+
+	srv.POST("/split_depts", map[string]any{
+		"name": map[string]any{"en": "Pharmacy", "ar": "الصيدلية"},
+		"code": "PHRINJ",
+	}).AssertStatus(http.StatusCreated)
+
+	// Keys that would break out of ->>'<KEY>' (Postgres) or json_extract(col,
+	// '$.<KEY>') (SQLite). None contain ':' (the filter field:op:value separator).
+	badKeys := []string{
+		"x' AND 1=1 OR ''='", // Postgres ->> string breakout
+		"x') OR 1=1 --",      // SQLite json_extract path breakout
+		"en OR 1=1",          // embedded space
+		`en"`,                // stray double quote
+		"en.us",              // '.' is not a valid locale-key character
+		"",                   // empty key (name.:eq:x)
+	}
+	for _, key := range badKeys {
+		resp := srv.GET("/split_depts?filter=" + url.QueryEscape("name."+key+":eq:x"))
+		if resp.Status != http.StatusBadRequest {
+			t.Errorf("locale filter key %q: got status %d, want 400 (SQLi not rejected)\nbody: %s",
+				key, resp.Status, resp.Body)
+		}
+	}
+
+	// A valid locale key is unaffected by the allowlist.
+	ok := srv.GET("/split_depts?filter=name.en:eq:Pharmacy").AssertStatus(http.StatusOK).DataList()
+	if len(ok) != 1 {
+		t.Errorf("valid locale key name.en: got %d items, want 1", len(ok))
 	}
 }
 

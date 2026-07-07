@@ -1487,9 +1487,14 @@ func filterConds(model *maniflex.ModelMeta, filters []*maniflex.FilterExpr, driv
 		if f.IsLocale {
 			col := q(model.TableName) + "." + q(f.Field)
 			if driver == maniflex.Postgres {
-				return col + "->>" + "'" + f.LocaleKey + "'"
+				// Bind the locale key as a parameter so it can never break out of
+				// the JSON-path expression (SEC-1). The ::text cast pins the ->>
+				// overload to object-field access regardless of how the driver
+				// types the parameter.
+				return col + "->>" + p.add(f.LocaleKey) + "::text"
 			}
-			return "json_extract(" + col + ", '$." + f.LocaleKey + "')"
+			// SQLite: bind the whole "$.<key>" path as a parameter.
+			return "json_extract(" + col + ", " + p.add("$."+f.LocaleKey) + ")"
 		}
 		if f.IsNested {
 			return q(f.RelationKey) + "." + q(f.NestedField)

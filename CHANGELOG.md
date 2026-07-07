@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.4 (2026-07-07)
+
+- **Security:** fixed a SQL injection vector in locale-field filters.
+
 ## v0.1.3 (2026-07-06)
 
 - `events.DeliverWithRetry` no longer swallows handler failures silently: it logs a WARN on each retried attempt and an ERROR when all attempts are exhausted (dead-lettering when a DLQ is configured, or "event dropped" when it isn't). Previously a handler that failed every time produced no log at all, so failing events vanished without a trace.

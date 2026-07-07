@@ -68,6 +68,11 @@ server.Pipeline.DB.Register(
 
 Rejected requests receive `429 RATE_LIMITED`.
 
+When the key falls back to the client IP (`ctx.Request.RemoteAddr`), that address
+is the direct TCP peer unless `Config.TrustProxyHeaders` is enabled — set it
+(only behind a trusted proxy) so per-IP limits see the real client instead of the
+load balancer. See [Security](../advanced-topics/security.md).
+
 ## Post-write hooks
 
 These run at `maniflex.After` position so they only fire when the database write

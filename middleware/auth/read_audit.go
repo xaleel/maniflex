@@ -4,7 +4,6 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/xaleel/maniflex"
@@ -103,17 +102,14 @@ func ReadAudit(sink ReadAuditSink) maniflex.MiddlewareFunc {
 	}
 }
 
-// extractIP returns the client IP from the request. Chi's RealIP middleware
-// rewrites RemoteAddr from X-Real-IP / X-Forwarded-For when present, so
-// checking RemoteAddr is usually sufficient. The header checks handle the
-// case where RealIP is not in the middleware stack.
+// extractIP returns the client IP from the request's RemoteAddr. When the
+// server trusts proxy headers (Config.TrustProxyHeaders), chi's RealIP
+// middleware has already rewritten RemoteAddr from X-Forwarded-For / X-Real-IP,
+// so the resolved client IP flows through here; otherwise RemoteAddr is the
+// direct TCP peer. extractIP deliberately does NOT read the forwarding headers
+// itself — trusting a client-supplied address even when proxy headers are
+// untrusted would let audit logs record forged IPs (SEC-5).
 func extractIP(r *http.Request) string {
-	if ip := r.Header.Get("X-Real-Ip"); ip != "" {
-		return ip
-	}
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		return strings.TrimSpace(strings.SplitN(xff, ",", 2)[0])
-	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

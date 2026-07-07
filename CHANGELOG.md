@@ -7,6 +7,7 @@
 - **Security:** `auth.RequireOwner` now enforces ownership on read/update/delete, non-owners get 404.
 - **Security:** file downloads (`/files` and per-model attachments) now send `X-Content-Type-Options: nosniff` and serve non-allowlisted types (HTML, SVG, …) as attachments, closing a stored-XSS vector.
 - **Security:** the server warns at startup when standalone `/files` endpoints are mounted without auth middleware.
+- **Security:** the client IP is no longer taken from `X-Forwarded-For`/`X-Real-IP` by default - opt in with `Config.TrustProxyHeaders` when running behind a trusted proxy.
 
 ## v0.1.3 (2026-07-06)
 

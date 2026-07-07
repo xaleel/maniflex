@@ -23,7 +23,14 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 	// with every other maniflex error envelope.
 	r.Use(PanicRecoverer(cfg.PanicLogger))
 	r.Use(chiMiddleware.RequestID)
-	r.Use(chiMiddleware.RealIP)
+
+	// RealIP rewrites RemoteAddr from X-Forwarded-For / X-Real-IP. Only trust
+	// those client-supplied headers when the operator has opted in (the server
+	// sits behind a proxy that strips inbound XFF); otherwise a client could
+	// spoof its IP and defeat per-IP rate limiting and poison audit logs (SEC-5).
+	if cfg.TrustProxyHeaders {
+		r.Use(chiMiddleware.RealIP)
+	}
 
 	r.Route(cfg.PathPrefix, func(r chi.Router) {
 		// Health-check

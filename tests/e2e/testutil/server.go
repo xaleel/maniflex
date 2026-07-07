@@ -72,6 +72,9 @@ type Options struct {
 	FilesConfig *maniflex.FilesConfig
 	// KeyProvider sets the encryption key provider for mfx:"encrypted" fields.
 	KeyProvider maniflex.KeyProvider
+	// TrustProxyHeaders sets Config.TrustProxyHeaders — when true, chi's RealIP
+	// derives RemoteAddr from X-Forwarded-For / X-Real-IP. Off by default.
+	TrustProxyHeaders bool
 }
 
 // NewServer creates a fully-initialised Maniflex server backed by an in-memory
@@ -113,6 +116,7 @@ func NewServer(t testing.TB, opts Options) *Server {
 		HealthTimeout:      opts.HealthTimeout,
 		FilesConfig:        filesConfig,
 		KeyProvider:        opts.KeyProvider,
+		TrustProxyHeaders:  opts.TrustProxyHeaders,
 	})
 	server.MustRegister(models...)
 

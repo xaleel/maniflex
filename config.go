@@ -214,6 +214,23 @@ type Config struct {
 	// must not be exposed over HTTP.
 	StaticDisabled bool
 
+	// TrustProxyHeaders controls whether the client IP is derived from the
+	// X-Forwarded-For / X-Real-IP request headers (via chi's RealIP middleware).
+	// It is OFF by default: RemoteAddr stays the real TCP peer, so a client
+	// cannot forge its own address.
+	//
+	// Every IP-keyed feature reads the resolved RemoteAddr — per-IP rate limiting
+	// (db.RateLimit / db.RateLimitAction), idempotency scoping, and read-audit
+	// records. With this flag off they key on the direct peer; with it on they
+	// key on the forwarded client IP.
+	//
+	// Enable it ONLY when the server sits behind a trusted reverse proxy or load
+	// balancer that (a) sets X-Forwarded-For to the real client and (b) strips any
+	// inbound XFF sent by the client. Turning it on while directly internet-facing
+	// lets an attacker spoof its address with an X-Forwarded-For header, defeating
+	// per-IP rate limits and poisoning audit logs (SEC-5).
+	TrustProxyHeaders bool
+
 	// ServiceName identifies this service in logs, audit records, and outgoing
 	// requests. When set:
 	//   - every framework log line gains a "service" attribute,

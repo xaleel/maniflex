@@ -238,9 +238,11 @@ adds the appropriate `Access-Control-*` headers via `ctx.Writer.Header()`.
 - Encodes `{"data": {...}}` to the response body.
 - Returns.
 
-chi's RealIP and RequestID middleware (registered at the router root,
-outside the maniflex pipeline) wrap the whole exchange — they have already
-set `X-Request-Id` on the response by the time we get here.
+chi's RequestID middleware (registered at the router root, outside the maniflex
+pipeline) wraps the whole exchange — it has already set `X-Request-Id` on the
+response by the time we get here. chi's RealIP is registered alongside it only
+when `Config.TrustProxyHeaders` is set, so `RemoteAddr` reflects the forwarded
+client IP just for servers that opted into trusting proxy headers.
 
 ## The dispatch cleanup
 

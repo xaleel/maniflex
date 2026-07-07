@@ -90,8 +90,14 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
 ## Transport
 
 - **Terminate TLS at the load balancer or reverse proxy**, not in the maniflex
-  process. The framework is HTTP/1.1 + HTTP/2 ready and trusts the
-  `X-Forwarded-*` headers set upstream.
+  process. The framework is HTTP/1.1 + HTTP/2 ready.
+- **Set `Config.TrustProxyHeaders: true` only when behind a trusted proxy.**
+  It is **off by default**: the client IP is the direct TCP peer, so a caller
+  cannot forge it. When on, the IP is read from `X-Forwarded-For` / `X-Real-IP`,
+  which is only safe if the proxy overwrites (not appends) any inbound value the
+  client sent. Every IP-keyed feature — `db.RateLimit`, idempotency scoping, and
+  read-audit records — depends on this being correct; leaving it off while
+  directly internet-facing keeps per-IP limits and audit logs honest.
 - **Set `Config.PathPrefix` to a non-default value** if the proxy mounts the
   API at a custom path. Don't rewrite paths inside the application.
 

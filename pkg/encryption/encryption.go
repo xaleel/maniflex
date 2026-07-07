@@ -28,6 +28,15 @@ import (
 
 const envelopeVersion byte = 1
 
+// envelopeVersionGCMAAD (v2) is the EnvKeyProvider envelope that binds the
+// version byte and keyID into the AES-GCM tag as additional authenticated data,
+// so the stored routing metadata cannot be altered without failing decryption
+// (SEC-10). Version 1 envelopes were sealed with nil AAD and are still accepted
+// on decrypt for backward compatibility; RotateEncryptionKey re-writes them as
+// v2. The Vault provider keeps using envelopeVersion — Vault Transit
+// authenticates internally, so there is no local AAD to bind.
+const envelopeVersionGCMAAD byte = 2
+
 // EnvKeyProvider loads AES-256-GCM keys from environment variables.
 //
 // The env var name is built as:  {Prefix}_{KEYID_UPPER}
@@ -107,12 +116,14 @@ func (p *EnvKeyProvider) Encrypt(_ context.Context, keyID string, plaintext []by
 		return nil, fmt.Errorf("encryption: generate nonce: %w", err)
 	}
 
-	ct := gcm.Seal(nil, nonce, plaintext, nil)
-
 	keyIDBytes := []byte(keyID)
+	// Bind the version byte and keyID into the GCM tag so they can't be altered
+	// without failing decryption (SEC-10).
+	ct := gcm.Seal(nil, nonce, plaintext, gcmAAD(envelopeVersionGCMAAD, keyID))
+
 	env := make([]byte, 1+2+len(keyIDBytes)+len(nonce)+len(ct))
 	off := 0
-	env[off] = envelopeVersion
+	env[off] = envelopeVersionGCMAAD
 	off++
 	binary.BigEndian.PutUint16(env[off:], uint16(len(keyIDBytes)))
 	off += 2
@@ -127,7 +138,7 @@ func (p *EnvKeyProvider) Encrypt(_ context.Context, keyID string, plaintext []by
 // Decrypt decrypts an envelope produced by Encrypt. It reads the keyID from
 // the envelope, loads the corresponding env var key, and decrypts with AES-256-GCM.
 func (p *EnvKeyProvider) Decrypt(_ context.Context, envelope []byte) ([]byte, error) {
-	keyID, nonce, ct, err := parseEnvelope(envelope)
+	version, keyID, nonce, ct, err := parseEnvelope(envelope)
 	if err != nil {
 		return nil, err
 	}
@@ -146,7 +157,12 @@ func (p *EnvKeyProvider) Decrypt(_ context.Context, envelope []byte) ([]byte, er
 		return nil, fmt.Errorf("encryption: create GCM: %w", err)
 	}
 
-	plaintext, err := gcm.Open(nil, nonce, ct, nil)
+	// v2 envelopes bind version||keyID as AAD; v1 (legacy) were sealed with nil.
+	var aad []byte
+	if version == envelopeVersionGCMAAD {
+		aad = gcmAAD(version, keyID)
+	}
+	plaintext, err := gcm.Open(nil, nonce, ct, aad)
 	if err != nil {
 		return nil, fmt.Errorf("encryption: decrypt with key %q: %w", keyID, err)
 	}
@@ -155,8 +171,18 @@ func (p *EnvKeyProvider) Decrypt(_ context.Context, envelope []byte) ([]byte, er
 
 // KeyIDOf extracts the keyID from an envelope without decrypting it.
 func (p *EnvKeyProvider) KeyIDOf(envelope []byte) (string, error) {
-	keyID, _, _, err := parseEnvelope(envelope)
+	_, keyID, _, _, err := parseEnvelope(envelope)
 	return keyID, err
+}
+
+// gcmAAD returns the additional authenticated data for a v2 GCM envelope: the
+// version byte followed by the keyID. Binding these into the GCM tag means the
+// stored version and keyID cannot be tampered with without failing decryption.
+func gcmAAD(version byte, keyID string) []byte {
+	aad := make([]byte, 1+len(keyID))
+	aad[0] = version
+	copy(aad[1:], keyID)
+	return aad
 }
 
 // HMAC returns HMAC-SHA256 of data using the named key. Used to enforce UNIQUE
@@ -173,25 +199,28 @@ func (p *EnvKeyProvider) HMAC(_ context.Context, keyID string, data []byte) ([]b
 
 // ── Envelope helpers ──────────────────────────────────────────────────────────
 
-// parseEnvelope splits a binary envelope into its components.
+// parseEnvelope splits a binary envelope into its components, returning the
+// version byte so the caller can select the right AAD on decrypt.
 // Layout: [version:1][keyIDLen:2 BE][keyID:N][nonce:12][ciphertext:M]
-func parseEnvelope(env []byte) (keyID string, nonce, ciphertext []byte, err error) {
+// Both v1 (legacy, nil AAD) and v2 (version||keyID bound as AAD) are accepted.
+func parseEnvelope(env []byte) (version byte, keyID string, nonce, ciphertext []byte, err error) {
 	const minLen = 1 + 2 + 0 + 12 + 1 // version + keyIDLen + keyID(0) + nonce + 1 byte ct
 	if len(env) < minLen {
-		return "", nil, nil, fmt.Errorf("encryption: envelope too short (%d bytes)", len(env))
+		return 0, "", nil, nil, fmt.Errorf("encryption: envelope too short (%d bytes)", len(env))
 	}
-	if env[0] != envelopeVersion {
-		return "", nil, nil, fmt.Errorf("encryption: unknown envelope version %d", env[0])
+	version = env[0]
+	if version != envelopeVersion && version != envelopeVersionGCMAAD {
+		return 0, "", nil, nil, fmt.Errorf("encryption: unknown envelope version %d", version)
 	}
 	keyIDLen := int(binary.BigEndian.Uint16(env[1:3]))
 	off := 3
 	if len(env) < off+keyIDLen+12+1 {
-		return "", nil, nil, fmt.Errorf("encryption: envelope too short for keyID (%d) + nonce + ciphertext", keyIDLen)
+		return 0, "", nil, nil, fmt.Errorf("encryption: envelope too short for keyID (%d) + nonce + ciphertext", keyIDLen)
 	}
 	keyID = string(env[off : off+keyIDLen])
 	off += keyIDLen
 	nonce = env[off : off+12]
 	off += 12
 	ciphertext = env[off:]
-	return keyID, nonce, ciphertext, nil
+	return version, keyID, nonce, ciphertext, nil
 }

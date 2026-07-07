@@ -254,6 +254,11 @@ extract the keyID without decrypting.
 [ version:1 ][ keyIDLen:2 (BE) ][ keyID:N ][ nonce:12 ][ gcmCiphertext+tag:M ]
 ```
 
+New envelopes use `version` `0x02`, which binds the version byte and keyID into
+the GCM tag as additional authenticated data (AAD), so neither can be altered
+without failing decryption. Legacy `0x01` envelopes — sealed without that
+binding — still decrypt, and a key rotation re-writes them as `0x02`.
+
 **`VaultKeyProvider`** — Vault returns a `vault:v1:...` ciphertext that
 embeds its own versioning, so the envelope carries no nonce:
 
@@ -261,9 +266,9 @@ embeds its own versioning, so the envelope carries no nonce:
 [ version:1 ][ keyIDLen:2 (BE) ][ keyID:N ][ vaultCiphertext:M ]
 ```
 
-In both cases `version` is `0x01` and the keyID length is a 16-bit
-big-endian integer. The framework stores the binary envelope as the
-string `enc:<base64>` in the column.
+Vault envelopes use `version` `0x01` (Vault Transit authenticates internally).
+The keyID length is a 16-bit big-endian integer, and the framework stores the
+binary envelope as the string `enc:<base64>` in the column.
 
 `Encrypt` produces the blob; `Decrypt` parses the header to recover the
 keyID, then routes to the right key. `KeyIDOf` reads the keyID without

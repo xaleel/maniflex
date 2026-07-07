@@ -399,6 +399,47 @@ func TestSplit_FilterByLocaleSubkey_InjectionRejected(t *testing.T) {
 	}
 }
 
+// SEC-2: with an empty LocaleOptions.Supported list, ?locale= accepted any value
+// and embedded it into the ORDER BY JSON path. A crafted locale must be treated
+// as invalid (ignored, falling back to the default) rather than injected.
+func TestSplit_SortByLocale_InjectionViaLocaleParamNeutralized(t *testing.T) {
+	t.Parallel()
+	srv := testutil.NewServer(t, testutil.Options{
+		Models: []any{SplitDept{}},
+		Middleware: func(s *maniflex.Server) {
+			// No Supported list — the documented "any non-empty locale" mode.
+			s.Pipeline.Deserialize.Register(maniflex.LocaleResolver(maniflex.LocaleOptions{
+				Default: "en",
+			}))
+		},
+	})
+
+	for _, name := range []string{"Bravo", "Alpha", "Charlie"} {
+		srv.POST("/split_depts", map[string]any{
+			"name": map[string]any{"en": name},
+			"code": name[:3],
+		}).AssertStatus(http.StatusCreated)
+	}
+
+	// On the vulnerable code this ?locale= flips/injects the ORDER BY. It is now
+	// an invalid locale key, so it is ignored: the sort falls back to the default
+	// locale ("en") and stays ascending, and the request still succeeds.
+	inj := "en' DESC --"
+	items := srv.GET("/split_depts?locale="+url.QueryEscape(inj)+"&sort=name:asc").
+		AssertStatus(http.StatusOK).DataList()
+	if len(items) != 3 {
+		t.Fatalf("got %d items, want 3", len(items))
+	}
+	names := make([]string, len(items))
+	for i, it := range items {
+		m := assertMap(t, "item", it)
+		names[i], _ = m["name"].(string)
+	}
+	if names[0] != "Alpha" || names[1] != "Bravo" || names[2] != "Charlie" {
+		t.Errorf("sort order with injected ?locale=: got %v, want [Alpha Bravo Charlie]", names)
+	}
+}
+
 func TestSplit_FlatFilterAutoExpandsToEffectiveLocale(t *testing.T) {
 	t.Parallel()
 	srv := splitServer(t)

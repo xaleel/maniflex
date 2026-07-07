@@ -1585,7 +1585,7 @@ func inCond(col string, val any, p *ph, negate bool) string {
 	return fmt.Sprintf("%s %s (%s)", col, op, strings.Join(phs, ", "))
 }
 
-func buildOrder(model *maniflex.ModelMeta, sorts []maniflex.SortExpr, driver maniflex.DriverType) string {
+func buildOrder(model *maniflex.ModelMeta, sorts []maniflex.SortExpr, driver maniflex.DriverType, p *ph) string {
 	if len(sorts) == 0 {
 		return ""
 	}
@@ -1600,9 +1600,11 @@ func buildOrder(model *maniflex.ModelMeta, sorts []maniflex.SortExpr, driver man
 		case s.IsLocale:
 			base := q(model.TableName) + "." + q(s.DBName)
 			if driver == maniflex.Postgres {
-				col = base + "->>" + "'" + s.LocaleKey + "'"
+				// Bind the locale key as a parameter so it can never break out
+				// of the JSON-path expression (SEC-2), matching the filter sink.
+				col = base + "->>" + p.add(s.LocaleKey) + "::text"
 			} else {
-				col = "json_extract(" + base + ", '$." + s.LocaleKey + "')"
+				col = "json_extract(" + base + ", " + p.add("$."+s.LocaleKey) + ")"
 			}
 		case s.IsNested:
 			col = q(s.RelationKey) + "." + q(s.NestedField)

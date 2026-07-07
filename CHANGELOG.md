@@ -3,6 +3,7 @@
 ## v0.1.4 (2026-07-07)
 
 - **Security:** fixed a SQL injection vector in locale-field filters.
+- **Security:** fixed a SQL injection vector in locale-field sorting via an unvalidated `?locale=`.
 
 ## v0.1.3 (2026-07-06)
 

@@ -90,9 +90,10 @@ func appendSearchCond(conds []string, model *maniflex.ModelMeta, qp *maniflex.Qu
 // listOrderSQL returns the ORDER BY for a non-cursor list query. When a search is
 // active, match relevance is the primary key, followed by any requested column
 // sorts as tiebreakers; otherwise it is the plain column ordering. p is used for
-// the Postgres ts_rank bind, so it must already hold the WHERE args.
+// the locale-sort key and the Postgres ts_rank binds, so it must already hold
+// the WHERE args (ORDER BY follows WHERE in the statement).
 func listOrderSQL(model *maniflex.ModelMeta, qp *maniflex.QueryParams, driver maniflex.DriverType, p *ph) string {
-	base := buildOrder(model, qp.Sorts, driver)
+	base := buildOrder(model, qp.Sorts, driver, p)
 	if !ftsActive(model, qp) {
 		return base
 	}

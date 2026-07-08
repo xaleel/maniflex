@@ -12,6 +12,7 @@
 - **Security (breaking):** `auth.JWTAuth` now rejects tokens with no `exp` claim (`401 TOKEN_MISSING_EXPIRY`, opt out via `JWTOptions.AllowNoExpiry`) and refuses an empty HMAC secret (panics; warns when the secret is under 32 bytes).
 - **Security:** `maniflex.RandomString` now draws from `crypto/rand` (unbiased), making it safe for tokens/IDs; it previously used non-cryptographic `math/rand/v2`.
 - **Security:** the admin CSRF cookie is now marked `Secure` when the panel is served over TLS (directly or behind a proxy setting `X-Forwarded-Proto: https`), so it can't ride a plaintext HTTP connection.
+- **Feature:** fixed non-scalar types not included in OpenAPI schemas - untyped maps are added as `"type": "object"`, and added `maniflex.ObjectWithSchema` interface with `Schema() *OASSchema` for automatic schema generation for custom types in models.
 - **Security:** `encryption.EnvKeyProvider` now binds the envelope version and keyID as AES-GCM additional authenticated data (new `v2` envelopes), so stored routing metadata can't be tampered with; existing `v1` envelopes still decrypt and are upgraded on key rotation.
 
 ## v0.1.3 (2026-07-06)

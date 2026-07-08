@@ -2,7 +2,7 @@ module github.com/xaleel/maniflex/events/nats
 
 go 1.25.4
 
-require github.com/xaleel/maniflex v0.1.3
+require github.com/xaleel/maniflex v0.1.4
 
 require github.com/nats-io/nats.go v1.52.0
 

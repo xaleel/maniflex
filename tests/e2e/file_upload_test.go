@@ -27,6 +27,59 @@ func fileServer(t *testing.T, storage *testutil.MemoryStorage) *testutil.Server 
 	})
 }
 
+// replaceGuardDoc pairs an auto_delete file with a unique slug, so an update
+// that swaps the file and also collides on slug fails at the DB step — the
+// setup BUG-1 is about.
+type replaceGuardDoc struct {
+	maniflex.BaseModel
+	Slug string `json:"slug" db:"slug" mfx:"required,unique"`
+	File string `json:"file" db:"file" mfx:"file"`
+}
+
+// BUG-1: an update that stores a new blob but then fails at the DB write (here a
+// UNIQUE violation) must NOT delete the old blob — the row still references it.
+// Previously the old file was deleted synchronously in the Service step, before
+// the DB write was known to succeed, so a failed update caused data loss.
+func TestFileUpload_FailedUpdatePreservesOldFile(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewMemoryStorage()
+	srv := testutil.NewServer(t, testutil.Options{
+		Models:      []any{replaceGuardDoc{}},
+		FileStorage: store,
+	})
+
+	// Doc A with file v1.
+	createA := srv.POSTMultipart("/replace_guard_docs", map[string]string{"slug": "a"},
+		map[string]testutil.FileUpload{"file": {Filename: "v1.pdf", ContentType: "application/pdf", Body: fakePDF}})
+	createA.AssertStatus(http.StatusCreated)
+	idA := createA.ID()
+	oldKey := testutil.Field(t, createA.Data(), "file")
+
+	// Doc B occupies slug "b".
+	srv.POST("/replace_guard_docs", map[string]any{"slug": "b"}).AssertStatus(http.StatusCreated)
+
+	// Update A: new file v2 AND slug "b" (collides) → DB UNIQUE violation.
+	upd := srv.PATCHMultipart("/replace_guard_docs/"+idA, map[string]string{"slug": "b"},
+		map[string]testutil.FileUpload{"file": {Filename: "v2.pdf", ContentType: "application/pdf", Body: append([]byte("v2\n"), fakePDF...)}})
+	if upd.Status < 400 {
+		t.Fatalf("expected the colliding update to fail, got %d: %s", upd.Status, upd.Body)
+	}
+
+	// Give any (wrongly-scheduled) background delete a chance to run.
+	time.Sleep(100 * time.Millisecond)
+
+	// The old blob must survive — a failed update must not delete it.
+	if !store.HasKey(oldKey) {
+		t.Error("BUG-1: old file was deleted even though the update failed (data loss)")
+	}
+	// And the record still points at the old key.
+	getA := srv.GET("/replace_guard_docs/" + idA)
+	getA.AssertStatus(http.StatusOK)
+	if got := testutil.Field(t, getA.Data(), "file"); got != oldKey {
+		t.Errorf("record file = %q, want unchanged old key %q", got, oldKey)
+	}
+}
+
 func TestFileUpload(t *testing.T) {
 	t.Parallel()
 
@@ -167,6 +220,9 @@ func TestFileUpload(t *testing.T) {
 		if newKey == oldKey {
 			t.Error("new key should differ from old key")
 		}
+		// The replaced blob is deleted after the successful write, on the
+		// background runner (BUG-1), so give it a moment to complete.
+		time.Sleep(100 * time.Millisecond)
 		if store.HasKey(oldKey) {
 			t.Error("old file should have been deleted (auto_delete default)")
 		}

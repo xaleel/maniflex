@@ -285,6 +285,13 @@ type ServerContext struct {
 	// deletes these orphans so a failed create/update never leaks blobs.
 	// Populated via TrackStoredFile; drained by cleanupOrphanedFiles.
 	storedFiles []storedFile
+
+	// replacedFiles records existing objects that a successful write will
+	// supersede — an mfx:"auto_delete" file being replaced or cleared on update.
+	// They are deleted only if the request ends 2xx, so a failed update never
+	// orphans the row by deleting a blob it still references (BUG-1). Populated
+	// via trackReplacedFile; drained by deleteReplacedFiles.
+	replacedFiles []storedFile
 }
 
 // storedFile pairs an object key with the storage backend it was written to, so
@@ -797,6 +804,36 @@ func (c *ServerContext) cleanupOrphanedFiles() {
 	c.storedFiles = nil
 	c.GoBackground(func(bgCtx context.Context) {
 		for _, f := range orphans {
+			_ = f.storage.Delete(bgCtx, f.key)
+		}
+	})
+}
+
+// trackReplacedFile records an existing storage object that a successful write
+// this request will replace — an mfx:"auto_delete" file superseded or cleared on
+// update. The object is deleted only when the request ends 2xx, via
+// deleteReplacedFiles; deferring the delete past the DB write means a failed
+// update never deletes a blob the (unchanged) row still references (BUG-1).
+func (c *ServerContext) trackReplacedFile(key string, storage FileStorage) {
+	if key == "" || storage == nil {
+		return
+	}
+	c.replacedFiles = append(c.replacedFiles, storedFile{key: key, storage: storage})
+}
+
+// deleteReplacedFiles deletes every object recorded by trackReplacedFile. The
+// handler calls it once the request has ended 2xx, so the old blobs a successful
+// update superseded are removed. Deletion is best-effort on the Server background
+// runner so it neither blocks the response nor is abandoned at shutdown; a
+// missing object is not an error. Draining makes a second call a no-op.
+func (c *ServerContext) deleteReplacedFiles() {
+	if len(c.replacedFiles) == 0 {
+		return
+	}
+	replaced := c.replacedFiles
+	c.replacedFiles = nil
+	c.GoBackground(func(bgCtx context.Context) {
+		for _, f := range replaced {
 			_ = f.storage.Delete(bgCtx, f.key)
 		}
 	})

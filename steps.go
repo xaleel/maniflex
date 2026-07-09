@@ -486,16 +486,14 @@ func (s *defaultSteps) processFileFields(ctx *ServerContext) error {
 }
 
 // handleFileClear processes an explicit null on a file field. The DB write
-// will set the column to NULL; when the field is mfx:"auto_delete" we also
-// schedule the existing storage object for removal. The removal is
-// fire-and-forget through ctx.GoBackground so it is bounded by shutdown.
+// will set the column to NULL; when the field is mfx:"auto_delete" the existing
+// storage object is recorded for removal after the request succeeds (deleted by
+// deleteReplacedFiles, not before the DB write — so a failed clear never orphans
+// the row by deleting a blob it still references, BUG-1).
 func (s *defaultSteps) handleFileClear(ctx *ServerContext, field FieldMeta) {
 	if field.Tags.AutoDelete && ctx.Operation == OpUpdate {
 		if oldKey, ok := s.getOldFileKey(ctx, field); ok && oldKey != "" {
-			storage := s.storage
-			ctx.GoBackground(func(bgCtx context.Context) {
-				_ = storage.Delete(bgCtx, oldKey)
-			})
+			ctx.trackReplacedFile(oldKey, s.storage)
 		}
 	}
 	// Leave ctx.ParsedBody[jn] = nil so the adapter writes NULL into the
@@ -522,9 +520,13 @@ func (s *defaultSteps) handleFileUpload(ctx *ServerContext, field FieldMeta, uf 
 		return fmt.Errorf("file type not allowed")
 	}
 
-	// On update with auto_delete: remove the old file before storing the new one
+	// On update with auto_delete: record the old file for deletion after the
+	// request succeeds, rather than deleting it now — a later failure (DB
+	// constraint, post-Service abort) would otherwise orphan the row (BUG-1).
 	if ctx.Operation == OpUpdate && field.Tags.AutoDelete {
-		s.deleteOldFile(ctx, field)
+		if oldKey, ok := s.getOldFileKey(ctx, field); ok && oldKey != "" {
+			ctx.trackReplacedFile(oldKey, s.storage)
+		}
 	}
 
 	// Generate storage key: {table}/{record_uuid}/{field_db_name}/{sanitized_filename}
@@ -575,23 +577,16 @@ func (s *defaultSteps) handleFileKeyReference(ctx *ServerContext, field FieldMet
 		return fmt.Errorf("file key not found")
 	}
 
-	// On update with auto_delete: if the key changed, delete the old file
+	// On update with auto_delete: if the key changed, record the old file for
+	// deletion after the request succeeds (not before the DB write — BUG-1).
 	if ctx.Operation == OpUpdate && field.Tags.AutoDelete {
-		if oldKey, ok := s.getOldFileKey(ctx, field); ok && oldKey != key {
-			_ = s.storage.Delete(ctx.Ctx, oldKey)
+		if oldKey, ok := s.getOldFileKey(ctx, field); ok && oldKey != "" && oldKey != key {
+			ctx.trackReplacedFile(oldKey, s.storage)
 		}
 	}
 
 	// Leave ctx.ParsedBody[jn] as-is — the verified key flows through to DB
 	return nil
-}
-
-// deleteOldFile fetches the current record and deletes the old file from
-// storage (best-effort, does not block on errors).
-func (s *defaultSteps) deleteOldFile(ctx *ServerContext, field FieldMeta) {
-	if oldKey, ok := s.getOldFileKey(ctx, field); ok && oldKey != "" {
-		_ = s.storage.Delete(ctx.Ctx, oldKey)
-	}
 }
 
 // checkRecordLocked loads the currently-stored record and tests every

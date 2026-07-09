@@ -177,14 +177,18 @@ func (h *handlers) dispatchWith(w http.ResponseWriter, r *http.Request, meta *Mo
 
 // writeResponse writes ctx.Response to the client. When the request ended with a
 // non-2xx status, it first rolls back any files stored during the request so a
-// failed create/update does not leak blobs in storage (3B.2b). A nil Response or
-// an unset/2xx status keeps the stored files.
+// failed create/update does not leak blobs in storage (3B.2b). On a 2xx (or
+// unset) status the write is known to have landed, so any files a successful
+// update replaced are deleted then (BUG-1). The two are mutually exclusive: a
+// failed write never deletes the old blob it still references.
 func writeResponse(w http.ResponseWriter, ctx *ServerContext) {
 	if ctx.Response == nil {
 		return
 	}
 	if sc := ctx.Response.StatusCode; sc != 0 && (sc < 200 || sc >= 300) {
 		ctx.cleanupOrphanedFiles()
+	} else {
+		ctx.deleteReplacedFiles()
 	}
 	ctx.Response.Write(w)
 }

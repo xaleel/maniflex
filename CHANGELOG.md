@@ -4,6 +4,7 @@
 
 - **Bugfix:** an `mfx:"auto_delete"` file's old blob is now deleted only after the update succeeds — previously it was removed before the DB write, so a failed update (e.g. a unique-constraint conflict) orphaned the row by deleting a file it still referenced.
 - **Enhancement:** `realtime.SSEHandler` always sets header `X-Accel-Buffering: no` as a safe default for Nginx deployments
+- **Bugfix:** the `mfx:"lock_when"` guard now fails closed — a read error other than "record not found" rejects the request (500 `DB_ERROR`) instead of silently letting the update/delete through, and the guard reads through the request's active transaction so it sees uncommitted state (previously it also deadlocked against the request's own transaction on SQLite).
 - **Bugfix:** `ModelConfig.OptimisticLock` no longer permits a lost update — the `If-Match` check and the write it guards now run as one row-locked transaction, so of two concurrent writers holding the same ETag exactly one succeeds and the other gets its 412 (previously both passed the check and the second silently clobbered the first).
 
 ## v0.1.4 (2026-07-07)

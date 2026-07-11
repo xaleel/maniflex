@@ -591,9 +591,13 @@ func (s *defaultSteps) handleFileKeyReference(ctx *ServerContext, field FieldMet
 
 // checkRecordLocked loads the currently-stored record and tests every
 // LockCondition on the model. Returns a 422 RECORD_LOCKED APIResponse when a
-// condition matches, or nil to proceed. A missing record (404) or other
-// adapter error returns nil so the downstream step produces its normal
-// response instead of a misleading lock error.
+// condition matches, or nil to proceed.
+//
+// The read joins the request's transaction when one is active, so the guard sees
+// the state the write is actually about to modify rather than a pre-transaction
+// snapshot of it. Only a missing record passes the guard — the downstream step
+// turns that into its normal 404. Every other adapter failure fails the request:
+// a guard that swings open on a transient DB error is no guard at all (BUG-3).
 func (s *defaultSteps) checkRecordLocked(ctx *ServerContext) *APIResponse {
 	if ctx.ResourceID == "" {
 		return nil
@@ -602,12 +606,31 @@ func (s *defaultSteps) checkRecordLocked(ctx *ServerContext) *APIResponse {
 	if adapter == nil {
 		return nil
 	}
-	existing, err := adapter.FindByID(ctx.Ctx, ctx.Model,
+	exec := dbExec{adapter: adapter, tx: ctx.Tx}
+	existing, err := exec.FindByID(ctx.Ctx, ctx.Model,
 		ctx.ResourceID, &QueryParams{Limit: 1, Page: 1})
 	if err != nil {
-		return nil
+		if errors.Is(err, ErrNotFound) {
+			return nil // nothing to lock — the downstream step returns its 404
+		}
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			return &APIResponse{
+				StatusCode: http.StatusGatewayTimeout,
+				Error: &APIError{
+					Code:    "TIMEOUT",
+					Message: "request exceeded the configured query timeout",
+				},
+			}
+		}
+		return &APIResponse{
+			StatusCode: http.StatusInternalServerError,
+			Error: &APIError{
+				Code:    "DB_ERROR",
+				Message: fmt.Sprintf("could not verify record lock state: %v", err),
+			},
+		}
 	}
-	record := s.toJSONMap(recordToMap(ctx.Model, existing), ctx.Model, ctx)
+	record := s.toJSONMap(existing, ctx.Model, ctx)
 	for _, cond := range ctx.Model.LockWhen {
 		if cond.matchesRecord(record) {
 			return &APIResponse{

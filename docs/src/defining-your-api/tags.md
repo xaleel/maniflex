@@ -132,6 +132,11 @@ update commits, the record becomes frozen.
 update, and before the adapter's Delete call on delete. Creates are
 exempt: there is no prior state to check.
 
+The guard fails closed. It reads the record through the request's transaction
+when one is active — so it sees state the same request has written but not yet
+committed — and if that read fails for any reason other than "no such record",
+the request is rejected (500 `DB_ERROR`) rather than allowed through unchecked.
+
 ## Pessimistic lock directive
 
 | Directive               | Effect                                                                                                  |

@@ -140,6 +140,15 @@ PATCH /invoices/42         If-Match: "d41d8cd9..."  → 200
 PATCH /invoices/42         If-Match: "stale"        → 412
 ```
 
+The check and the write it guards run as a single transaction, with the record
+held under a row lock (`SELECT … FOR UPDATE` on Postgres) from the ETag
+comparison until the write commits. Two clients holding the same ETag therefore
+cannot both succeed: the loser waits on the lock, then re-reads a record whose
+ETag has moved on and gets its 412. When the request already runs inside a
+transaction (`maniflex.WithTransaction`) the guard joins it and the lock is held
+until that transaction commits; otherwise the DB step opens and commits one of
+its own.
+
 ### Singleton models (`Singleton`)
 
 Some resources are inherently single-row: an application config record, a set of

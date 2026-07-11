@@ -623,12 +623,49 @@ func (s *defaultSteps) checkRecordLocked(ctx *ServerContext) *APIResponse {
 	return nil
 }
 
-// checkOptimisticLock fetches the current record, computes its ETag (MD5 of
-// the JSON-mapped body — same algorithm as response.Cache), and sets a 412 or
-// 404 response on ctx when the client's If-Match value does not match.
+// enforceOptimisticLock runs the If-Match precondition for models that opt into
+// ModelConfig.OptimisticLock. The check and the write it guards must be atomic —
+// otherwise two clients holding the same ETag both pass the check and the second
+// silently clobbers the first, which is the lost update the feature exists to
+// prevent (BUG-2). So the check re-reads the row under a pessimistic lock inside
+// a transaction: the request's own when one is active (WithTransaction), or one
+// opened here for the duration of the DB step.
+//
+// It returns the exec the rest of the DB step must use (routed through the
+// transaction) and the transaction this step owns — nil when it joined an
+// existing one, in which case the caller must neither commit nor roll it back.
+// A 412 or 404 is set on ctx.Response; the error return is for adapter failures.
+func (s *defaultSteps) enforceOptimisticLock(ctx *ServerContext, exec dbExec, model *ModelMeta) (dbExec, Tx, error) {
+	if !model.Config.OptimisticLock || ctx.Request == nil ||
+		(ctx.Operation != OpUpdate && ctx.Operation != OpDelete) {
+		return exec, nil, nil
+	}
+	ifMatch := ctx.Request.Header.Get("If-Match")
+	if ifMatch == "" {
+		return exec, nil, nil
+	}
+
+	var own Tx
+	if ctx.Tx == nil {
+		tx, err := ctx.BeginTx(ctx.Ctx, nil)
+		if err != nil {
+			return exec, nil, err
+		}
+		own = tx
+		ctx.Tx = tx
+		exec = dbExec{adapter: exec.adapter, tx: tx}
+	}
+	return exec, own, s.checkOptimisticLock(ctx, exec, model, ifMatch)
+}
+
+// checkOptimisticLock re-reads the current record under a row lock, computes its
+// ETag (MD5 of the JSON-mapped body — same algorithm as response.Cache), and
+// sets a 412 or 404 response on ctx when the client's If-Match value does not
+// match. The lock is held until the enclosing transaction ends, so a concurrent
+// writer cannot slip a write in between this check and the one that follows.
 // Returns a non-nil error only for unexpected adapter failures.
 func (s *defaultSteps) checkOptimisticLock(ctx *ServerContext, exec dbExec, model *ModelMeta, ifMatch string) error {
-	current, err := exec.FindByID(ctx.Ctx, model, ctx.ResourceID, &QueryParams{Limit: 1, Page: 1})
+	current, err := exec.findByIDForUpdate(ctx.Ctx, model, ctx.ResourceID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			ctx.Abort(http.StatusNotFound, "NOT_FOUND",
@@ -777,20 +814,29 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 	}
 
 	// Optimistic concurrency: when the model opts in and the client supplies an
-	// If-Match header, fetch the current record, compute its ETag (MD5 of the
-	// JSON-mapped body — identical to what response.Cache sets), and reject
-	// mismatches with 412 before touching the DB.
-	if model.Config.OptimisticLock &&
-		(ctx.Operation == OpUpdate || ctx.Operation == OpDelete) &&
-		ctx.Request != nil {
-		if ifMatch := ctx.Request.Header.Get("If-Match"); ifMatch != "" {
-			if err := s.checkOptimisticLock(ctx, exec, model, ifMatch); err != nil {
-				return err
-			}
-			if ctx.Response != nil {
-				return nil // 412 or 404 was set
-			}
+	// If-Match header, re-read the current record under a row lock, compute its
+	// ETag (MD5 of the JSON-mapped body — identical to what response.Cache sets),
+	// and reject mismatches with 412. The lock and the write below share one
+	// transaction, so a concurrent writer holding the same ETag cannot pass its
+	// own check until this one commits — at which point it sees the new ETag and
+	// gets its 412 instead of silently overwriting us.
+	//
+	// ownTx is the transaction this step opened for that guard (nil when the
+	// request already had one from WithTransaction, which we join instead).
+	var ownTx Tx
+	defer func() {
+		if ownTx != nil {
+			_ = ownTx.Rollback() // no-op once committed
+			ctx.Tx = nil
 		}
+	}()
+	var lockErr error
+	exec, ownTx, lockErr = s.enforceOptimisticLock(ctx, exec, model)
+	if lockErr != nil {
+		return lockErr
+	}
+	if ctx.Response != nil {
+		return nil // 412 or 404 was set
 	}
 
 	// Build the DB-column-keyed write map. With the body-mutating middleware
@@ -1036,6 +1082,20 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 		return nil
 	}
 
+	// The optimistic-lock guard held the row from the ETag check through the
+	// write; commit so both land atomically and the lock is released before the
+	// After-DB middleware run (they see a committed row and a nil ctx.Tx, exactly
+	// as they did when the guard used no transaction at all).
+	if ownTx != nil {
+		if err := ownTx.Commit(); err != nil {
+			ctx.Abort(http.StatusInternalServerError, "TX_COMMIT_ERROR",
+				fmt.Sprintf("failed to commit transaction: %v", err))
+			return nil
+		}
+		ownTx = nil
+		ctx.Tx = nil
+	}
+
 	return next()
 }
 
@@ -1111,6 +1171,24 @@ func (e dbExec) Update(ctx context.Context, model *ModelMeta, id string, data ma
 		v, err = e.tx.Update(ctx, model, id, rec, present)
 	} else {
 		v, err = e.adapter.Update(ctx, model, id, rec, present)
+	}
+	if err != nil || v == nil {
+		return nil, err
+	}
+	return recordToMap(model, v), nil
+}
+
+// findByIDForUpdate reads a single record and acquires a pessimistic row lock on
+// it (Postgres FOR UPDATE; on SQLite the write connection is already serialized).
+// The lock only outlives the call when e.tx is set, so callers that depend on it
+// must run inside a transaction.
+func (e dbExec) findByIDForUpdate(ctx context.Context, model *ModelMeta, id string) (map[string]any, error) {
+	var v any
+	var err error
+	if e.tx != nil {
+		v, err = e.tx.FindByIDForUpdate(ctx, model, id)
+	} else {
+		v, err = e.adapter.FindByIDForUpdate(ctx, model, id)
 	}
 	if err != nil || v == nil {
 		return nil, err

@@ -89,6 +89,9 @@ GET /sse?subscribe=invoice.*&subscribe=queue.position_changed
 Each event arrives as a standard `data:` frame whose body is the same
 CloudEvents JSON.
 
+The SSE response always sets `X-Accel-Buffering: no` — a safe default that stops
+NGINX from buffering the stream and delivering events in batches.
+
 ## Authentication
 
 Connections are authenticated **once, on connect** (never per message). Supply

@@ -3,6 +3,7 @@
 ## v0.1.5 (2026-07-08)
 
 - **Bugfix:** an `mfx:"auto_delete"` file's old blob is now deleted only after the update succeeds — previously it was removed before the DB write, so a failed update (e.g. a unique-constraint conflict) orphaned the row by deleting a file it still referenced.
+- **Enhancement:** `realtime.SSEHandler` always sets header `X-Accel-Buffering: no` as a safe default for Nginx deployments
 
 ## v0.1.4 (2026-07-07)
 

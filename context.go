@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -278,6 +279,10 @@ type ServerContext struct {
 	aggregate bool
 	aggQuery  *AggregateQuery
 
+	// maxBody overrides the default JSON body size limit for this request; zero
+	// means maxBodyBytes. Set through SetMaxBodySize (body.MaxBodySize).
+	maxBody int64
+
 	// storedFiles records objects written to FileStorage during this request's
 	// Service step (3B.2b). If the request ultimately fails after a file was
 	// stored — a pipeline error or a non-2xx final response, including a
@@ -299,6 +304,58 @@ type ServerContext struct {
 type storedFile struct {
 	key     string
 	storage FileStorage
+}
+
+// SetMaxBodySize overrides the JSON body size limit for this request (default
+// 4 MB). Call it from a Deserialize-step middleware, before the body is read —
+// body.MaxBodySize does exactly this. A non-positive value is ignored.
+func (c *ServerContext) SetMaxBodySize(limit int64) {
+	if limit > 0 {
+		c.maxBody = limit
+	}
+}
+
+// bodyLimit is the size ceiling for this request's JSON body.
+func (c *ServerContext) bodyLimit() int64 {
+	if c.maxBody > 0 {
+		return c.maxBody
+	}
+	return maxBodyBytes
+}
+
+// readLimitedBody reads the whole request body, rejecting anything over the
+// limit instead of silently truncating it. It reads one byte past the limit as a
+// sentinel: a body of exactly the limit is accepted, anything larger is caught.
+//
+// Truncating instead of rejecting is worse than it sounds — the surplus is cut
+// off and the remainder either fails to parse as a misleading INVALID_JSON, or,
+// when the cut lands after a complete JSON object, parses fine and the request
+// is accepted on a body the client never sent (BUG-4).
+//
+// On failure it aborts the request and returns a non-nil error.
+func (c *ServerContext) readLimitedBody() ([]byte, error) {
+	limit := c.bodyLimit()
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, limit+1))
+	if err != nil {
+		// body.MaxBodySize wraps the body in http.MaxBytesReader; its overflow is
+		// a size rejection, not an I/O failure.
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return nil, c.abortBodyTooLarge(maxErr.Limit)
+		}
+		c.Abort(http.StatusBadRequest, "BODY_READ_ERROR", "failed to read request body")
+		return nil, fmt.Errorf("body read: %w", err)
+	}
+	if int64(len(body)) > limit {
+		return nil, c.abortBodyTooLarge(limit)
+	}
+	return body, nil
+}
+
+func (c *ServerContext) abortBodyTooLarge(limit int64) error {
+	c.Abort(http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE",
+		fmt.Sprintf("request body exceeds %s limit", formatByteSize(limit)))
+	return fmt.Errorf("body exceeds %d bytes", limit)
 }
 
 // BindJSON decodes the request body as JSON into v. It enforces the same 4 MB
@@ -338,18 +395,9 @@ func (c *ServerContext) BindJSON(v any) error {
 //	    // req populated from a present body
 //	}
 func (c *ServerContext) TryBindJSON(v any) (ok bool, err error) {
-	// Read one byte past the limit so a body of exactly maxBodyBytes is accepted
-	// while anything larger is detected rather than silently truncated into a
-	// confusing INVALID_JSON.
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxBodyBytes+1))
+	body, err := c.readLimitedBody()
 	if err != nil {
-		c.Abort(http.StatusBadRequest, "BODY_READ_ERROR", "failed to read request body")
-		return false, fmt.Errorf("body read: %w", err)
-	}
-	if int64(len(body)) > maxBodyBytes {
-		c.Abort(http.StatusBadRequest, "BODY_TOO_LARGE",
-			fmt.Sprintf("request body exceeds %s limit", formatByteSize(maxBodyBytes)))
-		return false, fmt.Errorf("body exceeds %d bytes", maxBodyBytes)
+		return false, err // ctx.Abort already called
 	}
 	if len(body) == 0 {
 		return false, nil

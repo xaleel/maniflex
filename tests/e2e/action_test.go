@@ -142,8 +142,8 @@ func TestActionBindJSONSizeLimit(t *testing.T) {
 	}
 	defer httpResp.Body.Close()
 
-	if httpResp.StatusCode != http.StatusBadRequest {
-		t.Errorf("expected 400 for oversized body, got %d", httpResp.StatusCode)
+	if httpResp.StatusCode != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected 413 for oversized body, got %d", httpResp.StatusCode)
 	}
 
 	// An oversized body gets a dedicated signal rather than being silently

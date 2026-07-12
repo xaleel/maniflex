@@ -26,12 +26,17 @@ import (
 //	)
 func MaxBodySize(maxBytes int64) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
+		// Tell the body reader what this request's ceiling is, so a raised limit
+		// really is raised (the default reader stops at 4 MB otherwise) and an
+		// overrun is rejected as 413 BODY_TOO_LARGE rather than read as far as the
+		// default allows.
+		ctx.SetMaxBodySize(maxBytes)
 		if ctx.Request.Body != nil {
 			ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, maxBytes)
 		}
 		if err := next(); err != nil {
-			// MaxBytesReader surfaces the limit error through the normal read path;
-			// the Deserialize default step turns that into a 400, so we just propagate.
+			// A reader that bypasses ctx.readLimitedBody (a custom Deserialize step)
+			// surfaces the MaxBytesReader overflow as a plain error — map it here.
 			if isMaxBytesError(err) {
 				ctx.Abort(http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE",
 					fmt.Sprintf("request body exceeds maximum size of %d bytes", maxBytes))

@@ -17,8 +17,9 @@ server.Pipeline.Deserialize.Register(
 )
 ```
 
-Requests over the limit are aborted with `400 BODY_READ_ERROR` before the JSON
-parser runs.
+Requests over the limit are aborted with `413 BODY_TOO_LARGE` before the JSON
+parser runs — as is any request over the 4 MB default when this middleware is
+not registered. An oversized body is never truncated to fit.
 
 ## `StripUnknownFields`
 

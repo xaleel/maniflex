@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -92,10 +91,9 @@ func (s *defaultSteps) deserialize(ctx *ServerContext, next func() error) error 
 	// before reaching the DB step. The standard create/update body handling
 	// below does not run for this request.
 	if ctx.aggregate {
-		body, err := io.ReadAll(io.LimitReader(ctx.Request.Body, maxBodyBytes))
+		body, err := ctx.readLimitedBody()
 		if err != nil {
-			ctx.Abort(http.StatusBadRequest, "BODY_READ_ERROR", "failed to read request body")
-			return nil
+			return nil // ctx.Abort already called
 		}
 		ctx.RawBody = body
 		q, err := buildAggregateQuery(body, ctx.Model)
@@ -115,10 +113,9 @@ func (s *defaultSteps) deserialize(ctx *ServerContext, next func() error) error 
 				return nil // ctx.Abort already called inside parseMultipart
 			}
 		} else {
-			body, err := io.ReadAll(io.LimitReader(ctx.Request.Body, maxBodyBytes))
+			body, err := ctx.readLimitedBody()
 			if err != nil {
-				ctx.Abort(http.StatusBadRequest, "BODY_READ_ERROR", "failed to read request body")
-				return nil
+				return nil // ctx.Abort already called
 			}
 			if len(body) == 0 {
 				ctx.Abort(http.StatusBadRequest, "EMPTY_BODY", "request body must not be empty")

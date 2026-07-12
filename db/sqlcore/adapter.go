@@ -253,8 +253,11 @@ func (a *Adapter) migrateModelTx(ctx context.Context, exec sqlExec, m *maniflex.
 	}
 
 	// Columns in the model but not in the live DB → ALTER TABLE ADD COLUMN.
+	// A column that is present but whose type has since changed can't be fixed
+	// here (AutoMigrate never rewrites a column) — warn so the drift is visible.
 	for col, f := range modelCols {
-		if existingCols[col] {
+		if liveType, exists := existingCols[col]; exists {
+			a.warnTypeDrift(m, f, liveType)
 			continue
 		}
 		if err := a.addColumn(ctx, exec, m.TableName, f); err != nil {
@@ -273,7 +276,7 @@ func (a *Adapter) migrateModelTx(ctx context.Context, exec sqlExec, m *maniflex.
 			continue
 		}
 		hmacCol := f.Tags.DBName + "_hmac"
-		if existingCols[hmacCol] {
+		if _, exists := existingCols[hmacCol]; exists {
 			continue
 		}
 		var query string
@@ -364,14 +367,15 @@ func isHMACColumn(col string, m *maniflex.ModelMeta) bool {
 	return false
 }
 
-// existingColumns returns the set of column names currently present in the
-// named table, using the appropriate dialect introspection query.
+// existingColumns returns the columns currently present in the named table,
+// mapped to the type the database reports for each, using the appropriate
+// dialect introspection query.
 //
 // The caller passes the same exec that issued the CREATE TABLE so the column
 // list is observed in the same transaction snapshot. This eliminates a
 // TOCTOU race two replicas would otherwise hit on parallel startup.
-func (a *Adapter) existingColumns(ctx context.Context, exec sqlExec, table string) (map[string]bool, error) {
-	cols := make(map[string]bool)
+func (a *Adapter) existingColumns(ctx context.Context, exec sqlExec, table string) (map[string]string, error) {
+	cols := make(map[string]string)
 	switch a.driver {
 	case maniflex.SQLite:
 		// PRAGMA table_info does not accept a quoted identifier — use the raw name.
@@ -390,13 +394,13 @@ func (a *Adapter) existingColumns(ctx context.Context, exec sqlExec, table strin
 			if err := rows.Scan(&cid, &name, &colType, &notNull, &dfltValue, &pk); err != nil {
 				return nil, err
 			}
-			cols[name] = true
+			cols[name] = colType
 		}
 		return cols, rows.Err()
 
 	case maniflex.Postgres:
 		rows, err := exec.QueryContext(ctx,
-			`SELECT column_name FROM information_schema.columns
+			`SELECT column_name, data_type FROM information_schema.columns
 			  WHERE table_schema = current_schema()
 			    AND table_name   = $1`,
 			table)
@@ -405,15 +409,80 @@ func (a *Adapter) existingColumns(ctx context.Context, exec sqlExec, table strin
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var name string
-			if err := rows.Scan(&name); err != nil {
+			var name, dataType string
+			if err := rows.Scan(&name, &dataType); err != nil {
 				return nil, err
 			}
-			cols[name] = true
+			cols[name] = dataType
 		}
 		return cols, rows.Err()
 	}
 	return cols, nil
+}
+
+// warnTypeDrift reports a live column whose type no longer matches the model's.
+//
+// AutoMigrate only ever ADDs columns — it never rewrites one — so changing a
+// field's Go type (int → string) leaves the old column in place and the drift
+// stays invisible until a scan or an insert fails at runtime. Rewriting the
+// column is not something a migration on startup should do unasked (it can lose
+// data, and on a large table it locks), so this warns and leaves the schema
+// alone; the change belongs in an explicit versioned migration.
+//
+// The comparison is deliberately coarse. It maps both types to a storage family
+// and speaks up only when both are recognised and differ, because every driver
+// spells its types its own way — Postgres reports TIMESTAMPTZ as "timestamp with
+// time zone" and NUMERIC(20,4) as "numeric" — and a warning that cries wolf on a
+// correctly-migrated table is worse than no warning at all.
+func (a *Adapter) warnTypeDrift(m *maniflex.ModelMeta, f maniflex.FieldMeta, liveType string) {
+	modelType := a.goTypeToSQL(f.Type)
+	want, live := sqlTypeFamily(modelType), sqlTypeFamily(liveType)
+	if want == "" || live == "" || want == live {
+		return
+	}
+	a.getLogger().Warn("AutoMigrate: column type differs from the model — AutoMigrate never "+
+		"rewrites a column, so the database keeps the old type and reads or writes of this "+
+		"field may fail; change it with an explicit versioned migration",
+		slog.String("table", m.TableName),
+		slog.String("column", f.Tags.DBName),
+		slog.String("model", m.Name),
+		slog.String("db_type", liveType),
+		slog.String("model_type", modelType),
+	)
+}
+
+// sqlTypeFamily reduces a SQL type — as declared by a model or as reported by
+// the database — to the storage class it belongs to, so the two can be compared
+// across dialects and spellings. It returns "" for a type it doesn't recognise,
+// which callers read as "no opinion".
+func sqlTypeFamily(t string) string {
+	t = strings.ToLower(strings.TrimSpace(t))
+	if i := strings.IndexByte(t, '('); i >= 0 { // NUMERIC(20,4) → numeric
+		t = strings.TrimSpace(t[:i])
+	}
+	switch {
+	case t == "":
+		return ""
+	case strings.Contains(t, "json"):
+		return "json"
+	case strings.Contains(t, "bool"):
+		return "boolean"
+	case strings.Contains(t, "int"), strings.Contains(t, "serial"):
+		return "integer"
+	case strings.Contains(t, "text"), strings.Contains(t, "char"), strings.Contains(t, "clob"):
+		return "text"
+	case strings.Contains(t, "numeric"), strings.Contains(t, "decimal"), strings.Contains(t, "money"):
+		return "numeric"
+	case strings.Contains(t, "real"), strings.Contains(t, "float"), strings.Contains(t, "double"):
+		return "real"
+	case strings.Contains(t, "timestamp"), strings.Contains(t, "date"), strings.Contains(t, "time"):
+		return "timestamp"
+	case strings.Contains(t, "blob"), strings.Contains(t, "bytea"), strings.Contains(t, "binary"):
+		return "blob"
+	case strings.Contains(t, "uuid"):
+		return "uuid"
+	}
+	return ""
 }
 
 // addColumn issues an ALTER TABLE ADD COLUMN statement for the given field.

@@ -283,6 +283,15 @@ By design. The migrator never drops; it logs a drift warning so you see
 the column still exists. Remove it with an explicit `ALTER TABLE … DROP COLUMN`
 during a maintenance window.
 
+### "I changed a field's type — the column still has the old one."
+
+Also by design. `AutoMigrate` adds columns; it never rewrites one, because
+converting a column's type can lose data and locks the table while it runs. It
+logs a drift warning naming the table, the column, the type the database has and
+the type the model wants, at every startup. Convert the column with an explicit
+versioned migration (`ALTER TABLE … ALTER COLUMN`, plus whatever backfill the
+new type needs).
+
 ### "`504 TIMEOUT` on a query that used to work."
 
 `Config.QueryTimeout` fired. The deadline is per request, applied to

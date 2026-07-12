@@ -96,8 +96,19 @@ Unless `Config.DisableAutoMigrate` is set (migration runs by default), the adapt
 2. Adds any column that exists on the struct but not in the table.
 3. Logs a warning for columns that exist in the table but not on the struct
    (the framework never drops columns automatically).
-4. Creates indexes declared in `ModelConfig.Indices` or auto-generated for
+4. Logs a warning for a column whose type no longer matches its model field
+   (the framework never rewrites columns automatically).
+5. Creates indexes declared in `ModelConfig.Indices` or auto-generated for
    `mfx:"scheduled"` fields.
+
+`AutoMigrate` adds; it does not rewrite. Change a field's Go type — `int` to
+`string`, say — and the existing column keeps the type it was created with. You
+get a warning naming the table, the column, and both types on every startup, but
+the schema is left alone: rewriting a column can lose data and locks the table
+while it runs, so the conversion (and whatever backfill it needs) belongs in an
+explicit, versioned migration you run against the database, not in a startup
+routine that has to guess. Until that migration runs, reads and writes of the
+field can fail against the old column.
 
 `AutoMigrate` is suitable for development and many small deployments. For
 larger systems, set `DisableAutoMigrate: true` and manage the schema with a

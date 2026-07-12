@@ -29,7 +29,11 @@ number of rows affected. `ctx.RawQuery` also returns the rows from a
 data-modifying statement with a `RETURNING` clause (e.g. `UPDATE … RETURNING id`).
 
 When `ctx.Tx` is non-nil, both methods participate in the active transaction
-automatically.
+automatically. The built-in SQLite and Postgres adapters support this; if a
+custom adapter's transaction cannot run raw SQL, the call fails with
+`maniflex.ErrRawNotSupportedInTx` rather than quietly running on a different
+connection outside the transaction — where the write would commit on its own and
+survive the rollback.
 
 ### Portability pitfalls
 

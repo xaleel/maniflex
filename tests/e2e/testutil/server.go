@@ -52,6 +52,9 @@ type Options struct {
 	// Logger sets Config.Logger — the logger the pipeline logs through. Supply a
 	// buffer-backed handler to assert on what the framework does (or doesn't) log.
 	Logger *slog.Logger
+	// Trace sets Config.Trace — pipeline tracing. Notably, Trace.Steps wraps the
+	// transaction in maniflex's tracedTx, so it exercises a different Tx type.
+	Trace maniflex.PipelineTrace
 	// QueryTimeout sets Config.QueryTimeout on the Server instance.
 	// Zero (the default) means no per-request timeout.
 	QueryTimeout time.Duration
@@ -115,6 +118,7 @@ func NewServer(t testing.TB, opts Options) *Server {
 		DisableAutoMigrate: !autoMigrate,
 		PanicLogger:        opts.PanicLogger,
 		Logger:             opts.Logger,
+		Trace:              opts.Trace,
 		QueryTimeout:       opts.QueryTimeout,
 		HealthCheckDB:      opts.HealthCheckDB,
 		HealthTimeout:      opts.HealthTimeout,

@@ -481,10 +481,17 @@ func (c *ServerContext) BeginTx(ctx context.Context, opts *TxOptions) (Tx, error
 // the query participates in the transaction; otherwise a plain SELECT uses the
 // read pool and a RETURNING write uses the write pool.
 //
+// If a transaction is active but its Tx cannot run raw SQL, the call fails with
+// ErrRawNotSupportedInTx rather than quietly running outside the transaction.
+//
 // Placeholders are rebound to the adapter's dialect, so `?` works on both SQLite
 // and Postgres ($N). Never interpolate values directly into the query string.
 func (c *ServerContext) RawQuery(query string, args ...any) ([]Row, error) {
-	if rt, ok := c.Tx.(rawableT); ok {
+	if c.Tx != nil {
+		rt, ok := c.Tx.(rawableT)
+		if !ok {
+			return nil, ErrRawNotSupportedInTx
+		}
 		return rt.RawQueryContext(c.Ctx, strings.TrimSpace(query), args...)
 	}
 	adapter := c.requestAdapter()
@@ -506,8 +513,16 @@ func (c *ServerContext) RawQuery(query string, args ...any) ([]Row, error) {
 // RawExec executes a parameterised non-SELECT statement and returns the
 // number of rows affected. When ctx.Tx is active the statement participates
 // in it; otherwise it uses the adapter's write pool.
+//
+// If a transaction is active but its Tx cannot run raw SQL, the call fails with
+// ErrRawNotSupportedInTx rather than quietly running outside the transaction —
+// where the write would commit on its own and survive the rollback.
 func (c *ServerContext) RawExec(query string, args ...any) (int64, error) {
-	if rt, ok := c.Tx.(rawableT); ok {
+	if c.Tx != nil {
+		rt, ok := c.Tx.(rawableT)
+		if !ok {
+			return 0, ErrRawNotSupportedInTx
+		}
 		return rt.RawExecContext(c.Ctx, strings.TrimSpace(query), args...)
 	}
 	adapter := c.requestAdapter()
@@ -914,6 +929,27 @@ func (t *tracedTx) ExecContext(ctx context.Context, query string, args ...any) (
 	return nil, fmt.Errorf("maniflex: underlying Tx does not implement ExecContext")
 }
 
+// RawQueryContext / RawExecContext forward the rawableT contract to the wrapped
+// Tx. Embedding the Tx interface promotes only the methods Tx declares, so
+// without these a traced transaction would not satisfy rawableT — and turning on
+// Config.Trace would quietly push every ctx.RawQuery/RawExec out of the
+// transaction and onto the bare adapter (BUG-12).
+func (t *tracedTx) RawQueryContext(ctx context.Context, query string, args ...any) ([]map[string]any, error) {
+	rt, ok := t.Tx.(rawableT)
+	if !ok {
+		return nil, ErrRawNotSupportedInTx
+	}
+	return rt.RawQueryContext(ctx, query, args...)
+}
+
+func (t *tracedTx) RawExecContext(ctx context.Context, query string, args ...any) (int64, error) {
+	rt, ok := t.Tx.(rawableT)
+	if !ok {
+		return 0, ErrRawNotSupportedInTx
+	}
+	return rt.RawExecContext(ctx, query, args...)
+}
+
 func (t *tracedTx) Commit() error {
 	err := t.Tx.Commit()
 	if err != nil {
@@ -964,6 +1000,15 @@ func (c *ServerContext) SetKeyProvider(kp KeyProvider) { c.keyProvider = kp }
 // ErrNoAdapter is returned by BeginTx when no database adapter has been
 // configured on the Server instance.
 var ErrNoAdapter = errNoAdapter("maniflex: no database adapter configured")
+
+// ErrRawNotSupportedInTx is returned by RawQuery and RawExec when a transaction
+// is active but its Tx implementation cannot run raw SQL. The statement is
+// refused rather than run on the bare adapter: that would put it on a different
+// connection, outside the transaction, where it would commit on its own and
+// survive the rollback the caller believes covers it (BUG-12).
+var ErrRawNotSupportedInTx = errors.New(
+	"maniflex: the active transaction does not support raw SQL; " +
+		"RawQuery/RawExec would run outside it")
 
 type errNoAdapter string
 

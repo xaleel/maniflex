@@ -2,6 +2,7 @@
 
 ## v0.1.5 (2026-07-08)
 
+- **Bugfix:** re-deleting an already-soft-deleted row inside a transaction now returns `404` instead of succeeding — the transactional soft-delete omitted the pooled adapter's "not already deleted" guard, so the `UPDATE` still matched the row, re-stamped `deleted_at`/`is_deleted` (losing the original deletion time) and answered `204`. Affects any `DELETE` running under `WithTransaction` and the typed `maniflex.Delete` inside a `Batch`.
 - **Bugfix:** `maniflex.TxFromContext` no longer hands back a finished transaction — `WithTransaction` cleared `ctx.Tx` on commit but left the same tx behind the context value, so a middleware resuming after its `next()` (an audit hook, a `jobs/sql` outbox enqueue) joined a committed transaction and failed with `sql.ErrTxDone`. Both handles are now cleared on commit *and* on rollback, so such code falls back to the bare adapter.
 - **Bugfix:** an `mfx:"auto_delete"` file's old blob is now deleted only after the update succeeds — previously it was removed before the DB write, so a failed update (e.g. a unique-constraint conflict) orphaned the row by deleting a file it still referenced.
 - **Enhancement:** `realtime.SSEHandler` always sets header `X-Accel-Buffering: no` as a safe default for Nginx deployments

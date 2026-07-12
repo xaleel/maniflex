@@ -83,6 +83,9 @@ the table:
 - **Includes** — relations populated via `?include=` skip soft-deleted children.
 - **Update** — `PATCH` on a soft-deleted row returns `404`; the row is treated
   as absent.
+- **Delete** — a second `DELETE` on the same row returns `404` and leaves the
+  marker as it was, so the original deletion time survives. This holds inside a
+  transaction too.
 
 To surface the marker for clients that need it (e.g. an admin tool), filter on
 it explicitly:

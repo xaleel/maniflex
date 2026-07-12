@@ -537,17 +537,24 @@ func (t *txAdapter) HardDelete(ctx context.Context, model *maniflex.ModelMeta, i
 	return nil
 }
 
+// softDelete mirrors (*Adapter).softDelete, including its "not already deleted"
+// guard: without it an UPDATE against an already-deleted row still reports one
+// affected row, so re-deleting it re-stamps the column and reports success
+// instead of ErrNotFound.
 func (t *txAdapter) softDelete(ctx context.Context, model *maniflex.ModelMeta, id string) error {
 	p := t.newPH()
 	col := model.SoftDelete.Field
 	var setExpr string
+	var whereNotDelExpr string
 	if model.SoftDelete.FieldType == maniflex.SoftDeleteBool {
 		setExpr = fmt.Sprintf("%s = %s", q(col), p.add(true))
+		whereNotDelExpr = fmt.Sprintf("NOT %s", q(col))
 	} else {
 		setExpr = fmt.Sprintf("%s = %s", q(col), p.add(time.Now().UTC()))
+		whereNotDelExpr = fmt.Sprintf("%s IS NULL", q(col))
 	}
-	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s = %s",
-		q(model.TableName), setExpr, q("id"), p.add(id))
+	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s = %s AND %s",
+		q(model.TableName), setExpr, q("id"), p.add(id), whereNotDelExpr)
 	res, err := t.tx.ExecContext(ctx, query, p.args...)
 	if err != nil {
 		return fmt.Errorf("tx soft delete: %w", err)

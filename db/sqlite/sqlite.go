@@ -27,6 +27,22 @@ var connectionPragmas = []string{
 	"_pragma=busy_timeout(5000)",
 }
 
+// txLockImmediate makes every BEGIN on a connection a BEGIN IMMEDIATE, taking
+// the write lock up front instead of on the first write.
+//
+// This is what makes a read-then-write transaction — LockForUpdate, the
+// optimistic-lock check, mfx:"lock_scope" — actually safe. Under SQLite's
+// default deferred BEGIN, two such transactions both read the old row and only
+// then race to write; the loser gets SQLITE_BUSY (which busy_timeout cannot
+// retry away, since its snapshot is stale) or, worse, overwrites the winner.
+// With an immediate BEGIN the second transaction waits at its BEGIN and reads
+// what the first one committed.
+//
+// Applied to the write pool only: the read pool never opens a transaction, and
+// making its connections grab the write lock would serialise reads behind
+// writes for nothing.
+const txLockImmediate = "_txlock=immediate"
+
 // Open opens (or creates) a SQLite database file and returns a maniflex.DBAdapter.
 //
 // Use ":memory:" for an in-process database (useful in tests).
@@ -37,13 +53,14 @@ func Open(path string, reg maniflex.RegistryAccessor) (maniflex.DBAdapter, error
 	if path == ":memory:" {
 		path = fmt.Sprintf("file:memdb%s?mode=memory&cache=shared", maniflex.RandomString(6, maniflex.DIGITS))
 	}
-	dsn := withPragmas(path)
+	readDSN := withPragmas(path)
+	writeDSN := withTxLockImmediate(readDSN)
 
-	readDB, err := sql.Open("sqlite", dsn)
+	readDB, err := sql.Open("sqlite", readDSN)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %q: %w", path, err)
 	}
-	writeDB, err := sql.Open("sqlite", dsn)
+	writeDB, err := sql.Open("sqlite", writeDSN)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open %q: %w", path, err)
 	}
@@ -79,6 +96,16 @@ func withPragmas(path string) string {
 		sep = "&"
 	}
 	return path + sep + strings.Join(connectionPragmas, "&")
+}
+
+// withTxLockImmediate adds txLockImmediate to a DSN that withPragmas has already
+// processed (so it is known to carry a query string). A caller who spelled out
+// their own _txlock keeps it.
+func withTxLockImmediate(dsn string) string {
+	if strings.Contains(dsn, "_txlock=") {
+		return dsn
+	}
+	return dsn + "&" + txLockImmediate
 }
 
 // MustOpen is like Open but panics on error.

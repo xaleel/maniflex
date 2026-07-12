@@ -234,7 +234,7 @@ return tx.Commit()
 
 `WithTransaction` commits if `next()` returned nil AND `ctx.Response` is nil or 2xx. Otherwise rolls back. Idempotent — registering twice is fine, second call sees existing `ctx.Tx`.
 
-SQLite does not support nested transactions. Use `_txlock=immediate` DSN for write-lock isolation.
+SQLite does not support nested transactions. Its write connections open with `BEGIN IMMEDIATE` (`_txlock=immediate`, set by `sqlite.Open`), so read-then-write transactions serialise instead of racing.
 
 ## Errors
 
@@ -476,10 +476,9 @@ type Config struct {
 ## Database adapters
 
 ```go
-// SQLite (dev)
+// SQLite (dev) — write connections get _txlock=immediate automatically.
 db, err := sqlite.Open("./app.db", server.Registry())
 db, err := sqlite.Open(":memory:", server.Registry())
-db, err := sqlite.Open("file:./app.db?_txlock=immediate", server.Registry())
 
 // PostgreSQL (prod) — Open(writeDSN, readDSN, registry) is positional.
 db, err := postgres.Open(os.Getenv("DB_WRITE_URL"), os.Getenv("DB_READ_URL"), server.Registry())

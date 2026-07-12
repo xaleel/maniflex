@@ -567,9 +567,10 @@ func (c *ServerContext) DriverType() DriverType {
 // record identified by id and returns the current row data.
 //
 // For Postgres the underlying query appends FOR UPDATE; the lock is held until
-// the enclosing transaction commits or rolls back. For SQLite the lock is
-// implicit in the transaction isolation level (use BEGIN IMMEDIATE via
-// TxOptions or the _txlock=immediate DSN option).
+// the enclosing transaction commits or rolls back. For SQLite the lock is the
+// transaction's own write lock, taken at BEGIN — the sqlite adapter opens its
+// write connections with _txlock=immediate, so a second read-then-write
+// transaction waits at BEGIN instead of reading the row you are about to change.
 //
 // LockForUpdate requires an active transaction on ctx.Tx. Call ctx.BeginTx
 // or register maniflex.WithTransaction before invoking it.

@@ -906,7 +906,8 @@ func (a *Adapter) findByIDMap(ctx context.Context, model *maniflex.ModelMeta, id
 // FindByIDForUpdate fetches the row and acquires a pessimistic write lock.
 // Postgres appends FOR UPDATE and routes through the write pool so the lock
 // participates in an enclosing transaction. SQLite does a plain SELECT —
-// the lock is at the transaction level (BEGIN IMMEDIATE / _txlock=immediate).
+// the lock is at the transaction level, taken at BEGIN (db/sqlite opens write
+// connections with _txlock=immediate).
 func (a *Adapter) FindByIDForUpdate(ctx context.Context, model *maniflex.ModelMeta, id string) (any, error) {
 	p := &ph{driver: a.driver}
 

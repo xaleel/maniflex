@@ -136,7 +136,8 @@ type Tx interface {
 	// lock held until the transaction commits or rolls back.
 	// Postgres: appends FOR UPDATE to the SELECT.
 	// SQLite: behaves identically to FindByID — the lock is at the transaction
-	// level (BEGIN IMMEDIATE / _txlock=immediate DSN option).
+	// level, taken at BEGIN (the sqlite adapter opens write connections with
+	// _txlock=immediate).
 	FindByIDForUpdate(ctx context.Context, model *ModelMeta, id string) (any, error)
 
 	// Commit finalises the transaction. Returns an error if the commit fails.
@@ -197,7 +198,7 @@ type DBAdapter interface {
 	// FindByIDForUpdate fetches the record (*T) and acquires a pessimistic
 	// row-level lock. Postgres: appends FOR UPDATE; use inside a transaction so
 	// the lock is held until commit/rollback. SQLite: behaves like FindByID —
-	// the lock is acquired at the transaction level (BEGIN IMMEDIATE).
+	// the lock is acquired at the transaction level, at BEGIN IMMEDIATE.
 	// Returns ErrNotFound when the record does not exist.
 	FindByIDForUpdate(ctx context.Context, model *ModelMeta, id string) (any, error)
 

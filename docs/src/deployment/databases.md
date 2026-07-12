@@ -35,11 +35,18 @@ Common DSNs:
 |---|---|
 | `./app.db` | persistent file in the working directory |
 | `:memory:` | per-process in-memory database; vanishes on shutdown |
-| `file:./app.db?_txlock=immediate` | upgrade write locks to immediate — required for `LockForUpdate` to behave like Postgres |
 
 SQLite is single-writer by design. The framework serialises writes through one
 connection internally; reads run on a pool. This is plenty for most internal
 tools and many production APIs.
+
+Write connections open their transactions with `BEGIN IMMEDIATE` (the
+`_txlock=immediate` DSN option, applied for you). That is what makes a
+read-then-write transaction — `LockForUpdate`, an `If-Match` check,
+`mfx:"lock_scope"` — behave the way it does on Postgres: a second transaction
+waits at its `BEGIN` rather than reading the same stale row and then failing, or
+overwriting, on the way out. Spell out your own `_txlock=` in the DSN and yours
+is kept.
 
 ## PostgreSQL
 

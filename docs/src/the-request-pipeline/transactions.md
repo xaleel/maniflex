@@ -46,9 +46,9 @@ server.Pipeline.Service.Register(
 )
 ```
 
-SQLite ignores most isolation levels; for guaranteed write-locking on SQLite,
-use `BEGIN IMMEDIATE` via the `_txlock=immediate` DSN option when opening the
-database.
+SQLite ignores most isolation levels. Write-locking does not depend on them:
+`sqlite.Open` gives its write connections `_txlock=immediate`, so every
+transaction takes the write lock at `BEGIN` rather than on its first write.
 
 ## Joining the transaction from middleware
 

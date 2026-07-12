@@ -88,6 +88,25 @@ type ListResult struct {
 	Query *QueryParams
 }
 
+// normalizeQuery fills in the pagination values the list response needs and
+// returns the result. The default DB step always sets Query, but a Replace
+// middleware building a ListResult by hand naturally sets only Items and Total —
+// and an absent Query nil-dereferenced while a zero Limit was an integer
+// divide-by-zero in the page count, panicking the Response step on every list
+// request (BUG-13).
+func (lr *ListResult) normalizeQuery() *QueryParams {
+	if lr.Query == nil {
+		lr.Query = &QueryParams{}
+	}
+	if lr.Query.Limit <= 0 {
+		lr.Query.Limit = defaultLimit
+	}
+	if lr.Query.Page <= 0 {
+		lr.Query.Page = 1
+	}
+	return lr.Query
+}
+
 // TxOptions mirrors sql.TxOptions so callers do not need to import database/sql.
 type TxOptions = sql.TxOptions
 

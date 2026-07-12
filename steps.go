@@ -1379,69 +1379,108 @@ func (s *defaultSteps) response(ctx *ServerContext, next func() error) error {
 	switch ctx.Operation {
 	case OpDelete:
 		ctx.Response = &APIResponse{StatusCode: http.StatusNoContent}
-
 	case OpCreate:
-		row := s.marshalRecord(model, ctx.DBResult, ctx)
-		s.rewriteFileACL(ctx.Ctx, model, row)
-		applyComputed(ctx, model, ctx.DBResult, row)
-		resp := &APIResponse{StatusCode: http.StatusCreated, Data: row}
-		if v, ok := ctx.Get("_rtl"); ok && v == true {
-			resp.Dir = "rtl"
-		}
-		ctx.Response = resp
-
+		s.recordResponse(ctx, model, http.StatusCreated)
 	case OpList:
-		lr := ctx.DBResult.(*ListResult)
-		items := make([]any, len(lr.Items))
-		for i, row := range lr.Items {
-			m := s.marshalRecord(model, row, ctx)
-			s.rewriteFileACL(ctx.Ctx, model, m)
-			items[i] = m
-		}
-		applyComputedList(ctx, model, items, lr.Items)
-		var meta *ResponseMeta
-		if c := lr.Query.Cursor; c != nil {
-			// Keyset mode: no total/page/pages — report the next-page token and
-			// whether more rows follow instead.
-			meta = &ResponseMeta{
-				Cursor:     true,
-				Limit:      lr.Query.Limit,
-				NextCursor: c.NextCursor,
-				HasMore:    c.HasMore,
-			}
-		} else {
-			pages := lr.Total / int64(lr.Query.Limit)
-			if lr.Total%int64(lr.Query.Limit) != 0 {
-				pages++
-			}
-			meta = &ResponseMeta{
-				Total: lr.Total,
-				Page:  lr.Query.Page,
-				Limit: lr.Query.Limit,
-				Pages: pages,
-			}
-		}
-		if v, ok := ctx.Get("_rtl"); ok && v == true {
-			meta.Dir = "rtl"
-		}
-		ctx.Response = &APIResponse{
-			StatusCode: http.StatusOK,
-			Data:       items,
-			Meta:       meta,
-		}
-
+		s.listResponse(ctx, model)
 	default: // OpRead, OpUpdate
-		row := s.marshalRecord(model, ctx.DBResult, ctx)
-		s.rewriteFileACL(ctx.Ctx, model, row)
-		applyComputed(ctx, model, ctx.DBResult, row)
-		resp := &APIResponse{StatusCode: http.StatusOK, Data: row}
-		if v, ok := ctx.Get("_rtl"); ok && v == true {
-			resp.Dir = "rtl"
-		}
-		ctx.Response = resp
+		s.recordResponse(ctx, model, http.StatusOK)
 	}
 
 	return next()
+}
+
+// recordResponse builds the single-record envelope for create, read, and update.
+func (s *defaultSteps) recordResponse(ctx *ServerContext, model *ModelMeta, status int) {
+	if !marshalableRecord(ctx.DBResult) {
+		abortInvalidDBResult(ctx, "a record — map[string]any or *T", ctx.DBResult)
+		return
+	}
+	row := s.marshalRecord(model, ctx.DBResult, ctx)
+	s.rewriteFileACL(ctx.Ctx, model, row)
+	applyComputed(ctx, model, ctx.DBResult, row)
+	resp := &APIResponse{StatusCode: status, Data: row}
+	if v, ok := ctx.Get("_rtl"); ok && v == true {
+		resp.Dir = "rtl"
+	}
+	ctx.Response = resp
+}
+
+// listResponse builds the list envelope and its pagination meta.
+func (s *defaultSteps) listResponse(ctx *ServerContext, model *ModelMeta) {
+	lr, ok := ctx.DBResult.(*ListResult)
+	if !ok {
+		abortInvalidDBResult(ctx, "*maniflex.ListResult", ctx.DBResult)
+		return
+	}
+	// A hand-built ListResult from a Replace middleware typically carries only
+	// Items and Total. Fill in the pagination the meta needs rather than
+	// nil-dereferencing an absent Query or dividing by a zero Limit (BUG-13).
+	q := lr.normalizeQuery()
+
+	items := make([]any, len(lr.Items))
+	for i, row := range lr.Items {
+		m := s.marshalRecord(model, row, ctx)
+		s.rewriteFileACL(ctx.Ctx, model, m)
+		items[i] = m
+	}
+	applyComputedList(ctx, model, items, lr.Items)
+
+	var meta *ResponseMeta
+	if c := q.Cursor; c != nil {
+		// Keyset mode: no total/page/pages — report the next-page token and
+		// whether more rows follow instead.
+		meta = &ResponseMeta{
+			Cursor:     true,
+			Limit:      q.Limit,
+			NextCursor: c.NextCursor,
+			HasMore:    c.HasMore,
+		}
+	} else {
+		pages := lr.Total / int64(q.Limit)
+		if lr.Total%int64(q.Limit) != 0 {
+			pages++
+		}
+		meta = &ResponseMeta{
+			Total: lr.Total,
+			Page:  q.Page,
+			Limit: q.Limit,
+			Pages: pages,
+		}
+	}
+	if v, ok := ctx.Get("_rtl"); ok && v == true {
+		meta.Dir = "rtl"
+	}
+	ctx.Response = &APIResponse{
+		StatusCode: http.StatusOK,
+		Data:       items,
+		Meta:       meta,
+	}
+}
+
+// marshalableRecord reports whether v is something marshalRecord can render: a
+// map[string]any, or a non-nil pointer to a record struct. Anything else — a
+// value struct, an int, a nil pointer — used to reach reflect.Value.Elem and
+// panic the Response step, which a Replace middleware could trigger from Go code
+// that looks perfectly reasonable (BUG-13).
+func marshalableRecord(v any) bool {
+	if v == nil {
+		return false
+	}
+	if _, ok := v.(map[string]any); ok {
+		return true
+	}
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Pointer && !rv.IsNil()
+}
+
+// abortInvalidDBResult reports a ctx.DBResult the Response step cannot render.
+// It names the type it got, because the only way to land here is a middleware
+// that replaced a step and set the wrong shape — so say what was expected.
+func abortInvalidDBResult(ctx *ServerContext, want string, got any) {
+	ctx.Abort(http.StatusInternalServerError, "INVALID_DB_RESULT",
+		fmt.Sprintf("%s response expects %s in ctx.DBResult, got %T",
+			ctx.Operation, want, got))
 }
 
 // streamExportRows serves the auto-generated CSV/XLSX export route. The DB

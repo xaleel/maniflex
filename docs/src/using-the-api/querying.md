@@ -100,8 +100,8 @@ request with `400 INVALID_QUERY`.
 | `gt`, `gte`, `lt`, `lte` | numeric and date comparisons | one value |
 | `like` | SQL `LIKE`, case-sensitive | one value, `%` wildcards |
 | `ilike` | SQL `ILIKE`, case-insensitive | one value, `%` wildcards |
-| `in` | field IN (…) | comma-separated values |
-| `not_in` | field NOT IN (…) | comma-separated values |
+| `in` | field IN (…) | at least one comma-separated value |
+| `not_in` | field NOT IN (…) | at least one comma-separated value |
 | `between` | field ≥ lo AND ≤ hi (inclusive) | exactly two comma-separated values `lo,hi` |
 | `is_null` | field IS NULL | no value |
 | `not_null` | field IS NOT NULL | no value |

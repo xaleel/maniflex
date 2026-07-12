@@ -125,6 +125,26 @@ func TestFilter(t *testing.T) {
 		testutil.AssertLen(t, "single in value", items, 2)
 	})
 
+	// An empty list has no SQL form: it used to reach the adapter as zero values
+	// and emit "status IN ()", a syntax error on every driver — so any client
+	// could provoke a 500 at will (BUG-7). It is a malformed filter; say so.
+	t.Run("in_with_no_values_is_rejected", func(t *testing.T) {
+		t.Parallel()
+		srv, _, _ := seed(t)
+		for _, raw := range []string{
+			"status:in:",      // no value at all
+			"status:in:,,",    // only separators — every entry drops out
+			"status:not_in:",  //
+			"status:not_in:,", //
+		} {
+			resp := srv.GET("/posts?filter=" + raw)
+			resp.AssertStatus(http.StatusBadRequest)
+			if code := resp.ErrorCode(); code != "INVALID_QUERY" {
+				t.Errorf("filter %q: error code = %q, want INVALID_QUERY", raw, code)
+			}
+		}
+	})
+
 	// ── gt / gte / lt / lte operators ────────────────────────────────────────
 
 	t.Run("numeric_gt_filter", func(t *testing.T) {

@@ -124,6 +124,16 @@ func ParseFilterParam(raw string, model *ModelMeta, reg RegistryAccessor) (*Filt
 		}
 	}
 
+	// An empty list has no meaningful SQL form: "role:in:" (and "role:in:,,",
+	// whose entries all drop out) would otherwise reach the adapter as zero
+	// values and emit "role IN ()" — a syntax error on every driver, so a client
+	// could provoke a 500 at will (BUG-7).
+	if op == OpIn || op == OpNotIn {
+		if value == nil || len(SplitCSV(fmt.Sprint(value))) == 0 {
+			return nil, fmt.Errorf("operator %q requires at least one comma-separated value (e.g. role:in:admin,editor)", op)
+		}
+	}
+
 	expr := &FilterExpr{Operator: op, Value: value, Group: -1}
 
 	if strings.Contains(fieldPath, ".") {

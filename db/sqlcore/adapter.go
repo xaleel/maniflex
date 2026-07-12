@@ -1572,8 +1572,20 @@ func betweenCond(col string, val any, p *ph) string {
 	return fmt.Sprintf("(%s >= %s AND %s <= %s)", col, p.add(vals[0]), col, p.add(vals[1]))
 }
 
+// inCond expands a "a,b,c" value into "col IN (?, ?, ?)". At least one value is
+// required upstream in ParseFilterParam; an empty list here (a hand-built
+// FilterExpr from the typed API) degrades to a constant predicate rather than
+// emitting "col IN ()", which is a syntax error on every driver. An empty IN
+// matches nothing and an empty NOT IN matches everything, which is what the set
+// semantics say.
 func inCond(col string, val any, p *ph, negate bool) string {
 	vals := maniflex.SplitCSV(fmt.Sprint(val))
+	if len(vals) == 0 {
+		if negate {
+			return "1=1"
+		}
+		return "1=0"
+	}
 	phs := make([]string, len(vals))
 	for i, v := range vals {
 		phs[i] = p.add(v)

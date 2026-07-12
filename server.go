@@ -65,17 +65,22 @@ func New(cfg Config) *Server {
 	steps.signedURLTTL = cfg.FilesConfig.SignedURLTTL
 	steps.maxUpload = cfg.FilesConfig.MaxUploadBytes
 	steps.maxUploadMem = cfg.FilesConfig.MaxUploadMemory
-	oasSteps := newOASDefaultSteps(reg, &cfg)
-	pipeline := newPipeline(steps, oasSteps)
 
-	return &Server{
+	srv := &Server{
 		cfg:       cfg,
 		registry:  reg,
 		steps:     steps,
-		oasSteps:  oasSteps,
-		Pipeline:  pipeline,
 		lifecycle: newLifecycle(),
 	}
+
+	// The OpenAPI generator must read the Config the server actually serves from —
+	// &srv.cfg, not the constructor's copy. Pointing it at the local meant the
+	// two-step init (New, then SetStorage/SetDB) updated only the server's copy,
+	// so the spec omitted the file and attachment routes the router had mounted
+	// (BUG-10). The router and handlers already take &srv.cfg for the same reason.
+	srv.oasSteps = newOASDefaultSteps(reg, &srv.cfg)
+	srv.Pipeline = newPipeline(steps, srv.oasSteps)
+	return srv
 }
 
 // Register adds one or more models to the Server.

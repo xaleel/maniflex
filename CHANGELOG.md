@@ -2,6 +2,7 @@
 
 ## v0.1.5 (2026-07-08)
 
+- **Bugfix:** `maniflex.TxFromContext` no longer hands back a finished transaction — `WithTransaction` cleared `ctx.Tx` on commit but left the same tx behind the context value, so a middleware resuming after its `next()` (an audit hook, a `jobs/sql` outbox enqueue) joined a committed transaction and failed with `sql.ErrTxDone`. Both handles are now cleared on commit *and* on rollback, so such code falls back to the bare adapter.
 - **Bugfix:** an `mfx:"auto_delete"` file's old blob is now deleted only after the update succeeds — previously it was removed before the DB write, so a failed update (e.g. a unique-constraint conflict) orphaned the row by deleting a file it still referenced.
 - **Enhancement:** `realtime.SSEHandler` always sets header `X-Accel-Buffering: no` as a safe default for Nginx deployments
 - **Bugfix:** the Response step no longer panics on a `ctx.DBResult` that a `Replace` middleware can plausibly produce — a `ListResult` carrying only `Items`/`Total` nil-dereferenced its absent `Query` or divided by a zero `Limit` (a 500 PANIC on every list request), and a non-pointer record panicked inside `reflect.Value.Elem`. A hand-built `ListResult` now has its pagination defaulted, and a `DBResult` of the wrong shape is reported as `500 INVALID_DB_RESULT` naming the type it got.

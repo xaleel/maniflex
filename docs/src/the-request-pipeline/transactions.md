@@ -136,6 +136,12 @@ func enqueue(ctx context.Context, job Job) error {
 `WithTransaction` stores the active transaction on the `context.Context` for
 exactly this purpose.
 
+The transaction is reachable only while it is open. Once `WithTransaction`
+commits or rolls back, both `ctx.Tx` and `TxFromContext` go back to `nil`, so a
+middleware that resumes after its `next()` — an audit hook, an outbox enqueue —
+takes the `tx == nil` branch and writes through the bare adapter, rather than
+into a finished transaction.
+
 ## Adapter scope
 
 A transaction lives on a single `DBAdapter`. `ctx.BeginTx` opens the

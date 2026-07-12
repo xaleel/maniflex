@@ -13,6 +13,10 @@ type txContextKey struct{}
 // WithTransaction, or nil when no transaction is active. Use this from
 // packages (e.g. jobs/sql) that need to join the caller's transaction without
 // holding a *ServerContext reference.
+//
+// It returns nil once WithTransaction has committed or rolled back, so a caller
+// that resumes after the transaction closed gets the bare adapter rather than a
+// finished transaction.
 func TxFromContext(ctx context.Context) Tx {
 	tx, _ := ctx.Value(txContextKey{}).(Tx)
 	return tx
@@ -64,6 +68,16 @@ func WithTransaction(opts *TxOptions) MiddlewareFunc {
 			// Rollback after a successful commit returns sql.ErrTxDone
 			// from database/sql, which we silently discard.
 			_ = tx.Rollback()
+
+			// The transaction is finished either way by the time this returns.
+			// Clear both handles on it — ctx.Tx and the context value — so a
+			// middleware that resumes after next() (an audit hook, an outbox
+			// enqueue reaching for TxFromContext) falls back to the bare adapter
+			// instead of writing into a committed or rolled-back tx and getting
+			// sql.ErrTxDone. Overwriting the value keeps anything the downstream
+			// steps added to ctx.Ctx.
+			ctx.Tx = nil
+			ctx.Ctx = context.WithValue(ctx.Ctx, txContextKey{}, Tx(nil))
 		}()
 
 		// Expose the transaction to all subsequent steps and middleware,
@@ -90,9 +104,6 @@ func WithTransaction(opts *TxOptions) MiddlewareFunc {
 				fmt.Sprintf("failed to commit transaction: %v", err))
 			return nil
 		}
-
-		// Clear ctx.Tx so post-commit After middleware use the bare adapter.
-		ctx.Tx = nil
 		return nil
 	}
 }

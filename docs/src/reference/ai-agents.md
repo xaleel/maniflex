@@ -171,7 +171,7 @@ Calling `next()` after `Abort` lets downstream steps run and possibly overwrite 
 - Deserialize: parses query params → `ctx.Query`; body → `ctx.ParsedBody`; multipart → `ctx.Files`. 4 MB body limit.
 - Validate: enforces `mfx:` tag rules on create/update. Strips `readonly`/`id`; strips `immutable` on update.
 - Service: passthrough. Business logic goes here.
-- DB: dispatches to adapter. Routes through `ctx.Tx` when set. Maps `ErrNotFound`→404, `*ErrConstraint`→409, `context.DeadlineExceeded`→504.
+- DB: dispatches to adapter. Routes through `ctx.Tx` when set. Maps `ErrNotFound`→404, `*ErrConstraint`→409, `context.DeadlineExceeded`→504, client disconnect→499 (`maniflex.StatusClientClosedRequest`, no body).
 - Response: builds `APIResponse` from `ctx.DBResult`. List adds `meta`. Delete returns 204.
 
 ## ServerContext (per-request, not goroutine-safe)

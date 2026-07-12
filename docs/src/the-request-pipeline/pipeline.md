@@ -109,7 +109,9 @@ Two error classes are normalised at this step:
 - `maniflex.ErrNotFound` becomes `404 NOT_FOUND`.
 - `*maniflex.ErrConstraint` becomes `409 CONFLICT`.
 
-A cancelled context becomes `504 TIMEOUT`. All other adapter errors surface as
+A cancelled context becomes `504 TIMEOUT` — unless the cancellation came from the
+client hanging up, which is `499` with no body (see
+[Error Handling](errors.md)). All other adapter errors surface as
 `500 DATABASE_ERROR`.
 
 ### Response

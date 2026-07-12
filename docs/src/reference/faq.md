@@ -301,6 +301,10 @@ new type needs).
 - Speed up the query (missing index, expensive include, large LIMIT).
 - Add a `db.Paginate` cap on the offending list endpoint.
 
+A `504` always means a server-side deadline expired. A client that gives up and
+disconnects mid-request is logged as `499` instead, so the two do not share a
+line in your metrics.
+
 ## OpenAPI
 
 ### "`/openapi.json` is empty."

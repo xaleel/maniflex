@@ -132,18 +132,54 @@ func (h *handlers) buildContext(w http.ResponseWriter, r *http.Request, meta *Mo
 	return ctx, cleanup
 }
 
+// StatusClientClosedRequest is the status recorded when the caller hangs up
+// before the response is written — nginx's non-standard 499. Nothing reaches the
+// client (the connection is already gone), but this is what access logs, metrics
+// and any middleware reading the response status will see, so a disconnect is
+// told apart from a genuine server-side timeout (504) rather than being counted
+// as one.
+const StatusClientClosedRequest = 499
+
+// clientGone reports whether the caller hung up. net/http cancels the request's
+// own context when the connection drops; a QueryTimeout firing leaves that
+// context alone and cancels the derived ctx.Ctx instead. Without this the two
+// are indistinguishable — the pipeline reports both as a context error.
+func clientGone(ctx *ServerContext) bool {
+	if ctx == nil || ctx.Request == nil {
+		return false
+	}
+	return errors.Is(ctx.Request.Context().Err(), context.Canceled)
+}
+
+// clientGoneResponse is the empty 499 the pipeline hands back once the caller
+// has disconnected: a status for the logs, no body for nobody.
+func clientGoneResponse() *APIResponse {
+	return &APIResponse{StatusCode: StatusClientClosedRequest, AsIs: true}
+}
+
 // writePipelineError translates a pipeline error to an HTTP response and logs
-// the failure. ctx-cancellation/deadline becomes 504 TIMEOUT; everything else
-// is logged and becomes 500 INTERNAL. The extra slog fields differ between
+// the failure. A disconnected client becomes 499 (logged at DEBUG, not as a
+// server error); a ctx deadline or cancellation becomes 504 TIMEOUT; everything
+// else is logged and becomes 500 INTERNAL. The extra slog fields differ between
 // model dispatch and Action dispatch so they're passed in by the caller.
 func (h *handlers) writePipelineError(w http.ResponseWriter, ctx *ServerContext, err error, errFields ...any) {
+	fields := append([]any{slog.String("error", err.Error())}, errFields...)
+
+	// The caller left. Whatever we write goes to a closed connection, and calling
+	// it a timeout blames the server for the client's decision — and cites a
+	// QueryTimeout that may not even be configured.
+	if clientGone(ctx) {
+		ctx.Logger().Debug("client disconnected before the response was written", fields...)
+		w.WriteHeader(StatusClientClosedRequest)
+		return
+	}
+
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		http.Error(w,
 			`{"error":{"code":"TIMEOUT","message":"request exceeded the configured query timeout"}}`,
 			http.StatusGatewayTimeout)
 		return
 	}
-	fields := append([]any{slog.String("error", err.Error())}, errFields...)
 	ctx.Logger().Error("unhandled pipeline error", fields...)
 	http.Error(w,
 		`{"error":{"code":"INTERNAL","message":"internal server error"}}`,

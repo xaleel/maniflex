@@ -652,6 +652,9 @@ func (s *defaultSteps) checkRecordLocked(ctx *ServerContext) *APIResponse {
 			return nil // nothing to lock — the downstream step returns its 404
 		}
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			if clientGone(ctx) {
+				return clientGoneResponse()
+			}
 			return &APIResponse{
 				StatusCode: http.StatusGatewayTimeout,
 				Error: &APIError{
@@ -1126,10 +1129,15 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 			return nil
 		}
 		// A deadline or cancellation from ctx.Ctx means the per-request
-		// QueryTimeout fired (or the HTTP client disconnected). Return 504 so
-		// the caller knows the query was cut short rather than seeing a generic
-		// 500 with an opaque driver error message.
+		// QueryTimeout fired: return 504 so the caller knows the query was cut
+		// short rather than seeing a generic 500 with an opaque driver error
+		// message. If instead the caller hung up, the query was cut short by
+		// them — that is a 499, not a timeout we are answerable for.
 		if errors.Is(dbErr, context.DeadlineExceeded) || errors.Is(dbErr, context.Canceled) {
+			if clientGone(ctx) {
+				ctx.Response = clientGoneResponse()
+				return nil
+			}
 			ctx.Abort(http.StatusGatewayTimeout, "TIMEOUT",
 				"request exceeded the configured query timeout")
 			return nil

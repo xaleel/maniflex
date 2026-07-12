@@ -41,11 +41,19 @@ The default pipeline produces the following errors without any user code:
 | `422` | `VALIDATION_FAILED` | one or more `mfx:` tag rules failed |
 | `500` | `DATABASE_ERROR` | unclassified adapter error |
 | `500` | `TX_BEGIN_ERROR` / `TX_COMMIT_ERROR` | transaction lifecycle failure |
+| `499` | _(no body)_ | the client disconnected before the response was written |
 | `501` | `NO_STORAGE` | file endpoint hit with no `FileStorage` configured |
-| `504` | `TIMEOUT` | request context deadline exceeded |
+| `504` | `TIMEOUT` | `Config.QueryTimeout` (or another server-side deadline) expired |
 
 A panic anywhere in the pipeline is caught and reported as `500 PANIC` by the
 framework's recoverer.
+
+`499` is nginx's non-standard "Client Closed Request" (`maniflex.StatusClientClosedRequest`).
+Nothing is written to the client — the connection is already gone — but the status
+is what your access log, metrics, and any After middleware reading the response
+status will see, so a caller who hangs up is not counted as a server timeout.
+Only a genuine server-side deadline produces `504 TIMEOUT`. The disconnect itself
+is logged at `DEBUG`, not as an error.
 
 ## Aborting from middleware
 

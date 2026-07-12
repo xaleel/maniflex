@@ -173,7 +173,8 @@ assigns it to `ctx.DBResult`.
 
 If the adapter returned `maniflex.ErrNotFound`, the step would abort with
 `404 NOT_FOUND`. `*maniflex.ErrConstraint` becomes `409 CONFLICT`. A
-context-cancelled error becomes `504 TIMEOUT`. Any other adapter error
+context-cancelled error becomes `504 TIMEOUT` when a server-side deadline
+expired, or `499` when the client simply hung up. Any other adapter error
 becomes `500 DATABASE_ERROR`.
 
 #### 6a. Audit-log Before middleware

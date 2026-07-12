@@ -201,8 +201,9 @@ model. Carries `Name`, `TableName`, `Fields`, `Relations`, `SoftDelete`,
 `cascade`, `setNull`, `restrict`, or unset. See [Relations](../defining-your-api/relations.md).
 
 **Operation (`maniflex.Operation`).** The CRUD verb identifying a request:
-`OpList`, `OpRead`, `OpCreate`, `OpUpdate`, `OpDelete`, `OpHead`,
-`OpOptions`, `OpAction`. See [Pipeline Overview](../the-request-pipeline/pipeline.md).
+`OpList`, `OpRead`, `OpCreate`, `OpUpdate`, `OpDelete`, `OpOptions`, `OpAction`.
+A `HEAD` request runs as the `GET` it mirrors (`OpRead` / `OpList`). See
+[Pipeline Overview](../the-request-pipeline/pipeline.md).
 
 **Outbox.** The transactional outbox pattern: a row written in the same
 transaction as the primary write, consumed by a background worker for

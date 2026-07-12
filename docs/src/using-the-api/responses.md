@@ -88,7 +88,12 @@ The catalogue of built-in codes is in [Error Handling](../the-request-pipeline/e
 | `OpUpdate` | `200 OK` | `404 NOT_FOUND`, `409 CONFLICT`, `422 VALIDATION_FAILED` |
 | `OpDelete` | `204 No Content` | `404 NOT_FOUND` |
 
-`HEAD` and `OPTIONS` return `200` with no body.
+`HEAD` mirrors the `GET` for the same URL with the body suppressed: same status
+(including `404` for a record that does not exist), same headers, same middleware
+— just no body.
+
+`OPTIONS` returns `204 No Content` with an `Allow` header listing the methods the
+route accepts.
 
 ## Headers
 

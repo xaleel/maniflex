@@ -26,7 +26,13 @@ const (
 	OpDelete  Operation = "delete"
 	OpList    Operation = "list"
 	OpOptions Operation = "options"
-	OpHead    Operation = "head"
+
+	// OpHead is retained for compatibility but is never set on a request. HEAD is
+	// GET with the body suppressed, so a HEAD request dispatches as the read it
+	// mirrors — OpRead for an item, OpList for a collection — and every middleware
+	// scoped to those operations applies to it unchanged. Scope HEAD-aware
+	// middleware with ForOperation(OpRead)/ForOperation(OpList), not with this.
+	OpHead Operation = "head"
 
 	// OpReadAttachment identifies a request for GET /:model/:id/:file_field —
 	// the per-model attachment route. Runs Auth → Deserialize → Validate → DB

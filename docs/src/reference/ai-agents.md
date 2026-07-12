@@ -153,7 +153,7 @@ server.Pipeline.Service.Register(myFn,
 )
 ```
 
-Operations: `OpList`, `OpRead`, `OpCreate`, `OpUpdate`, `OpDelete`, `OpHead`, `OpOptions`, `OpAction`.
+Operations: `OpList`, `OpRead`, `OpCreate`, `OpUpdate`, `OpDelete`, `OpOptions`, `OpAction`. A `HEAD` request runs as the `GET` it mirrors (`OpRead` / `OpList`); `OpHead` is never set.
 
 `OpAction` uses a trimmed pipeline: `Auth → action middleware → handler → Response`.
 Validate/Service/DB middleware never fires for actions.
@@ -670,7 +670,7 @@ In-memory SQLite per test. `server.Handler()` returns the chi router but does
 ## Sentinels & constants
 
 ```go
-maniflex.OpCreate, maniflex.OpRead, maniflex.OpUpdate, maniflex.OpDelete, maniflex.OpList, maniflex.OpHead, maniflex.OpOptions, maniflex.OpAction
+maniflex.OpCreate, maniflex.OpRead, maniflex.OpUpdate, maniflex.OpDelete, maniflex.OpList, maniflex.OpOptions, maniflex.OpAction
 maniflex.Before, maniflex.After, maniflex.Replace
 maniflex.OpEq, maniflex.OpNeq, maniflex.OpGt, maniflex.OpGte, maniflex.OpLt, maniflex.OpLte, maniflex.OpLike, maniflex.OpILike, maniflex.OpIn, maniflex.OpNotIn, maniflex.OpIsNull, maniflex.OpNotNull
 maniflex.SortAsc, maniflex.SortDesc

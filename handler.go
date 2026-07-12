@@ -400,17 +400,52 @@ func (h *handlers) Attachment(meta *ModelMeta, field FieldMeta) http.HandlerFunc
 	}
 }
 
-// Head returns a handler for HEAD /resource[/{id}?]
+// Head returns a handler for HEAD /resource[/{id}?].
+//
+// HEAD is GET with the body suppressed (RFC 9110 §9.3.2), so it dispatches as
+// the read operation the same URL would serve for GET — OpRead on an item,
+// OpList on a collection — and net/http drops the body while keeping the status
+// and headers. Dispatching it as the underlying read (rather than as its own
+// operation) is what keeps HEAD honest: it 404s for a missing record instead of
+// always answering 200, and every read-scoped middleware — auth, tenancy,
+// soft-delete — applies exactly as it does to GET, so a HEAD probe can't become
+// an existence oracle that walks around ForOperation(OpRead) auth (BUG-9).
 func (h *handlers) Head(meta *ModelMeta) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		h.dispatch(w, r, meta, OpHead)
+		if meta.Config.Singleton {
+			h.dispatchWith(w, r, meta, OpRead, func(ctx *ServerContext) {
+				ctx.ResourceID = SingletonID
+			})
+			return
+		}
+		op := OpList
+		if chi.URLParam(r, "id") != "" {
+			op = OpRead
+		}
+		h.dispatch(w, r, meta, op)
 	}
 }
 
-// Options returns a handler for OPTIONS /resource[/{id}?]
+// Options returns a handler for OPTIONS /resource[/{id}?]. It advertises the
+// methods the router actually mounts for that path (RFC 9110 §10.2.1) and
+// answers 204 with no body.
 func (h *handlers) Options(meta *ModelMeta) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Allow", allowedMethods(meta, chi.URLParam(r, "id") != ""))
 		h.dispatch(w, r, meta, OpOptions)
+	}
+}
+
+// allowedMethods lists the methods mounted for a model's collection or item
+// path, mirroring mountModel.
+func allowedMethods(meta *ModelMeta, isItem bool) string {
+	switch {
+	case meta.Config.Singleton:
+		return "GET, HEAD, PATCH, OPTIONS"
+	case isItem:
+		return "GET, HEAD, PATCH, DELETE, OPTIONS"
+	default:
+		return "GET, HEAD, POST, OPTIONS"
 	}
 }
 

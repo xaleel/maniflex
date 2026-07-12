@@ -49,6 +49,9 @@ type Options struct {
 	// DB path
 	DBPath      string
 	PanicLogger *slog.Logger
+	// Logger sets Config.Logger — the logger the pipeline logs through. Supply a
+	// buffer-backed handler to assert on what the framework does (or doesn't) log.
+	Logger *slog.Logger
 	// QueryTimeout sets Config.QueryTimeout on the Server instance.
 	// Zero (the default) means no per-request timeout.
 	QueryTimeout time.Duration
@@ -111,6 +114,7 @@ func NewServer(t testing.TB, opts Options) *Server {
 		PathPrefix:         prefix,
 		DisableAutoMigrate: !autoMigrate,
 		PanicLogger:        opts.PanicLogger,
+		Logger:             opts.Logger,
 		QueryTimeout:       opts.QueryTimeout,
 		HealthCheckDB:      opts.HealthCheckDB,
 		HealthTimeout:      opts.HealthTimeout,

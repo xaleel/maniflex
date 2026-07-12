@@ -91,8 +91,9 @@ server.Pipeline.Auth.Register(requireToken,
 ```
 
 Operation values: `OpList`, `OpRead`, `OpCreate`, `OpUpdate`, `OpDelete`,
-`OpHead`, `OpOptions`, `OpAction`. Registering on Validate/Service/DB with
-`OpAction` has no effect — those steps are skipped for action endpoints.
+`OpOptions`, `OpAction`. Registering on Validate/Service/DB with `OpAction` has
+no effect — those steps are skipped for action endpoints. A `HEAD` request runs
+as the `GET` it mirrors (`OpRead` / `OpList`), so scope it with those.
 
 ### Combining
 

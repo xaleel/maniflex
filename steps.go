@@ -1359,6 +1359,15 @@ func (s *defaultSteps) response(ctx *ServerContext, next func() error) error {
 		return next()
 	}
 
+	// OPTIONS never reads anything: answer 204 with the Allow header the handler
+	// already set. Returning here — before the DBResult check below — is also what
+	// keeps it out of the "reached with nil DBResult" warning, which used to fire
+	// on every OPTIONS request and filled the logs at probe frequency (BUG-9).
+	if ctx.Operation == OpOptions {
+		ctx.Response = &APIResponse{StatusCode: http.StatusNoContent}
+		return next()
+	}
+
 	// Needed in case of `maniflex.Pipeline.DB.Register(..., maniflex.AtPosition(maniflex.Replace))`
 	// and ctx.DBResult wasn't manually set
 	if ctx.DBResult == nil {
@@ -1420,10 +1429,6 @@ func (s *defaultSteps) response(ctx *ServerContext, next func() error) error {
 			Data:       items,
 			Meta:       meta,
 		}
-
-	case OpHead, OpOptions:
-		// HEAD and OPTIONS carry no body; respond with 200 and no content.
-		ctx.Response = &APIResponse{StatusCode: http.StatusOK}
 
 	default: // OpRead, OpUpdate
 		row := s.marshalRecord(model, ctx.DBResult, ctx)

@@ -37,10 +37,14 @@ that is stable across all six steps:
 | `OpCreate` | `POST /<table>` |
 | `OpUpdate` | `PATCH /<table>/{id}` |
 | `OpDelete` | `DELETE /<table>/{id}` |
-| `OpHead` | `HEAD /<table>` or `HEAD /<table>/{id}` |
 | `OpOptions` | `OPTIONS /<table>` or `OPTIONS /<table>/{id}` |
 | `OpReadAttachment` | `GET /<table>/{id}/<file_field>` — per-model attachment download (see [Files](../defining-your-api/files.md#per-model-attachment-routes)) |
 | `OpAction` | a custom action endpoint registered with `server.Action()` |
+
+A `HEAD` request has no operation of its own: it is `GET` with the body
+suppressed, so it runs as `OpList` (collection) or `OpRead` (item) — same
+middleware, same status code, no body. The `OpHead` constant still exists but is
+never set on a request; scope HEAD-aware middleware with `OpRead` / `OpList`.
 
 `ctx.Operation` is the value middleware uses to branch behaviour. `OpAction`
 requests follow a trimmed pipeline (`Auth → action handler → Response`); the

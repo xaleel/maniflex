@@ -70,9 +70,16 @@ func (fh *fileHandlers) Upload(ctx *ServerContext) http.HandlerFunc {
 
 		key := fh.config.KeyGen(ctx, header)
 
+		contentType, err := resolveContentType(header.Header.Get("Content-Type"), file)
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "FILE_READ_ERROR",
+				fmt.Sprintf("failed to read uploaded file: %s", err.Error()))
+			return
+		}
+
 		meta := FileMeta{
 			Key:         key,
-			ContentType: header.Header.Get("Content-Type"),
+			ContentType: contentType,
 			Size:        header.Size,
 			Filename:    header.Filename,
 		}

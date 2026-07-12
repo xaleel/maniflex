@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"maps"
 	"net/http"
@@ -319,15 +320,10 @@ func (s *defaultSteps) parseMultipart(ctx *ServerContext) error {
 				fmt.Sprintf("failed to open uploaded file %q: %s", key, err.Error()))
 			return err
 		}
-		// detect content type
-		contentType := fh.Header.Get("Content-Type")
-		headerBytes := make([]byte, 512)
-		if n, err := f.Read(headerBytes); err == nil {
-			contentType = http.DetectContentType(headerBytes[:n])
-		}
-		if _, err := f.Seek(0, 0); err != nil {
+		contentType, err := resolveContentType(fh.Header.Get("Content-Type"), f)
+		if err != nil {
 			ctx.Abort(http.StatusInternalServerError, "FILE_READ_ERROR",
-				fmt.Sprintf("failed to seek uploaded file %q: %s", key, err.Error()))
+				fmt.Sprintf("failed to read uploaded file %q: %s", key, err.Error()))
 			return err
 		}
 
@@ -795,6 +791,41 @@ func (s *defaultSteps) ensureSingletonRow(ctx *ServerContext, exec dbExec, model
 	return nil
 }
 
+// resolveContentType decides an uploaded part's media type and rewinds the
+// reader so the body can still be stored in full.
+//
+// The type the client declared wins. Sniffing (http.DetectContentType) is only a
+// fallback for a part that declares nothing, or the generic
+// application/octet-stream that clients send when they don't know better — it
+// recognises a short allowlist of magic numbers and answers text/plain or
+// application/octet-stream for everything else, so letting it override the
+// declared type made mfx:"accept" unsatisfiable for JSON, CSV, and every office
+// format: the client sent the right header and still got a 415 (BUG-6).
+func resolveContentType(declared string, r io.ReadSeeker) (string, error) {
+	if ct := strings.TrimSpace(declared); ct != "" &&
+		!strings.EqualFold(mediaType(ct), "application/octet-stream") {
+		return ct, nil
+	}
+
+	head := make([]byte, 512)
+	n, err := r.Read(head)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	if n == 0 {
+		return declared, nil // empty part — nothing to sniff
+	}
+	return http.DetectContentType(head[:n]), nil
+}
+
+// mediaType strips any MIME parameters ("text/html; charset=utf-8" → "text/html").
+func mediaType(contentType string) string {
+	return strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])
+}
+
 // matchesAccept checks if contentType matches any of the accept patterns.
 // Supports exact match ("image/png"), wildcard subtype ("image/*"), and
 // ignores MIME parameters ("text/html; charset=utf-8" matches "text/html").
@@ -803,8 +834,7 @@ func matchesAccept(contentType string, accept []string) bool {
 	if len(accept) == 0 {
 		return true
 	}
-	// Strip MIME parameters (e.g. "; charset=utf-8") before comparing.
-	mimeType := strings.TrimSpace(strings.SplitN(contentType, ";", 2)[0])
+	mimeType := mediaType(contentType)
 	for _, pattern := range accept {
 		if pattern == "*/*" || pattern == mimeType {
 			return true

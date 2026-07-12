@@ -48,6 +48,14 @@ Tag sub-options:
 | `file_acl:signed` | response replaces the key with a pre-signed URL valid for `Config.FileSignedURLTTL` (default 1h). Requires `FileStorage.URL()` |
 | `file_acl:public` | response replaces the key with a permanent / long-lived URL (e.g. S3 7-day max). Pair with public-read ACL on the bucket for true permanence |
 
+`accept` matches the content type the client declared on the multipart part; when
+the part declares nothing (or the generic `application/octet-stream`), the type is
+sniffed from the first 512 bytes. A declared type is a client-supplied claim, so
+treat `accept` as an input filter, not a security boundary — downloads are what
+enforce safety, via `X-Content-Type-Options: nosniff` and forced attachment for
+anything outside the inline allowlist (see
+[Standalone file endpoints](#standalone-file-endpoints)).
+
 Tag detail is in [Field Tags Reference](tags.md#file-upload-directives).
 
 ### `file_acl` modes

@@ -41,6 +41,13 @@ type Event struct {
 Equivalently, set `ModelConfig.CursorField: "created_at"` at registration, or
 put `mfx:"...,cursor_field:<name>"` on any of the model's own fields.
 
+The cursor column must be `mfx:"sortable"` and **not nullable** — a pointer field
+(`*time.Time`) is rejected at registration. Keyset pagination needs a total order,
+and NULL has no place in one: the boundary comparison is never true for it, and
+Postgres and SQLite don't even agree where NULLs sort. A nullable cursor column
+would drop or repeat rows across pages, so the model fails to register rather than
+paginating wrongly.
+
 The presence of `?cursor=` switches the request into keyset mode (it supersedes
 `?page`). Send an empty value for the first page, then the `meta.next_cursor`
 from each response to fetch the next:

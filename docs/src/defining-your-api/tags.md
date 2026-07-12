@@ -193,7 +193,7 @@ unless explicitly tagged.
 | `filterable`          | the field may be used in `?filter=`                                                       |
 | `sortable`            | the field may be used in `?sort=`                                                         |
 | `searchable`          | the field is indexed for native full-text search (`?q=`); text columns only              |
-| `cursor_field:<name>` | opt the model into keyset (cursor) pagination; `<name>` is the sortable column to walk by |
+| `cursor_field:<name>` | opt the model into keyset (cursor) pagination; `<name>` is the column to walk by — it must be `sortable` and non-nullable (a pointer field is rejected at registration) |
 
 See [Querying](../using-the-api/querying.md) for the filter, sort, and cursor-pagination grammar.
 

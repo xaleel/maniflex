@@ -193,6 +193,20 @@ func (m *ModelMeta) collectCursorField() error {
 			"maniflex: model %q cursor_field %q must be mfx:\"sortable\" (keyset pagination orders by it)",
 			m.Name, raw)
 	}
+	// A nullable column has no total order, and the two drivers don't even agree
+	// where NULLs belong (Postgres sorts them last on ASC, SQLite first). The
+	// keyset boundary predicate compares with > / <, which is never true for NULL,
+	// so rows with a NULL cursor value would be silently skipped — or duplicated
+	// across pages, depending on the driver. Reject the model instead of paginating
+	// it wrongly (BUG-8). Pointer fields are exactly the ones the migrator declares
+	// NULL; everything else is NOT NULL.
+	if f.Type.Kind() == reflect.Pointer {
+		return fmt.Errorf(
+			"maniflex: model %q cursor_field %q is nullable (%s); keyset pagination requires a NOT NULL "+
+				"column because a NULL has no place in a total order — rows would be skipped or repeated "+
+				"across pages. Use a non-pointer field, or pick another cursor field",
+			m.Name, raw, f.Type)
+	}
 	m.CursorField = f.Tags.DBName
 	return nil
 }

@@ -31,9 +31,15 @@ type Service interface {
 	Start(ctx context.Context) error
 
 	// Stop is called once during graceful shutdown, after the HTTP listener has
-	// drained and after the Start ctx has been cancelled. The ctx is a fresh
-	// deadline context bounded by Config.ShutdownTimeout — use it to flush
+	// drained and after the Start ctx has been cancelled. Use the ctx to flush
 	// buffers, close connections, or wait for in-flight work to settle.
+	//
+	// The ctx carries what remains of the one shutdown budget — Config.Shutdown-
+	// Timeout, or the deadline passed to Server.Shutdown — shared with the HTTP
+	// drain that ran before it and the OnShutdown hook and goroutine drain that
+	// run after. A slow drain leaves Stop less time, so honour the ctx: it is
+	// what keeps total shutdown inside the window an orchestrator gives you
+	// before it sends SIGKILL.
 	Stop(ctx context.Context) error
 }
 
@@ -95,24 +101,25 @@ func (l *lifecycle) start(cfg *Config) error {
 	}
 	for i, svc := range l.services {
 		if err := svc.Start(l.ctx); err != nil {
-			l.stopServices(cfg, i) // roll back the ones that came up
+			// Boot rollback, not shutdown: there is no shutdown budget to share,
+			// so give the rollback its own ShutdownTimeout window.
+			stopCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+			l.stopServices(stopCtx, cfg, i) // roll back the ones that came up
+			cancel()
 			return fmt.Errorf("maniflex: service start failed: %w", err)
 		}
 	}
 	return nil
 }
 
-// stopServices stops services[0:n] in reverse order with a fresh deadline
-// context bounded by ShutdownTimeout. Used both for rollback during a failed
-// boot and for orderly shutdown.
-func (l *lifecycle) stopServices(cfg *Config, n int) {
+// stopServices stops services[0:n] in reverse order, bounded by ctx. Used both
+// for rollback during a failed boot and for orderly shutdown.
+func (l *lifecycle) stopServices(ctx context.Context, cfg *Config, n int) {
 	if n <= 0 {
 		return
 	}
-	stopCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-	defer cancel()
 	for i := n - 1; i >= 0; i-- {
-		if err := l.services[i].Stop(stopCtx); err != nil {
+		if err := l.services[i].Stop(ctx); err != nil {
 			cfg.logger().Error("[maniflex] service stop failed",
 				slog.Int("index", i), slog.String("error", err.Error()))
 		}
@@ -123,14 +130,18 @@ func (l *lifecycle) stopServices(cfg *Config, n int) {
 // context (so loops wind down), stop services in reverse order, then run the
 // OnShutdown hook. It runs at most once; later calls are no-ops. Draining the
 // Server.Go goroutines is left to drain so it can share the HTTP drain budget.
-func (l *lifecycle) stop(cfg *Config) {
+//
+// Every phase runs on the caller's ctx — the one shutdown budget. Minting a
+// fresh ShutdownTimeout here (as the service stop and the OnShutdown hook each
+// used to) meant the phases were additive: an HTTP drain, a hung Service.Stop
+// and a slow OnShutdown could take 3× ShutdownTimeout between them, and an
+// explicit Shutdown(ctx) deadline was ignored outright (BUG-11).
+func (l *lifecycle) stop(ctx context.Context, cfg *Config) {
 	l.stopOnce.Do(func() {
 		l.cancel()
-		l.stopServices(cfg, len(l.services))
+		l.stopServices(ctx, cfg, len(l.services))
 		if cfg.OnShutdown != nil {
-			stopCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
-			defer cancel()
-			if err := cfg.OnShutdown(stopCtx); err != nil {
+			if err := cfg.OnShutdown(ctx); err != nil {
 				cfg.logger().Error("[maniflex] OnShutdown hook failed",
 					slog.String("error", err.Error()))
 			}

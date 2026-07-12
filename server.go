@@ -362,14 +362,20 @@ func (c *Server) StartWithContext(ctx context.Context) error {
 	// or the server fails to start at all.
 	select {
 	case err := <-serveErr:
-		// Server failed before we even got a shutdown signal. Tear the
-		// lifecycle down so already-started services stop cleanly.
-		c.lifecycle.stop(&c.cfg)
 		if err != nil {
+			// The server failed before we ever got a shutdown signal (port in
+			// use, …). Tear the lifecycle down so already-started services stop
+			// cleanly, in a ShutdownTimeout window of its own — no drain is in
+			// progress to share one with.
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), c.cfg.ShutdownTimeout)
+			c.lifecycle.stop(stopCtx, &c.cfg)
+			stopCancel()
 			return fmt.Errorf("maniflex: server error: %w", err)
 		}
-		// Closed without an error means Shutdown() was called explicitly while
-		// we were serving; it has already run the graceful path.
+		// Closed without an error means Shutdown() was called explicitly while we
+		// were serving. It owns the teardown and its budget — tearing down here
+		// too would race it for the once-only lifecycle.stop and could hand the
+		// services a fresh full-length window instead of the caller's deadline.
 		return nil
 
 	case <-ctx.Done():
@@ -399,8 +405,10 @@ func (c *Server) gracefulShutdown(ctx context.Context) error {
 	}
 
 	// 2. Cancel the lifecycle context (loops wind down), stop services in
-	//    reverse order, then run the OnShutdown hook. Idempotent.
-	c.lifecycle.stop(&c.cfg)
+	//    reverse order, then run the OnShutdown hook. Idempotent. It runs on the
+	//    same ctx as every other phase, so whatever the HTTP drain used comes out
+	//    of the same budget rather than starting a fresh one (BUG-11).
+	c.lifecycle.stop(ctx, &c.cfg)
 
 	// 3. Drain application-scoped Server.Go goroutines and per-request
 	//    ctx.GoBackground writes within the remaining budget. Roadmap §11B.6:

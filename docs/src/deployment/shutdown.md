@@ -92,7 +92,7 @@ lifecycle instead of you hand-supervising them around `Start`.
 ```go
 type Service interface {
     Start(ctx context.Context) error // ctx is cancelled at shutdown
-    Stop(ctx context.Context) error  // fresh deadline, bounded by ShutdownTimeout
+    Stop(ctx context.Context) error  // carries what's left of the shutdown budget
 }
 
 server.AddService(pool)                          // a custom Service
@@ -127,8 +127,15 @@ migration; services that already started are stopped in reverse first.
 
 **Shutdown order:** `http.Shutdown → Service.Stop (reverse order) → OnShutdown
 → drain server.Go + ctx.GoBackground goroutines`. The `Start` context is
-cancelled when shutdown begins so loops wind down on their own; `Stop` then
-receives a fresh deadline context. Everything is bounded by `ShutdownTimeout`.
+cancelled when shutdown begins so loops wind down on their own.
+
+**One budget, shared.** Every phase runs on the *same* deadline context —
+`ShutdownTimeout`, or whatever deadline you pass to `server.Shutdown(ctx)`. The
+phases are sequential, so they draw down a single window rather than each getting
+a fresh one: a drain that eats 25 of 30 seconds leaves `Stop`, `OnShutdown` and
+the goroutine drain 5 seconds between them. Honour the ctx you are handed — that
+is what keeps total shutdown inside the window your orchestrator allows before it
+escalates to `SIGKILL`.
 
 `AddService`, `OnStart`, and `server.Go` are inert for apps that register
 nothing — there is no behavioural change unless you opt in.

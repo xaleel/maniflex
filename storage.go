@@ -31,7 +31,37 @@ const (
 	// DefaultFileSignedURLTTL is the default TTL for signed URLs when
 	// Config.FileSignedURLTTL is zero.
 	DefaultFileSignedURLTTL = time.Hour
+
+	// DefaultMaxUploadBytes caps the total size of a multipart/form-data request
+	// when FilesConfig.MaxUploadBytes is zero. Without a ceiling the body is
+	// unbounded: everything past the in-memory buffer spools to temp files, so a
+	// single long stream can fill the disk (BUG-5).
+	DefaultMaxUploadBytes int64 = 32 << 20 // 32 MB
+
+	// DefaultMaxUploadMemory is how much of a multipart request is buffered in
+	// memory before the remainder spools to temp files, when
+	// FilesConfig.MaxUploadMemory is zero. It matches net/http's own default.
+	DefaultMaxUploadMemory int64 = 32 << 20 // 32 MB
 )
+
+// uploadLimitOr / uploadMemoryOr resolve a configured multipart limit, falling
+// back to the framework default when it is left at zero.
+func uploadLimitOr(configured int64) int64 {
+	if configured > 0 {
+		return configured
+	}
+	return DefaultMaxUploadBytes
+}
+
+func uploadMemoryOr(configured int64) int64 {
+	if configured > 0 {
+		return configured
+	}
+	return DefaultMaxUploadMemory
+}
+
+func (c FilesConfig) uploadLimit() int64  { return uploadLimitOr(c.MaxUploadBytes) }
+func (c FilesConfig) uploadMemory() int64 { return uploadMemoryOr(c.MaxUploadMemory) }
 
 // FileMeta describes an uploaded file's metadata.
 type FileMeta struct {
@@ -79,6 +109,24 @@ type FilesConfig struct {
 	// SignedURLTTL is the default time-to-live for pre-signed URLs generated
 	// for mfx:"file_acl:signed" fields. Default: DefaultFileSignedURLTTL (1 hour).
 	SignedURLTTL time.Duration
+
+	// MaxUploadBytes caps the total size of a multipart/form-data request — every
+	// part summed, not per file. A request over the ceiling is rejected with
+	// 413 BODY_TOO_LARGE as it streams, before anything is written to disk.
+	// Default: DefaultMaxUploadBytes (32 MB). It applies to model create/update
+	// uploads and to POST /files alike.
+	//
+	// The per-field mfx:"max_size" tag still applies on top of this: it bounds an
+	// individual attachment, this bounds the request that carries it. Raise this
+	// for large media, and note that a Deserialize-step body.MaxBodySize
+	// (ctx.SetMaxBodySize) overrides it for the models it is registered on.
+	MaxUploadBytes int64
+
+	// MaxUploadMemory is how much of a multipart request is buffered in memory
+	// before the remainder spools to temp files. Default: DefaultMaxUploadMemory
+	// (32 MB). Lower it to trade memory for temp-file I/O; the total is still
+	// bounded by MaxUploadBytes either way.
+	MaxUploadMemory int64
 
 	// KeyGen derives the storage key for a standalone POST /files upload from the
 	// request context and the multipart header. When nil, DefaultKeyGen is used,

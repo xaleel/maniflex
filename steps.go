@@ -27,6 +27,10 @@ type defaultSteps struct {
 	storage      FileStorage
 	keyProvider  KeyProvider
 	signedURLTTL time.Duration // TTL for FileACLSigned URLs; 0 → DefaultFileSignedURLTTL
+	// maxUpload caps a multipart request's total size; maxUploadMem caps how much
+	// of it is buffered in memory. Zero → DefaultMaxUploadBytes / DefaultMaxUploadMemory.
+	maxUpload    int64
+	maxUploadMem int64
 	bg           *backgroundRunner
 }
 
@@ -231,13 +235,54 @@ func selectKeysFromRequest(r *http.Request) map[string]struct{} {
 	return out
 }
 
+// uploadLimit is the ceiling on this request's total multipart body. A
+// Deserialize-step body.MaxBodySize (ctx.SetMaxBodySize) wins when set, so a
+// model can be held to a tighter bound than the app-wide default.
+func (s *defaultSteps) uploadLimit(ctx *ServerContext) int64 {
+	if ctx != nil && ctx.maxBody > 0 {
+		return ctx.maxBody
+	}
+	return uploadLimitOr(s.maxUpload)
+}
+
+// uploadMemory is how much of a multipart body is buffered in memory before the
+// rest spools to temp files.
+func (s *defaultSteps) uploadMemory() int64 {
+	return uploadMemoryOr(s.maxUploadMem)
+}
+
+// limitMultipartBody caps the request body at limit bytes. Reading past it fails
+// the read, which is what keeps an unbounded upload from ever reaching disk.
+func limitMultipartBody(ctx *ServerContext, limit int64) {
+	if ctx.Request.Body != nil {
+		ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, limit)
+	}
+}
+
+// isBodyTooLarge reports whether err is the overflow from an http.MaxBytesReader.
+// mime/multipart wraps the reader's error in its own, and older paths surface it
+// as a bare string, so check both.
+func isBodyTooLarge(err error) bool {
+	var maxErr *http.MaxBytesError
+	return errors.As(err, &maxErr) ||
+		(err != nil && strings.Contains(err.Error(), "request body too large"))
+}
+
 // parseMultipart handles multipart/form-data requests. Form values go into
 // ctx.ParsedBody, file parts go into ctx.Files. File readers remain open
 // until dispatch() cleans them up after the pipeline completes.
 func (s *defaultSteps) parseMultipart(ctx *ServerContext) error {
-	const maxMultipartMemory = 32 << 20 // 32 MB
+	// Bound the request before parsing it. ParseMultipartForm's argument caps only
+	// the in-memory buffer — everything beyond it spools to temp files, so without
+	// a ceiling on the body itself a client can stream until the disk fills
+	// (BUG-5). MaxBytesReader stops the read at the limit instead.
+	limitMultipartBody(ctx, s.uploadLimit(ctx))
 
-	if err := ctx.Request.ParseMultipartForm(maxMultipartMemory); err != nil {
+	if err := ctx.Request.ParseMultipartForm(s.uploadMemory()); err != nil {
+		if isBodyTooLarge(err) {
+			_ = ctx.abortBodyTooLarge(s.uploadLimit(ctx))
+			return err
+		}
 		ctx.Abort(http.StatusBadRequest, "MULTIPART_ERROR",
 			fmt.Sprintf("failed to parse multipart form: %s", err.Error()))
 		return err

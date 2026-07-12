@@ -126,6 +126,30 @@ uploads and the standalone `/files` routes respond with `501 Not Implemented`.
 > per-model attachment routes remain gated on `Storage` alone and are
 > unaffected.
 
+### Upload size limits
+
+A multipart request is capped at **32 MB** in total by default, across every
+part. Anything larger is rejected with `413 BODY_TOO_LARGE` while it streams —
+before a byte is written to a temp file, let alone to storage. Raise or lower
+the ceiling per app:
+
+```go
+FilesConfig: maniflex.FilesConfig{
+    Storage:         fs,
+    MaxUploadBytes:  100 << 20, // total request size (default 32 MB)
+    MaxUploadMemory:   8 << 20, // buffered in RAM before spooling (default 32 MB)
+}
+```
+
+`MaxUploadBytes` bounds the **request**; the per-field `max_size` tag bounds an
+individual **attachment** within it. Both apply, and the request ceiling is
+checked first — so `max_size:2MB` on a field does not stop a client from sending
+a 50 GB body, but `MaxUploadBytes` does.
+
+For a tighter limit on one model, register
+[`body.MaxBodySize`](../middleware-catalogue/body.md) on the Deserialize step; it
+overrides `MaxUploadBytes` for the models it is scoped to.
+
 ### Custom storage keys with `KeyGen`
 
 By default a `POST /files` upload is stored under

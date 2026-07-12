@@ -43,7 +43,17 @@ func (fh *fileHandlers) Upload(ctx *ServerContext) http.HandlerFunc {
 			return
 		}
 
-		if err := r.ParseMultipartForm(32 << 20); err != nil {
+		// Bound the body before parsing: ParseMultipartForm's argument caps only the
+		// in-memory buffer, and the overflow spools to temp files (BUG-5).
+		limit := fh.config.uploadLimit()
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+
+		if err := r.ParseMultipartForm(fh.config.uploadMemory()); err != nil {
+			if isBodyTooLarge(err) {
+				writeJSONError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE",
+					fmt.Sprintf("request body exceeds %s limit", formatByteSize(limit)))
+				return
+			}
 			writeJSONError(w, http.StatusBadRequest, "MULTIPART_ERROR",
 				fmt.Sprintf("failed to parse multipart form: %s", err.Error()))
 			return

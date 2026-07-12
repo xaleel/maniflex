@@ -63,6 +63,8 @@ func New(cfg Config) *Server {
 	steps.storage = cfg.FilesConfig.Storage
 	steps.keyProvider = cfg.KeyProvider
 	steps.signedURLTTL = cfg.FilesConfig.SignedURLTTL
+	steps.maxUpload = cfg.FilesConfig.MaxUploadBytes
+	steps.maxUploadMem = cfg.FilesConfig.MaxUploadMemory
 	oasSteps := newOASDefaultSteps(reg, &cfg)
 	pipeline := newPipeline(steps, oasSteps)
 

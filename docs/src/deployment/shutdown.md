@@ -66,6 +66,18 @@ server.Shutdown(ctx)
 for "wait as long as it takes"; pass a `context.WithTimeout` for an explicit
 budget.
 
+It is safe to call from any goroutine at any point in the server's life — the
+snippet above races `Start` by construction, and the outcome does not depend on
+who wins. A `Shutdown` that lands while the server is still booting (migrating,
+or waiting on a service that dials its backend) **countermands** the boot: the
+listener is never opened, `Start` unwinds whatever it had already brought up and
+returns `nil`, and `Shutdown` waits for that to finish before returning. On a
+server that was never started at all, it does nothing.
+
+`Shutdown` is terminal rather than a pause: a server that has been shut down will
+not open a listener afterwards, so a `Start` following a `Shutdown` returns `nil`
+without serving. A `Server` is not restartable — build a new one.
+
 ## Background writes
 
 Audit-log writes, cache invalidations (`db.Invalidate`), and async file

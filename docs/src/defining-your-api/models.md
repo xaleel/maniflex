@@ -106,7 +106,7 @@ server.MustRegister(
 | `Indices`           | additional database indexes created during `AutoMigrate`                                                                 |
 | `ExportEnabled`     | mount `GET /:model/export` (CSV / XLSX) — see [CSV / XLSX Export](../advanced-topics/export.md)                                    |
 | `MaxExportRows`     | row cap for the export endpoint; default 100,000                                                                         |
-| `AggregateEnabled`  | mount `GET /:model/aggregate` (grouped count/sum/avg/min/max) — see [Aggregations](../advanced-topics/raw-queries.md#auto-generated-aggregate-endpoint) |
+| `AggregateEnabled`  | mount `GET /:model/aggregate?aggregate=<url-encoded JSON>` (grouped count/sum/avg/min/max) — see [Aggregations](../advanced-topics/raw-queries.md#auto-generated-aggregate-endpoint) |
 | `OptimisticLock`    | enable `If-Match` / ETag concurrency control on PATCH and DELETE                                                         |
 | `Adapter`           | route this model to a separate database adapter                                                                          |
 | `Singleton`         | expose the model as a single-row resource (`GET` / `PATCH`, no id) — see [Singleton models](#singleton-models-singleton) |

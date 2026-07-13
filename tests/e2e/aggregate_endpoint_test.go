@@ -1,13 +1,20 @@
 package e2e
 
 // 4.7 — auto-generated GET /:model/aggregate endpoint. The route is mounted only
-// when ModelConfig.AggregateEnabled; it accepts a JSON body describing the
-// aggregation, validates every referenced field against the model's
+// when ModelConfig.AggregateEnabled; it takes the aggregation spec as URL-encoded
+// JSON in ?aggregate=, validates every referenced field against the model's
 // filterable/sortable allow-list, and runs it through ctx.Aggregate. It
 // dispatches as the list operation so list auth/tenancy middleware apply.
+//
+// The spec used to travel in the GET's request body, which many proxies and CDNs
+// drop and fetch() cannot send at all — so the endpoint worked in development and
+// failed in production (DX-2). The body is no longer read.
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/xaleel/maniflex"
@@ -59,9 +66,35 @@ func seedSales(t *testing.T, srv *testutil.Server) {
 	}
 }
 
-// aggGET issues a GET /agg_sales/aggregate with a JSON body.
-func aggGET(srv *testutil.Server, body any) *testutil.Response {
-	return srv.Do(http.MethodGet, srv.APIPath("/agg_sales/aggregate"), body)
+// aggGET issues a GET /agg_sales/aggregate with the spec in ?aggregate=, and no
+// request body at all.
+func aggGET(srv *testutil.Server, spec any) *testutil.Response {
+	return srv.Do(http.MethodGet, aggURL(srv, spec), nil)
+}
+
+// aggURL builds the endpoint URL, encoding spec as JSON into ?aggregate=. A nil
+// or empty spec yields a bare URL — the "no spec supplied" case.
+func aggURL(srv *testutil.Server, spec any) string {
+	var raw string
+	switch v := spec.(type) {
+	case nil:
+	case []byte:
+		raw = string(v)
+	case string:
+		raw = v
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			panic(err)
+		}
+		raw = string(b)
+	}
+
+	u := srv.APIPath("/agg_sales/aggregate")
+	if raw == "" {
+		return u
+	}
+	return u + "?aggregate=" + url.QueryEscape(raw)
 }
 
 // rowsByKey indexes a list of group rows by the string value of the given key.
@@ -225,8 +258,16 @@ func TestAggregateEndpoint_ValidationErrors(t *testing.T) {
 		body any
 	}{
 		{
-			"empty body",
+			"no spec at all",
+			nil,
+		},
+		{
+			"empty spec",
 			[]byte(""),
+		},
+		{
+			"malformed json",
+			[]byte("{not json"),
 		},
 		{
 			"no select",
@@ -281,6 +322,58 @@ func TestAggregateEndpoint_ValidationErrors(t *testing.T) {
 				t.Errorf("error code: got %q, want INVALID_AGGREGATE", code)
 			}
 		})
+	}
+}
+
+// The whole point of DX-2: a spec sent the old way — in the GET's body — is not
+// honoured. It has to be rejected rather than silently obeyed, because the body
+// is exactly what a CDN or ALB strips on the way to production; a request that
+// works here and 400s there is the failure mode being fixed.
+func TestAggregateEndpoint_GetBodyIsNotRead(t *testing.T) {
+	t.Parallel()
+	srv := aggEndpointServer(t, nil)
+	seedSales(t, srv)
+
+	spec := map[string]any{
+		"select": []any{map[string]any{"op": "count", "as": "n"}},
+	}
+	resp := srv.Do(http.MethodGet, srv.APIPath("/agg_sales/aggregate"), spec)
+
+	resp.AssertStatus(http.StatusBadRequest)
+	if code := resp.ErrorCode(); code != "INVALID_AGGREGATE" {
+		t.Errorf("error code: got %q, want INVALID_AGGREGATE", code)
+	}
+	// The error has to tell the caller where the spec belongs now.
+	if msg := resp.Body; !strings.Contains(string(msg), "?aggregate=") {
+		t.Errorf("error message does not point at ?aggregate=: %s", msg)
+	}
+}
+
+// And the query parameter is what the endpoint actually reads, even when a body
+// is also present — no silent precedence to argue about.
+func TestAggregateEndpoint_QueryParamWinsOverBody(t *testing.T) {
+	t.Parallel()
+	srv := aggEndpointServer(t, nil)
+	seedSales(t, srv)
+
+	// The body asks to group by product; the query parameter asks for a flat count.
+	body := map[string]any{
+		"select":   []any{map[string]any{"op": "count", "as": "n"}},
+		"group_by": []any{"product"},
+	}
+	url := aggURL(srv, map[string]any{
+		"select": []any{map[string]any{"op": "count", "as": "n"}},
+	})
+
+	resp := srv.Do(http.MethodGet, url, body)
+	resp.AssertStatus(http.StatusOK)
+
+	rows := resp.DataList()
+	if len(rows) != 1 {
+		t.Fatalf("rows: got %d, want 1 — the body's group_by must not have been applied", len(rows))
+	}
+	if got := toF(rows[0].(map[string]any)["n"]); got != 5 {
+		t.Errorf("count: got %v, want 5", got)
 	}
 }
 

@@ -97,13 +97,18 @@ type ModelConfig struct {
 	// id is always appended as the tiebreaker so the keyset boundary is total.
 	CursorField string
 
-	// AggregateEnabled mounts GET /:model/aggregate when true. The route accepts
-	// a JSON body describing an aggregation (select/group_by/where/having/
-	// order_by/limit), validates every referenced field against the model's
-	// filterable/sortable allow-list, and runs it through ctx.Aggregate. It
-	// dispatches as the list operation, so auth and row-isolation middleware
-	// registered for OpList apply unchanged and any ?filter= query parameters
-	// (including tenancy force-filters) are AND-ed into the aggregate WHERE.
+	// AggregateEnabled mounts GET /:model/aggregate when true. The route takes the
+	// aggregation (select/group_by/where/having/order_by/limit) as URL-encoded
+	// JSON in the ?aggregate= query parameter, validates every referenced field
+	// against the model's filterable/sortable allow-list, and runs it through
+	// ctx.Aggregate. It dispatches as the list operation, so auth and row-isolation
+	// middleware registered for OpList apply unchanged and any ?filter= query
+	// parameters (including tenancy force-filters) are AND-ed into the aggregate
+	// WHERE.
+	//
+	// The spec is a query parameter and not a request body because this is a GET:
+	// a GET body is dropped by many proxies and CDNs and cannot be sent by fetch()
+	// at all. The body is not read; sending one gets a 400 naming ?aggregate=.
 	//
 	// Field and operator names use the same convention as ?filter=/?sort=:
 	// the JSON field name (DB column name also accepted). Only count, sum, avg,
@@ -262,6 +267,36 @@ type Config struct {
 	// imports, large file uploads).
 	ShutdownTimeout time.Duration
 
+	// ReadHeaderTimeout bounds how long a connection may take to send its request
+	// headers. Default: 10s. This is the slowloris defence: without it a client
+	// can hold a connection open indefinitely by dribbling one header byte at a
+	// time, and enough such connections exhaust the server's file descriptors
+	// without a single request ever reaching the pipeline.
+	//
+	// Set a negative value to disable (net/http's unbounded default). Only do that
+	// behind a proxy that already bounds header reads.
+	ReadHeaderTimeout time.Duration
+
+	// IdleTimeout bounds how long a keep-alive connection may sit idle between
+	// requests before the server closes it. Default: 120s. Set a negative value to
+	// disable, in which case idle connections are bounded by ReadTimeout instead
+	// (and if that is unset too, they are never closed).
+	IdleTimeout time.Duration
+
+	// ReadTimeout bounds the time taken to read an entire request, headers and
+	// body. Zero (the default) means unbounded: a deadline here caps how long a
+	// client may take to upload, so a large file over a slow link is cut off
+	// mid-transfer. Set it when you know your request sizes; the header phase is
+	// covered by ReadHeaderTimeout regardless.
+	ReadTimeout time.Duration
+
+	// WriteTimeout bounds the time taken to write a response. Zero (the default)
+	// means unbounded, deliberately: the deadline covers the whole response, so
+	// any value at all would sever a long-lived stream — realtime.SSEHandler,
+	// a large download — at that mark. Set it only on a server with no streaming
+	// endpoints.
+	WriteTimeout time.Duration
+
 	// Logger is the slog.Logger used for all framework-level log output:
 	// server lifecycle messages (startup, shutdown, migration), per-request
 	// logs emitted via ServerContext.Logger(), and DB adapter messages such as
@@ -417,6 +452,16 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = 30 * time.Second
+	}
+	// A framework that owns the http.Server owes it defensive read deadlines:
+	// net/http sets none, so an unconfigured server answers slowloris by holding
+	// the connection open forever. ReadTimeout/WriteTimeout stay unset — see their
+	// docs; they cut off uploads and streams, so they are the caller's call.
+	if c.ReadHeaderTimeout == 0 {
+		c.ReadHeaderTimeout = 10 * time.Second
+	}
+	if c.IdleTimeout == 0 {
+		c.IdleTimeout = 120 * time.Second
 	}
 	// PanicLogger falls back to Logger so callers only need to set one field.
 	if c.PanicLogger == nil {

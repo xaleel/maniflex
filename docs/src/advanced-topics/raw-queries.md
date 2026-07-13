@@ -101,12 +101,14 @@ Opt a model into a built-in HTTP aggregation route with
 server.MustRegister(Order{}, maniflex.ModelConfig{AggregateEnabled: true})
 ```
 
-This mounts `GET /:model/aggregate`, which accepts a JSON body describing the
-aggregation and returns the group rows under the usual `{"data": [...]}`
-envelope:
+This mounts `GET /:model/aggregate`. The aggregation is described by a JSON
+document passed **URL-encoded in the `?aggregate=` query parameter**, and the
+group rows come back under the usual `{"data": [...]}` envelope:
 
 ```
-GET /api/orders/aggregate
+GET /api/orders/aggregate?aggregate=<url-encoded JSON>
+
+# where the JSON is:
 {
   "select":   [{"op": "count", "as": "n"}, {"op": "sum", "field": "amount", "as": "total"}],
   "group_by": ["status"],
@@ -117,18 +119,35 @@ GET /api/orders/aggregate
 }
 ```
 
+```js
+const spec = {
+  select: [{ op: "sum", field: "amount", as: "total" }],
+  group_by: ["status"],
+};
+const res = await fetch(
+  `/api/orders/aggregate?aggregate=${encodeURIComponent(JSON.stringify(spec))}`,
+);
+```
+
+The spec travels in the query string, not in a request body, because this is a
+`GET`: a body on a `GET` is dropped by many proxies and CDNs and cannot be sent
+by `fetch()` at all, so an endpoint that needed one worked in development and
+failed in production. A request body is not read; sending one gets a
+`400 INVALID_AGGREGATE` pointing you at `?aggregate=`.
+
 `op` is one of `count`, `count_distinct`, `sum`, `avg`, `min`, `max` (omit
 `field` on `count` for `COUNT(*)`). Field names use the same convention as
 `?filter=`/`?sort=` — the JSON name (DB column name also accepted) — and **every
 referenced field must be `mfx:"filterable"` or `mfx:"sortable"`**, so the public
 endpoint can never aggregate a hidden or sensitive column. WHERE operators are
-the flat comparison set plus `in`/`not_in`/`like`/`ilike`/`is_null`/`not_null`
+the flat comparison set plus
+`in`/`not_in`/`like`/`ilike`/`contains`/`starts_with`/`ends_with`/`is_null`/`not_null`
 (no `between`).
 
 The endpoint runs as the **list** operation: any auth or tenancy middleware you
 registered for `OpList` applies unchanged (no separate registration needed), and
 request `?filter=` conditions — including middleware-injected tenancy
-force-filters — are AND-ed into the aggregate WHERE alongside the body's own
+force-filters — are AND-ed into the aggregate WHERE alongside the spec's own
 `where`.
 
 ## Tree traversal: `ctx.RecursiveQuery`

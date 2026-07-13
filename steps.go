@@ -91,17 +91,27 @@ func (s *defaultSteps) deserialize(ctx *ServerContext, next func() error) error 
 		ctx.Logger().LogAttrs(context.Background(), slog.LevelDebug, "query params parsed", attrs...)
 	}
 
-	// Aggregate endpoint (4.7): the JSON body carries the aggregation spec.
-	// Parse and validate it here so an invalid query fails fast with a 400
-	// before reaching the DB step. The standard create/update body handling
-	// below does not run for this request.
+	// Aggregate endpoint (4.7): ?aggregate= carries the spec as URL-encoded JSON.
+	// It is a query parameter and not a body because this is a GET, and a GET body
+	// is dropped by many proxies and CDNs and cannot be sent by fetch() at all —
+	// an endpoint that needs one works in development and fails in production
+	// (DX-2). Parse and validate here so an invalid query fails fast with a 400
+	// before reaching the DB step. The standard create/update body handling below
+	// does not run for this request.
+	//
+	// The parameter is "aggregate" rather than the shorter "q" because ?q= is the
+	// full-text search parameter, and this request runs as a list.
 	if ctx.aggregate {
-		body, err := ctx.readLimitedBody()
-		if err != nil {
-			return nil // ctx.Abort already called
+		spec := strings.TrimSpace(ctx.Request.URL.Query().Get("aggregate"))
+		if spec == "" {
+			msg := "aggregate query must be supplied as URL-encoded JSON in the ?aggregate= parameter"
+			if ctx.Request.ContentLength > 0 {
+				msg += "; the request body is not read (a GET body does not survive most proxies)"
+			}
+			ctx.Abort(http.StatusBadRequest, "INVALID_AGGREGATE", msg)
+			return nil
 		}
-		ctx.RawBody = body
-		q, err := buildAggregateQuery(body, ctx.Model)
+		q, err := buildAggregateQuery([]byte(spec), ctx.Model)
 		if err != nil {
 			ctx.Abort(http.StatusBadRequest, "INVALID_AGGREGATE", err.Error())
 			return nil

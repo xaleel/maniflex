@@ -25,6 +25,36 @@ server := maniflex.New(maniflex.Config{
 mounted at the router root. See [Static Files](../defining-your-api/static-files.md) for the static
 serving options.
 
+## HTTP timeouts
+
+The framework owns the `http.Server`, and `net/http` gives that struct no
+deadlines by default. These are the ones it sets on your behalf:
+
+| Field | Default | Purpose |
+|---|---|---|
+| `ReadHeaderTimeout` | `10s` | how long a connection may take to send its request headers |
+| `IdleTimeout` | `120s` | how long a keep-alive connection may sit idle between requests |
+| `ReadTimeout` | `0` (unbounded) | time to read an entire request, headers **and body** |
+| `WriteTimeout` | `0` (unbounded) | time to write a response |
+
+`ReadHeaderTimeout` is the slowloris defence. Without it a client can hold a
+connection open forever by dribbling one header byte at a time, and enough such
+connections exhaust the server's file descriptors without a single request ever
+reaching the pipeline. Set a **negative** value to disable a timeout (which is
+what `net/http` reads as "no deadline") — only sensible behind a proxy that
+already bounds header reads.
+
+`ReadTimeout` and `WriteTimeout` are deliberately left unset, because both are
+whole-request deadlines rather than idle deadlines:
+
+- A `ReadTimeout` caps how long a client may take to *upload*, so a large file
+  over a slow link is severed mid-transfer.
+- A `WriteTimeout` covers the entire response, so any value at all would cut a
+  long-lived stream — `realtime.SSEHandler`, a large download — off at that mark.
+
+Set them when you know your request sizes and have no streaming endpoints. The
+header phase stays bounded by `ReadHeaderTimeout` either way.
+
 ## Database
 
 | Field | Default | Purpose |

@@ -7,12 +7,13 @@ import (
 	"net/http"
 )
 
-// aggregateRequest is the JSON body accepted by the auto-generated
-// GET /:model/aggregate endpoint (ModelConfig.AggregateEnabled). It mirrors
-// AggregateQuery but with JSON-friendly names and is translated into an
-// AggregateQuery only after every referenced field is checked against the
-// model's filterable/sortable allow-list — so the public endpoint can never
-// aggregate over a column the model has not opted into exposing.
+// aggregateRequest is the JSON spec accepted by the auto-generated
+// GET /:model/aggregate?aggregate=<url-encoded JSON> endpoint
+// (ModelConfig.AggregateEnabled). It mirrors AggregateQuery but with
+// JSON-friendly names and is translated into an AggregateQuery only after every
+// referenced field is checked against the model's filterable/sortable allow-list
+// — so the public endpoint can never aggregate over a column the model has not
+// opted into exposing.
 type aggregateRequest struct {
 	Select  []aggregateSelectJSON `json:"select"`
 	GroupBy []string              `json:"group_by"`
@@ -65,16 +66,16 @@ var aggregateWhereOps = map[FilterOperator]bool{
 	OpContains: true, OpStartsWith: true, OpEndsWith: true,
 }
 
-// buildAggregateQuery parses the request body into an AggregateQuery, resolving
-// every field reference to its DB column name and rejecting any field that is
-// not in the model's filterable/sortable allow-list. The returned error carries
-// a client-facing message suitable for a 400 response.
-func buildAggregateQuery(body []byte, model *ModelMeta) (AggregateQuery, error) {
-	if len(body) == 0 {
-		return AggregateQuery{}, fmt.Errorf("aggregate query body must not be empty")
+// buildAggregateQuery parses the ?aggregate= spec into an AggregateQuery,
+// resolving every field reference to its DB column name and rejecting any field
+// that is not in the model's filterable/sortable allow-list. The returned error
+// carries a client-facing message suitable for a 400 response.
+func buildAggregateQuery(spec []byte, model *ModelMeta) (AggregateQuery, error) {
+	if len(spec) == 0 {
+		return AggregateQuery{}, fmt.Errorf("aggregate query must not be empty")
 	}
 	var req aggregateRequest
-	dec := json.NewDecoder(bytes.NewReader(body))
+	dec := json.NewDecoder(bytes.NewReader(spec))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
 		return AggregateQuery{}, fmt.Errorf("malformed aggregate query: %s", err.Error())

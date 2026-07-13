@@ -188,7 +188,8 @@ func mountModel(r chi.Router, meta *ModelMeta, h *handlers, storageConfigured bo
 
 		// Auto-generated aggregation endpoint (4.7). Mounted only when the model
 		// opts in via ModelConfig.AggregateEnabled. Dispatches as OpList so the
-		// list auth/tenancy middleware apply; the JSON body carries the query.
+		// list auth/tenancy middleware apply; ?aggregate= carries the query as
+		// URL-encoded JSON.
 		if meta.Config.AggregateEnabled {
 			r.Get("/aggregate", h.Aggregate(meta))
 		}

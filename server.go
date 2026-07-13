@@ -10,7 +10,9 @@ import (
 	"os/signal"
 	"reflect"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 )
 
 // loggerSetter is an optional interface that DB adapters may implement to
@@ -45,12 +47,24 @@ type Server struct {
 	steps        *defaultSteps    // held so SetDB can patch the adapter after construction
 	oasSteps     *oasDefaultSteps // held so cfg pointer stays live for OpenAPI generation
 	Pipeline     *Pipeline
-	router       http.Handler // built lazily on first call to Handler() or Start()
-	httpSrv      *http.Server // set by Start/StartWithContext; nil until then
 	actions      []ActionConfig
 	asyncCfg     *AsyncAPIConfig     // non-nil → mount /asyncapi.json (set via RealtimeDoc)
 	globalSearch *GlobalSearchConfig // non-nil → mount /search (set via EnableGlobalSearch)
 	lifecycle    *lifecycle          // supervised services + Server.Go goroutines
+
+	// mu guards the four fields below — the only Server state mutated after
+	// construction, and the only state three different goroutines reach for:
+	// Start (conventionally its own), Handler (a test's, an embedding mux's), and
+	// Shutdown (a signal handler's). Registration is single-threaded by contract
+	// and needs no lock.
+	mu       sync.Mutex
+	router   http.Handler // built exactly once, on the first Handler() or Start()
+	httpSrv  *http.Server // published by StartWithContext just before the listener opens
+	started  bool         // StartWithContext has been entered
+	stopping bool         // Shutdown has been called — the listener must not open
+
+	exited   chan struct{} // closed when StartWithContext returns; see markExited
+	exitOnce sync.Once
 }
 
 // New creates a Server with the given configuration.
@@ -71,6 +85,7 @@ func New(cfg Config) *Server {
 		registry:  reg,
 		steps:     steps,
 		lifecycle: newLifecycle(),
+		exited:    make(chan struct{}),
 	}
 
 	// The OpenAPI generator must read the Config the server actually serves from —
@@ -152,10 +167,31 @@ func (c *Server) MustRegister(args ...any) {
 //	server.AddService(pool)                          // a custom Service
 //	server.AddService(maniflex.ServiceFunc(startFn)) // adapter for a bare func
 func (c *Server) AddService(s Service) {
-	if c.httpSrv != nil {
+	if c.hasStarted() {
 		panic("maniflex: AddService must be called before Start()")
 	}
 	c.lifecycle.add(s)
+}
+
+// hasStarted reports whether StartWithContext has been entered. It is the honest
+// version of the "too late to register" guard: the sentinel it replaces was
+// `httpSrv != nil`, a field set only once migration and every service had already
+// come up, so a call landing anywhere inside the boot window sailed past the guard
+// and was then quietly ignored — a service added there is never started (DX-4).
+func (c *Server) hasStarted() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.started
+}
+
+// sealed reports whether the routing table is fixed — the router has been built,
+// or a boot that will build it is under way. Registration calls that mount a route
+// (Action, RealtimeDoc, EnableGlobalSearch) panic once it is true, since anything
+// they add past this point would silently never be served.
+func (c *Server) sealed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.started || c.router != nil
 }
 
 // Go runs fn on an application-scoped goroutine that the server drains during
@@ -335,6 +371,9 @@ func (c *Server) adapterGroups() ([]adapterGroup, error) {
 //	defer cancel()
 //	server.StartWithContext(ctx) // server stops after 5 minutes
 func (c *Server) StartWithContext(ctx context.Context) error {
+	c.markStarted()
+	defer c.markExited()
+
 	if err := c.migrate(ctx); err != nil {
 		c.abortGoroutines()
 		return err
@@ -348,17 +387,26 @@ func (c *Server) StartWithContext(ctx context.Context) error {
 		return err
 	}
 
+	// Build the router before taking the lock — Handler takes it too.
 	addr := fmt.Sprintf(":%d", c.cfg.Port)
-	c.httpSrv = &http.Server{
-		Addr:    addr,
-		Handler: c.Handler(),
+	srv, ok := c.publishListener(addr, c.Handler())
+	if !ok {
+		// A Shutdown landed while we were migrating or starting services. It has
+		// countermanded the boot rather than racing it, so open no listener; the
+		// teardown is ours to run, since a Shutdown that stopped services from the
+		// outside could do so underneath a lifecycle.start still bringing them up.
+		c.cfg.logger().Info("[maniflex] shutdown requested during boot — the listener was never opened")
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), c.cfg.ShutdownTimeout)
+		c.stopAndDrain(stopCtx)
+		stopCancel()
+		return nil
 	}
 
 	// Start listening in a background goroutine so we can block on ctx here.
 	serveErr := make(chan error, 1)
 	go func() {
 		c.cfg.logger().Info("[maniflex] listening", slog.String("addr", addr), slog.String("prefix", c.cfg.PathPrefix))
-		if err := c.httpSrv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 		}
 		close(serveErr)
@@ -398,6 +446,73 @@ func (c *Server) StartWithContext(ctx context.Context) error {
 	return c.gracefulShutdown(shutdownCtx)
 }
 
+// markStarted records that boot has begun, before it has done anything. Every
+// "must be called before Start" guard reads this, and Shutdown reads it to tell a
+// server that is booting from one that was never started at all.
+func (c *Server) markStarted() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.started = true
+}
+
+// markExited releases a Shutdown that is waiting on a boot to finish tearing
+// itself down. It runs on every exit from StartWithContext, so the wait ends even
+// when boot failed instead of countermanding.
+func (c *Server) markExited() {
+	c.exitOnce.Do(func() { close(c.exited) })
+}
+
+// publishListener installs the http.Server under the same lock Shutdown reads it
+// with, and reports false if a Shutdown got there first.
+//
+// The two must be ordered against each other or the listener escapes: Shutdown
+// read httpSrv with no lock, found the nil it holds for the whole boot window,
+// concluded the server was not running and returned — while boot carried on behind
+// it and opened the socket. The common `go srv.Start(); …; srv.Shutdown(ctx)` then
+// left a bound port for the life of the process (DX-3).
+func (c *Server) publishListener(addr string, h http.Handler) (*http.Server, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.stopping {
+		return nil, false
+	}
+	c.httpSrv = newHTTPServer(addr, h, &c.cfg)
+	return c.httpSrv, true
+}
+
+// httpServer reads the published listener, nil until StartWithContext opens one.
+func (c *Server) httpServer() *http.Server {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.httpSrv
+}
+
+// newHTTPServer builds the http.Server the framework owns, carrying the timeouts
+// from Config. net/http sets none of these by itself, which is what makes an
+// out-of-the-box Go server answer slowloris by holding the connection open
+// forever — so the framework, which owns this struct, supplies the defensive ones
+// (see Config.ReadHeaderTimeout / IdleTimeout).
+//
+// A negative value in Config means "disable": it maps to the zero the http.Server
+// reads as unbounded. That distinction is why the defaults live in ApplyDefaults
+// (where zero still means "unset") rather than here.
+func newHTTPServer(addr string, h http.Handler, cfg *Config) *http.Server {
+	unbounded := func(d time.Duration) time.Duration {
+		if d < 0 {
+			return 0
+		}
+		return d
+	}
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: unbounded(cfg.ReadHeaderTimeout),
+		IdleTimeout:       unbounded(cfg.IdleTimeout),
+		ReadTimeout:       unbounded(cfg.ReadTimeout),
+		WriteTimeout:      unbounded(cfg.WriteTimeout),
+	}
+}
+
 // gracefulShutdown runs the ordered shutdown sequence, bounded by ctx:
 // http.Shutdown (drain in-flight requests) → Service.Stop in reverse order +
 // OnShutdown hook → drain Server.Go and ctx.GoBackground goroutines. It is the
@@ -407,8 +522,8 @@ func (c *Server) gracefulShutdown(ctx context.Context) error {
 	var firstErr error
 
 	// 1. Stop accepting new connections; let in-flight requests finish.
-	if c.httpSrv != nil {
-		if err := c.httpSrv.Shutdown(ctx); err != nil {
+	if srv := c.httpServer(); srv != nil {
+		if err := srv.Shutdown(ctx); err != nil {
 			firstErr = fmt.Errorf("maniflex: graceful shutdown failed: %w", err)
 		}
 	}
@@ -472,19 +587,48 @@ func (c *Server) abortGoroutines() {
 
 // Shutdown initiates a graceful shutdown of the running server and waits for
 // in-flight requests AND tracked background goroutines (audit writes, cache
-// invalidations) to complete, bounded by the provided context. If the server
-// is not running, Shutdown is a no-op.
+// invalidations) to complete, bounded by the provided context. If the server was
+// never started, Shutdown is a no-op.
 //
-// Typical usage in tests or when embedding the server:
+// It is safe to call from another goroutine at any point in the server's life,
+// including while it is still booting — the usual shape in a test:
 //
+//	go func() { _ = server.Start() }()
+//	...
 //	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 //	defer cancel()
 //	server.Shutdown(ctx)
+//
+// A Shutdown that arrives during boot (migration, or a service still starting)
+// countermands it: the listener is never opened, Start unwinds what it had brought
+// up and returns nil, and Shutdown waits for that to finish before returning.
+//
+// It is terminal, not a pause: once called, a Start that has not yet opened the
+// listener will not open one, whether it is already booting or has yet to be
+// called. A Server is not restartable.
 func (c *Server) Shutdown(ctx context.Context) error {
-	if c.httpSrv == nil {
-		return nil
+	c.mu.Lock()
+	srv, booting := c.httpSrv, c.started
+	c.stopping = true
+	c.mu.Unlock()
+
+	if srv != nil {
+		return c.gracefulShutdown(ctx)
 	}
-	return c.gracefulShutdown(ctx)
+	if !booting {
+		return nil // never started — the documented no-op
+	}
+	// Started, but the listener is not up yet: boot is inside migration or service
+	// start. Tearing down from here would race it — stopping services underneath a
+	// lifecycle.start that is still bringing them up leaks whatever it starts after
+	// us. The stopping flag we just set makes boot abort instead of listening and
+	// unwind itself, so wait for it, on the caller's budget.
+	select {
+	case <-c.exited:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Handler returns the underlying http.Handler without starting the server.
@@ -492,7 +636,15 @@ func (c *Server) Shutdown(ctx context.Context) error {
 //
 // Unlike Start, Handler does NOT run auto-migration — call Start, MigrateOnly,
 // or the adapter's AutoMigrate first, or requests will fail against missing tables.
+//
+// The router is built on the first call and reused thereafter. Concurrent callers
+// block until it is built rather than each building one of their own: the build
+// resolves many-to-many relations by writing back to the registry, so two of them
+// at once raced over shared model metadata.
 func (c *Server) Handler() http.Handler {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.router == nil {
 		// Resolve many-to-many relations now that all models are registered.
 		if err := resolveManyToMany(c.registry); err != nil {
@@ -684,7 +836,7 @@ func (c *Server) SetDB(db DBAdapter) {
 // Must be called before Start() or Handler(). Panics if the server has
 // already started or if the method+path conflicts with a registered model route.
 func (c *Server) Action(cfg ActionConfig) {
-	if c.router != nil {
+	if c.sealed() {
 		panic("maniflex: Action() must be called before Start() or Handler()")
 	}
 	// Fail loudly at registration rather than deferring a nil-handler panic to
@@ -709,7 +861,7 @@ func (c *Server) Action(cfg ActionConfig) {
 // Must be called before Start() or Handler(). Apps that never call it gain no
 // new endpoint.
 func (c *Server) RealtimeDoc(cfg AsyncAPIConfig) {
-	if c.router != nil {
+	if c.sealed() {
 		panic("maniflex: RealtimeDoc() must be called before Start() or Handler()")
 	}
 	c.asyncCfg = &cfg
@@ -743,7 +895,7 @@ type GlobalSearchConfig struct {
 // Must be called before Start() or Handler(). Apps that never call it gain no
 // new endpoint.
 func (c *Server) EnableGlobalSearch(cfg ...GlobalSearchConfig) {
-	if c.router != nil {
+	if c.sealed() {
 		panic("maniflex: EnableGlobalSearch() must be called before Start() or Handler()")
 	}
 	resolved := GlobalSearchConfig{}

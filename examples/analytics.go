@@ -128,7 +128,9 @@ func main() {
 	//
 	// ConfigFromEnv reads any ANALYTICS_* variable that maps to a Config field.
 	// Variables not set in the environment leave the corresponding field at its
-	// zero value; the code below applies defaults for those cases.
+	// zero value; the code below applies defaults for those cases. A variable that
+	// IS set but cannot be read (ANALYTICS_PORT=808O) is an error — better to stop
+	// here than to boot on a port nobody meant.
 	//
 	// Production deployment example (Docker / Kubernetes):
 	//   ANALYTICS_PORT=8080
@@ -136,7 +138,10 @@ func main() {
 	//   ANALYTICS_DB_WRITE_URL=postgres://...
 	//   ANALYTICS_QUERY_TIMEOUT_MS=5000
 	//   ANALYTICS_HEALTH_CHECK_DB=true
-	cfg := maniflex.ConfigFromEnv("ANALYTICS")
+	cfg, err := maniflex.ConfigFromEnv("ANALYTICS")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	cfg.HealthCheckDB = true
 	if cfg.ServiceName == "" {

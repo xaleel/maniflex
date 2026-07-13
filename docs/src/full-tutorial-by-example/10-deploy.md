@@ -67,9 +67,12 @@ func loadConfig() maniflex.Config {
 }
 ```
 
-`maniflex` also ships a helper, `maniflex.ConfigFromEnv()`, that reads a conventional
-set of environment variables (`PORT`, `PATH_PREFIX`, `DB_WRITE_URL`, …).
-Pick whichever style fits your team — both produce the same `maniflex.Config`.
+`maniflex` also ships a helper, `maniflex.ConfigFromEnv(prefix)`, that reads a
+conventional set of environment variables (`PORT`, `DB_WRITE_URL`,
+`QUERY_TIMEOUT_MS`, … — see [Configuration](../deployment/config.md#reading-from-environment)).
+It returns an error if one of them is set to something it cannot read, so a
+mistyped `PORT` stops the deploy instead of booting on 8080. Pick whichever style
+fits your team — both produce the same `maniflex.Config`.
 
 ## Production-safe migrations
 

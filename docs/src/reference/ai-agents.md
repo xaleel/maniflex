@@ -474,7 +474,7 @@ type Config struct {
 }
 ```
 
-`maniflex.ConfigFromEnv()` reads PORT, PATH_PREFIX, DB_WRITE_URL, DB_READ_URL, SERVICE_NAME, LOG_LEVEL, etc.
+`maniflex.ConfigFromEnv(prefix) (Config, error)` reads PORT, DB_WRITE_URL, DB_READ_URL, QUERY_TIMEOUT_MS, SHUTDOWN_TIMEOUT_S, SERVICE_NAME, HEALTH_CHECK_DB — those and no others. A non-empty prefix is applied with an underscore (`ORDERS_PORT`). Unset variables are left zero for `ApplyDefaults`; a variable that is set but unreadable (`PORT=808O`) returns an error naming it. Do not discard the error.
 
 ## Database adapters
 

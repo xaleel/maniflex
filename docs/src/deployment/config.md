@@ -127,13 +127,36 @@ can return `503` cleanly before the probe times out.
 
 ## Reading from environment
 
-`maniflex.ConfigFromEnv()` populates a `Config` from a conventional set of
-environment variables (`PORT`, `PATH_PREFIX`, `DB_WRITE_URL`, `DB_READ_URL`,
-`SERVICE_NAME`, `LOG_LEVEL`, …). Use it for twelve-factor deployments, then
-override individual fields in code where needed.
+`maniflex.ConfigFromEnv(prefix)` populates a `Config` from a conventional set of
+environment variables. Use it for twelve-factor deployments, then override
+individual fields in code where needed.
 
 ```go
-cfg := maniflex.ConfigFromEnv()
+cfg, err := maniflex.ConfigFromEnv("")   // or "ORDERS" → ORDERS_PORT, ORDERS_DB_WRITE_URL, …
+if err != nil {
+    log.Fatal(err)
+}
 cfg.DisableAutoMigrate = true  // disable for production
 server := maniflex.New(cfg)
 ```
+
+These are the variables it reads, and the only ones — anything else on `Config`
+is set in code:
+
+| Variable              | Field             | Value                                     |
+| --------------------- | ----------------- | ----------------------------------------- |
+| `PORT`                | `Port`            | integer, 1–65535                          |
+| `DB_WRITE_URL`        | `DBWriteURL`      | string                                    |
+| `DB_READ_URL`         | `DBReadURL`       | string                                    |
+| `QUERY_TIMEOUT_MS`    | `QueryTimeout`    | positive integer, milliseconds            |
+| `SHUTDOWN_TIMEOUT_S`  | `ShutdownTimeout` | positive integer, seconds                 |
+| `SERVICE_NAME`        | `ServiceName`     | string                                    |
+| `HEALTH_CHECK_DB`     | `HealthCheckDB`   | `true`/`false`, `1`/`0`, `yes`/`no`, `on`/`off` |
+
+A variable that is **unset** leaves its field at the zero value, for
+`ApplyDefaults` to fill in. A variable that is **set but unreadable** is an
+error — `PORT=808O`, `QUERY_TIMEOUT_MS=abc`, `HEALTH_CHECK_DB=ture` — naming the
+variable and the value it could not read. Every bad variable is reported at once,
+so two typos take one deploy to find rather than two. Don't discard this error: a
+mistyped `PORT` that is quietly ignored gives you a healthy-looking server
+listening on 8080, and nothing anywhere says why.

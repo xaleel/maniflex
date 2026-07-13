@@ -111,6 +111,13 @@ server.AddService(pool)                          // a custom Service
 server.AddService(maniflex.ServiceFunc(startFn)) // adapter for a bare start func
 ```
 
+`AddService` must be called before `Start` — it panics once `Start` has been
+entered, including while the server is still migrating or bringing earlier
+services up. Boot fixes the service list when it begins, so a service registered
+after that point would never be started, and a panic is a better answer than a
+component that silently never runs. The same applies to `Action`, `RealtimeDoc`
+and `EnableGlobalSearch`, which fix the routing table.
+
 For app-scoped fire-and-forget work (e.g. a periodic reconciler) that doesn't
 need an ordered `Stop`, use `server.Go`. Its context is cancelled when shutdown
 begins, and the goroutine is drained before `Start` returns:

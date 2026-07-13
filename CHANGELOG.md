@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.1.5 (2026-07-08)
+## v0.1.5 (2026-07-13)
 
 - **Feature:** new filter operators `contains`, `starts_with`, and `ends_with` take a **literal** value: `%` and `_` in it are escaped (and an explicit `ESCAPE` is emitted, so SQLite and Postgres agree), and all three are case-insensitive. `like`/`ilike` values are patterns — `?filter=label:like:50%` matches `500 units` too, and there was no portable way to escape a wildcard — so anything a user typed (a search box, a filename, an SKU) belongs in the new operators; `like`/`ilike` are unchanged and remain the right tool when the caller really is writing a pattern. `maniflex.LikePattern` builds the escaped pattern for custom adapters.
 - **Bugfix:** `If-Match: *` now does what RFC 9110 says — it holds for any existing record ("overwrite whatever is there, but don't create it") instead of being string-compared against the ETag, which returned `412 Precondition Failed` on a resource that plainly existed, the one case the wildcard is defined to accept. A `*` on a missing record still returns `404`, and the row lock is taken either way, so the guarded write stays atomic.

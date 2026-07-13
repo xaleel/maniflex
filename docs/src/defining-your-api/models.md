@@ -138,7 +138,14 @@ server.Pipeline.Response.Register(
 GET  /invoices/42          → 200  ETag: "d41d8cd9..."
 PATCH /invoices/42         If-Match: "d41d8cd9..."  → 200
 PATCH /invoices/42         If-Match: "stale"        → 412
+PATCH /invoices/42         If-Match: *              → 200
+PATCH /invoices/99         If-Match: *              → 404  (no such record)
 ```
+
+`If-Match: *` is the RFC 9110 wildcard: it holds for any existing record, so it
+means "overwrite whatever is there, but do not create it" rather than pinning a
+particular version. It still takes the row lock, so it is safe to use on a
+contended record — it just does not care which version it lands on.
 
 The check and the write it guards run as a single transaction, with the record
 held under a row lock (`SELECT … FOR UPDATE` on Postgres) from the ETag

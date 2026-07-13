@@ -725,8 +725,9 @@ func (s *defaultSteps) enforceOptimisticLock(ctx *ServerContext, exec dbExec, mo
 // checkOptimisticLock re-reads the current record under a row lock, computes its
 // ETag (MD5 of the JSON-mapped body — same algorithm as response.Cache), and
 // sets a 412 or 404 response on ctx when the client's If-Match value does not
-// match. The lock is held until the enclosing transaction ends, so a concurrent
-// writer cannot slip a write in between this check and the one that follows.
+// match. The wildcard "*" matches any existing record. The lock is held until the
+// enclosing transaction ends, so a concurrent writer cannot slip a write in
+// between this check and the one that follows.
 // Returns a non-nil error only for unexpected adapter failures.
 func (s *defaultSteps) checkOptimisticLock(ctx *ServerContext, exec dbExec, model *ModelMeta, ifMatch string) error {
 	current, err := exec.findByIDForUpdate(ctx.Ctx, model, ctx.ResourceID)
@@ -738,6 +739,16 @@ func (s *defaultSteps) checkOptimisticLock(ctx *ServerContext, exec dbExec, mode
 		}
 		return err
 	}
+	// RFC 9110 §13.1.1: "If-Match: *" stands for any current representation, so
+	// the precondition holds whenever the resource exists — there is no validator
+	// to compare against. Clients send it to mean "overwrite whatever is there,
+	// but do not create it". Comparing the literal "*" to the ETag failed every
+	// such request with a 412 on a resource that plainly existed. The row is
+	// locked either way, so the write it guards stays atomic.
+	if strings.TrimSpace(ifMatch) == "*" {
+		return nil
+	}
+
 	jsonRow := s.toJSONMap(current, model, ctx)
 	b, _ := json.Marshal(jsonRow)
 	currentETag := fmt.Sprintf(`"%x"`, md5.Sum(b))

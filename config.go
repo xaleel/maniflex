@@ -151,6 +151,10 @@ type ModelConfig struct {
 	// clients can obtain it via a preceding GET and use it on the mutating
 	// request without special handling.
 	//
+	// If-Match: * is the RFC 9110 wildcard — it holds for any existing record,
+	// so it means "overwrite whatever is there, but do not create it" rather
+	// than pinning a particular version.
+	//
 	// Requests that omit the If-Match header bypass the check — the field
 	// opts in to enforcement, not to mandatory locking.
 	OptimisticLock bool

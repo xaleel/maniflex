@@ -129,6 +129,52 @@ func TestOptimisticLock_412ResponseHasPreconditionFailedCode(t *testing.T) {
 	})
 }
 
+// ── If-Match: * → the RFC 9110 wildcard ──────────────────────────────────────
+//
+// "*" stands for any current representation: the precondition holds if the
+// resource exists at all. It was string-compared against the ETag instead, so it
+// 412'd on a record that plainly existed — the one thing it is defined to accept
+// (BUG-21).
+
+func TestOptimisticLock_PatchWithWildcardIfMatchSucceeds(t *testing.T) {
+	t.Parallel()
+	srv := newOptLockServer(t)
+
+	id := srv.POST("/opt_docs", map[string]any{"title": "v1"}).
+		AssertStatus(http.StatusCreated).Data()["id"].(string)
+
+	srv.PATCH("/opt_docs/"+id, map[string]any{"title": "v2"},
+		map[string]string{"If-Match": "*"}).
+		AssertStatus(http.StatusOK)
+
+	testutil.AssertEqual(t, "title after wildcard patch",
+		testutil.Field(t, srv.GET("/opt_docs/"+id).Data(), "title"), "v2")
+}
+
+func TestOptimisticLock_DeleteWithWildcardIfMatchSucceeds(t *testing.T) {
+	t.Parallel()
+	srv := newOptLockServer(t)
+
+	id := srv.POST("/opt_docs", map[string]any{"title": "doomed"}).
+		AssertStatus(http.StatusCreated).Data()["id"].(string)
+
+	srv.DELETE("/opt_docs/"+id, map[string]string{"If-Match": "*"}).
+		AssertStatus(http.StatusNoContent)
+	srv.GET("/opt_docs/" + id).AssertStatus(http.StatusNotFound)
+}
+
+// The wildcard is not a free pass: it holds only where a record exists, which is
+// what makes it "overwrite whatever is there, but do not create it".
+func TestOptimisticLock_WildcardIfMatchOnMissingRecordIsRejected(t *testing.T) {
+	t.Parallel()
+	srv := newOptLockServer(t)
+
+	srv.PATCH("/opt_docs/00000000-0000-0000-0000-000000000001",
+		map[string]any{"title": "ghost"},
+		map[string]string{"If-Match": "*"}).
+		AssertStatus(http.StatusNotFound)
+}
+
 // ── No If-Match header → no enforcement ──────────────────────────────────────
 
 func TestOptimisticLock_PatchWithoutIfMatchSucceeds(t *testing.T) {

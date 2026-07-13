@@ -309,6 +309,15 @@ func aggBuildWhere(meta *ModelMeta, filters []*FilterExpr, driver DriverType, pb
 			} else {
 				parts = append(parts, fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", col, pb.add(f.Value)))
 			}
+		case OpContains, OpStartsWith, OpEndsWith:
+			// Escaped pattern + an explicit ESCAPE, so % and _ in the value match
+			// themselves and both drivers agree on what escapes what.
+			pattern := LikePattern(f.Operator, f.Value)
+			if driver == Postgres {
+				parts = append(parts, fmt.Sprintf("%s ILIKE %s ESCAPE '\\'", col, pb.add(pattern)))
+			} else {
+				parts = append(parts, fmt.Sprintf("LOWER(%s) LIKE LOWER(%s) ESCAPE '\\'", col, pb.add(pattern)))
+			}
 		default:
 			parts = append(parts, fmt.Sprintf("%s %s %s", col, sqlOp(f.Operator), pb.add(f.Value)))
 		}

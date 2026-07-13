@@ -255,12 +255,15 @@ Success envelope: `{"data": ...}`; list adds `"meta": {total, page, limit, pages
 
 ## Querying (only on opt-in fields)
 
-Operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `in`, `not_in`, `is_null`, `not_null`.
+Operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `contains`, `starts_with`, `ends_with`, `in`, `not_in`, `between`, `is_null`, `not_null`.
+
+`like`/`ilike` take a raw SQL pattern (`%`, `_` are wildcards). `contains`/`starts_with`/`ends_with` take a literal value — `%` and `_` are escaped and match themselves — and are case-insensitive. Use the latter for user-typed text.
 
 ```
 ?filter=status:eq:published
 ?filter=views:gte:100&filter=status:eq:published   # ANDed
 ?filter=tag:in:go,rust,zig
+?filter=title:contains:intro                       # literal, case-insensitive
 ?filter=author.name:ilike:%ursula%                 # relation dot notation
 ?sort=created_at:desc&sort=title:asc
 ?include=user,comments,tags

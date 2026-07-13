@@ -105,8 +105,11 @@ request with `400 INVALID_QUERY`.
 | `eq` | field = value | one value |
 | `neq` | field ≠ value | one value |
 | `gt`, `gte`, `lt`, `lte` | numeric and date comparisons | one value |
-| `like` | SQL `LIKE`, case-sensitive | one value, `%` wildcards |
-| `ilike` | SQL `ILIKE`, case-insensitive | one value, `%` wildcards |
+| `like` | SQL `LIKE`, case-sensitive | one **pattern** — `%` and `_` are wildcards |
+| `ilike` | SQL `ILIKE`, case-insensitive | one **pattern** — `%` and `_` are wildcards |
+| `contains` | field contains the value, case-insensitive | one literal value |
+| `starts_with` | field starts with the value, case-insensitive | one literal value |
+| `ends_with` | field ends with the value, case-insensitive | one literal value |
 | `in` | field IN (…) | at least one comma-separated value |
 | `not_in` | field NOT IN (…) | at least one comma-separated value |
 | `between` | field ≥ lo AND ≤ hi (inclusive) | exactly two comma-separated values `lo,hi` |
@@ -119,6 +122,30 @@ request with `400 INVALID_QUERY`.
 ?filter=created_at:between:2025-01-01,2025-03-31
 ?filter=archived_at:is_null
 ?filter=title:ilike:%intro%
+?filter=title:contains:intro
+```
+
+### Patterns vs. literals
+
+`like` and `ilike` take a **pattern**: `%` matches any run of characters and `_`
+matches exactly one. That is what makes `?filter=title:ilike:%intro%` work — but
+it also means a value the user typed is interpreted rather than matched.
+`?filter=label:like:50%` finds `500 units` and `50 off` as readily as the `50%`
+you were looking for, and there is no portable way to escape a `%` in a pattern
+(SQLite has no escape character by default; Postgres has a backslash).
+
+`contains`, `starts_with`, and `ends_with` take a **literal**: `%` and `_` in the
+value are escaped for you and match themselves, so `?filter=label:contains:50%`
+finds exactly the labels containing `50%`. They are case-insensitive on both
+backends. Use them for anything a user typed — a search box, a filename, an SKU —
+and reach for `like`/`ilike` only when the caller genuinely is writing a pattern.
+
+Note that `%` must still be percent-encoded in a URL (`%25`), as in any query
+string:
+
+```
+?filter=label:contains:50%25       → matches the literal "50%"
+?filter=label:like:50%25           → matches "50%", "500 units", "50 off", …
 ```
 
 ### Filtering on related fields

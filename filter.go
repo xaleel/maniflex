@@ -15,13 +15,21 @@ const (
 	OpGte     FilterOperator = "gte"      // field >= value
 	OpLt      FilterOperator = "lt"       // field < value
 	OpLte     FilterOperator = "lte"      // field <= value
-	OpLike    FilterOperator = "like"     // field LIKE value (case-sensitive)
-	OpILike   FilterOperator = "ilike"    // field ILIKE value (case-insensitive)
+	OpLike    FilterOperator = "like"     // field LIKE value — value is a raw pattern (case-sensitive)
+	OpILike   FilterOperator = "ilike"    // field ILIKE value — value is a raw pattern (case-insensitive)
 	OpIn      FilterOperator = "in"       // field IN (v1,v2,...)
 	OpNotIn   FilterOperator = "not_in"   // field NOT IN (v1,v2,...)
 	OpIsNull  FilterOperator = "is_null"  // field IS NULL  (no value)
 	OpNotNull FilterOperator = "not_null" // field IS NOT NULL (no value)
 	OpBetween FilterOperator = "between"  // field BETWEEN lo AND hi (value "lo,hi")
+
+	// The substring operators below take a literal value, not a pattern: % and _
+	// in it are escaped and match themselves. Use them for user-typed text (a
+	// search box, a filename); reach for like/ilike only when the caller really
+	// is writing a pattern. All three are case-insensitive.
+	OpContains   FilterOperator = "contains"    // field contains value  (%value%)
+	OpStartsWith FilterOperator = "starts_with" // field starts with value (value%)
+	OpEndsWith   FilterOperator = "ends_with"   // field ends with value   (%value)
 )
 
 var validOperators = map[FilterOperator]bool{
@@ -29,6 +37,43 @@ var validOperators = map[FilterOperator]bool{
 	OpLt: true, OpLte: true, OpLike: true, OpILike: true,
 	OpIn: true, OpNotIn: true, OpIsNull: true, OpNotNull: true,
 	OpBetween: true,
+	OpContains: true, OpStartsWith: true, OpEndsWith: true,
+}
+
+// LikeEscapeChar is the escape character in the patterns LikePattern builds. Every
+// LIKE/ILIKE that consumes such a pattern must spell out ESCAPE '\': SQLite has no
+// escape character by default and Postgres has a backslash, so saying it out loud
+// is what makes the two agree.
+const LikeEscapeChar = `\`
+
+// LikePattern turns a user-supplied value into the LIKE pattern for one of the
+// substring operators (contains, starts_with, ends_with). The LIKE
+// metacharacters in the value — % and _, and the escape character itself — are
+// escaped so they match literally, and the wildcards the operator implies are
+// added around the result. Filtering for "50%" therefore finds the literal "50%"
+// rather than everything beginning with 50.
+//
+// Returns "" for any other operator. Exported so DB adapters in sub-packages can
+// build the same pattern the core does.
+func LikePattern(op FilterOperator, value any) string {
+	var s string
+	if value != nil {
+		s = fmt.Sprint(value)
+	}
+	// The escape character goes first, or it would escape the escapes we add.
+	s = strings.ReplaceAll(s, LikeEscapeChar, LikeEscapeChar+LikeEscapeChar)
+	s = strings.ReplaceAll(s, "%", LikeEscapeChar+"%")
+	s = strings.ReplaceAll(s, "_", LikeEscapeChar+"_")
+
+	switch op {
+	case OpContains:
+		return "%" + s + "%"
+	case OpStartsWith:
+		return s + "%"
+	case OpEndsWith:
+		return "%" + s
+	}
+	return ""
 }
 
 // FilterExpr is a single parsed and validated filter condition.
@@ -117,21 +162,8 @@ func ParseFilterParam(raw string, model *ModelMeta, reg RegistryAccessor) (*Filt
 	if !validOperators[op] {
 		return nil, fmt.Errorf("unknown filter operator %q", op)
 	}
-
-	if op == OpBetween {
-		if value == nil || len(SplitCSV(fmt.Sprint(value))) != 2 {
-			return nil, fmt.Errorf("operator %q requires two comma-separated values (e.g. amount:between:100,500)", op)
-		}
-	}
-
-	// An empty list has no meaningful SQL form: "role:in:" (and "role:in:,,",
-	// whose entries all drop out) would otherwise reach the adapter as zero
-	// values and emit "role IN ()" — a syntax error on every driver, so a client
-	// could provoke a 500 at will (BUG-7).
-	if op == OpIn || op == OpNotIn {
-		if value == nil || len(SplitCSV(fmt.Sprint(value))) == 0 {
-			return nil, fmt.Errorf("operator %q requires at least one comma-separated value (e.g. role:in:admin,editor)", op)
-		}
+	if err := checkFilterValue(op, value); err != nil {
+		return nil, err
 	}
 
 	expr := &FilterExpr{Operator: op, Value: value, Group: -1}
@@ -140,6 +172,36 @@ func ParseFilterParam(raw string, model *ModelMeta, reg RegistryAccessor) (*Filt
 		return resolveNestedFilter(expr, fieldPath, model, reg)
 	}
 	return resolveFlatFilter(expr, fieldPath, model)
+}
+
+// checkFilterValue rejects a value whose shape the operator cannot use. Each of
+// these would otherwise reach the adapter and produce SQL that is broken or, worse,
+// quietly wrong.
+func checkFilterValue(op FilterOperator, value any) error {
+	switch op {
+	case OpBetween:
+		if value == nil || len(SplitCSV(fmt.Sprint(value))) != 2 {
+			return fmt.Errorf("operator %q requires two comma-separated values (e.g. amount:between:100,500)", op)
+		}
+
+	// An empty list has no meaningful SQL form: "role:in:" (and "role:in:,,",
+	// whose entries all drop out) would otherwise reach the adapter as zero
+	// values and emit "role IN ()" — a syntax error on every driver, so a client
+	// could provoke a 500 at will (BUG-7).
+	case OpIn, OpNotIn:
+		if value == nil || len(SplitCSV(fmt.Sprint(value))) == 0 {
+			return fmt.Errorf("operator %q requires at least one comma-separated value (e.g. role:in:admin,editor)", op)
+		}
+
+	// The substring operators build their pattern from the value. With none at all
+	// ("name:contains") there is nothing to escape and the pattern would be a bare
+	// wildcard matching every row — say so rather than quietly returning the table.
+	case OpContains, OpStartsWith, OpEndsWith:
+		if value == nil {
+			return fmt.Errorf("operator %q requires a value (e.g. name:contains:acme)", op)
+		}
+	}
+	return nil
 }
 
 func resolveFlatFilter(expr *FilterExpr, fieldPath string, model *ModelMeta) (*FilterExpr, error) {

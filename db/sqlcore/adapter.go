@@ -1617,6 +1617,8 @@ func buildCond(col string, op maniflex.FilterOperator, val any, driver maniflex.
 			return fmt.Sprintf("%s ILIKE %s", col, p.add(val))
 		}
 		return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", col, p.add(val))
+	case maniflex.OpContains, maniflex.OpStartsWith, maniflex.OpEndsWith:
+		return substringCond(col, op, val, driver, p)
 	case maniflex.OpIn:
 		return inCond(col, val, p, false)
 	case maniflex.OpNotIn:
@@ -1629,6 +1631,21 @@ func buildCond(col string, op maniflex.FilterOperator, val any, driver maniflex.
 		return betweenCond(col, val, p)
 	}
 	return "1=1"
+}
+
+// substringCond builds the condition for contains / starts_with / ends_with: a
+// case-insensitive LIKE against a pattern whose metacharacters are escaped, so a
+// value of "50%" matches the literal "50%" instead of everything starting with 50.
+//
+// The ESCAPE clause is spelled out because the drivers disagree without it —
+// SQLite has no escape character by default, Postgres has a backslash — and the
+// same filter must mean the same thing on both.
+func substringCond(col string, op maniflex.FilterOperator, val any, driver maniflex.DriverType, p *ph) string {
+	pattern := maniflex.LikePattern(op, val)
+	if driver == maniflex.Postgres {
+		return fmt.Sprintf("%s ILIKE %s ESCAPE '\\'", col, p.add(pattern))
+	}
+	return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s) ESCAPE '\\'", col, p.add(pattern))
 }
 
 // betweenCond expands a "lo,hi" value into "col >= lo AND col <= hi". The two

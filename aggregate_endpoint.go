@@ -62,6 +62,7 @@ var aggregateWhereOps = map[FilterOperator]bool{
 	OpEq: true, OpNeq: true, OpGt: true, OpGte: true, OpLt: true, OpLte: true,
 	OpLike: true, OpILike: true, OpIn: true, OpNotIn: true,
 	OpIsNull: true, OpNotNull: true,
+	OpContains: true, OpStartsWith: true, OpEndsWith: true,
 }
 
 // buildAggregateQuery parses the request body into an AggregateQuery, resolving

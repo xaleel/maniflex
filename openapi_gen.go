@@ -484,7 +484,10 @@ func listParameters(m *ModelMeta) []OASParameter {
 			"Use bracket-indexed keys to OR conditions within a group: " +
 			"?filter[0]=status:eq:draft&filter[0]=status:eq:published combines as (draft OR published). " +
 			"Different group indices are ANDed together. " +
-			"Operators: eq, neq, gt, gte, lt, lte, like, ilike, in, not_in, is_null, not_null. " +
+			"Operators: eq, neq, gt, gte, lt, lte, like, ilike, contains, starts_with, ends_with, " +
+			"in, not_in, is_null, not_null, between. " +
+			"like/ilike take a raw SQL pattern (% and _ are wildcards); contains/starts_with/ends_with " +
+			"take a literal value (% and _ match themselves) and are case-insensitive. " +
 			"Filterable fields: " + strings.Join(filterable, ", ")
 		if len(nestedFilterable) > 0 {
 			desc += ". Nested: " + strings.Join(nestedFilterable, ", ")

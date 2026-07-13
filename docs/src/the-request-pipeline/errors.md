@@ -46,7 +46,11 @@ The default pipeline produces the following errors without any user code:
 | `504` | `TIMEOUT` | `Config.QueryTimeout` (or another server-side deadline) expired |
 
 A panic anywhere in the pipeline is caught and reported as `500 PANIC` by the
-framework's recoverer.
+framework's recoverer — with one deliberate exception. A handler that panics with
+`http.ErrAbortHandler` is abandoning its response on purpose (this is what
+`httputil.ReverseProxy` does when an upstream dies mid-stream), so the recoverer
+passes it on and `net/http` closes the connection silently. It is not logged as a
+panic, and no error envelope is appended to whatever was already written.
 
 `499` is nginx's non-standard "Client Closed Request" (`maniflex.StatusClientClosedRequest`).
 Nothing is written to the client — the connection is already gone — but the status

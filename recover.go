@@ -30,6 +30,11 @@ import (
 // The stack trace is intentionally omitted from the HTTP response — it is
 // available in the log and must not be leaked to API clients.
 //
+// One panic value is deliberately not recovered: http.ErrAbortHandler, which a
+// handler panics with to abandon a response on purpose (httputil.ReverseProxy
+// does this when an upstream dies mid-stream). It is re-panicked so net/http can
+// close the connection silently, as the stdlib contract expects.
+//
 // logger may be nil; when nil slog.Default() is used.
 func PanicRecoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 	if logger == nil {
@@ -40,6 +45,19 @@ func PanicRecoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
+					// http.ErrAbortHandler is not a failure — it is how a handler
+					// says "I am abandoning this response on purpose". The stdlib
+					// (httputil.ReverseProxy when an upstream dies mid-stream,
+					// http.MaxBytesHandler) panics with it, and net/http's
+					// convention is to let it through: the server closes the
+					// connection without logging. Recovering it would log a
+					// phantom panic and try to write a 500 JSON body on top of a
+					// response that is already half-written, so re-panic and let
+					// net/http do its job.
+					if rec == http.ErrAbortHandler { //nolint:errorlint // net/http compares it by identity too
+						panic(rec)
+					}
+
 					// Capture the full stack immediately; the goroutine stack
 					// shrinks as we unwind so we must grab it here.
 					stack := debug.Stack()

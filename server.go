@@ -164,6 +164,10 @@ func (c *Server) AddService(s Service) {
 // shutdown begins, so a long-running loop (e.g. a periodic reconciler) returns
 // on ctx.Done() and is then waited on, bounded by Config.ShutdownTimeout.
 //
+// fn starts immediately, not at Start, and is drained however the server ends —
+// including a boot that fails (a migration error, a service that would not start,
+// a port already in use), so it is never abandoned mid-write.
+//
 //	server.Go(func(ctx context.Context) {
 //	    t := time.NewTicker(time.Minute)
 //	    defer t.Stop()
@@ -332,6 +336,7 @@ func (c *Server) adapterGroups() ([]adapterGroup, error) {
 //	server.StartWithContext(ctx) // server stops after 5 minutes
 func (c *Server) StartWithContext(ctx context.Context) error {
 	if err := c.migrate(ctx); err != nil {
+		c.abortGoroutines()
 		return err
 	}
 
@@ -339,6 +344,7 @@ func (c *Server) StartWithContext(ctx context.Context) error {
 	// registration order. A failure here aborts boot like a failed migration —
 	// services that already started are rolled back inside lifecycle.start.
 	if err := c.lifecycle.start(&c.cfg); err != nil {
+		c.abortGoroutines()
 		return err
 	}
 
@@ -364,11 +370,14 @@ func (c *Server) StartWithContext(ctx context.Context) error {
 	case err := <-serveErr:
 		if err != nil {
 			// The server failed before we ever got a shutdown signal (port in
-			// use, …). Tear the lifecycle down so already-started services stop
-			// cleanly, in a ShutdownTimeout window of its own — no drain is in
-			// progress to share one with.
+			// use, …). Boot did complete, so run the same teardown the graceful
+			// path runs — services stopped, then Server.Go loops and in-flight
+			// background writes drained — in a ShutdownTimeout window of its own,
+			// since no drain is in progress to share one with. Stopping without
+			// draining would cancel those goroutines and walk away mid-write,
+			// which is the truncation the drain exists to prevent.
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), c.cfg.ShutdownTimeout)
-			c.lifecycle.stop(stopCtx, &c.cfg)
+			c.stopAndDrain(stopCtx)
 			stopCancel()
 			return fmt.Errorf("maniflex: server error: %w", err)
 		}
@@ -404,16 +413,30 @@ func (c *Server) gracefulShutdown(ctx context.Context) error {
 		}
 	}
 
-	// 2. Cancel the lifecycle context (loops wind down), stop services in
-	//    reverse order, then run the OnShutdown hook. Idempotent. It runs on the
-	//    same ctx as every other phase, so whatever the HTTP drain used comes out
-	//    of the same budget rather than starting a fresh one (BUG-11).
+	// 2-3. Stop the lifecycle and drain what it spawned, on the remaining budget.
+	c.stopAndDrain(ctx)
+
+	if firstErr == nil {
+		c.cfg.logger().Info("[maniflex] shutdown complete")
+	}
+	return firstErr
+}
+
+// stopAndDrain is the non-HTTP half of shutdown, shared by the graceful path and
+// by the boot-failure path in StartWithContext — a server that never got to serve
+// still has to put down everything boot brought up.
+//
+// It cancels the lifecycle context (loops wind down), stops services in reverse
+// order and runs the OnShutdown hook — all idempotent — and then drains the
+// application-scoped Server.Go goroutines and the per-request ctx.GoBackground
+// writes still in flight. Roadmap §11B.6: pre-fix those background writes used
+// context.Background() and could be killed mid-write by the process exit; now
+// they are tracked and waited on.
+//
+// Every phase runs on the caller's ctx — the one shutdown budget (BUG-11).
+func (c *Server) stopAndDrain(ctx context.Context) {
 	c.lifecycle.stop(ctx, &c.cfg)
 
-	// 3. Drain application-scoped Server.Go goroutines and per-request
-	//    ctx.GoBackground writes within the remaining budget. Roadmap §11B.6:
-	//    pre-fix the background writes used context.Background() and could be
-	//    killed mid-write by the process exit; now they are tracked and waited on.
 	if !c.lifecycle.drain(ctx) {
 		c.cfg.logger().Warn("[maniflex] shutdown: Server.Go goroutines did not complete")
 	}
@@ -421,11 +444,30 @@ func (c *Server) gracefulShutdown(ctx context.Context) error {
 		c.cfg.logger().Warn("[maniflex] shutdown: background writes did not complete",
 			slog.Int64("in_flight", dropped))
 	}
+}
 
-	if firstErr == nil {
-		c.cfg.logger().Info("[maniflex] shutdown complete")
+// abortGoroutines tears down after a boot that failed before any service came up
+// — a failed migration, or a service whose Start returned an error (lifecycle.start
+// has already rolled back the ones before it, in its own window).
+//
+// It cancels the lifecycle context and waits, but does not stop services or run
+// the OnShutdown hook: nothing is running to stop, and a hook symmetric with an
+// OnStart that failed (or never ran) is not owed. What it does reach are the
+// Server.Go loops — those spawn the moment Go is called, not at Start, so a boot
+// that aborts early would otherwise return with them still running, never even
+// cancelled.
+func (c *Server) abortGoroutines() {
+	ctx, cancel := context.WithTimeout(context.Background(), c.cfg.ShutdownTimeout)
+	defer cancel()
+
+	c.lifecycle.cancel()
+	if !c.lifecycle.drain(ctx) {
+		c.cfg.logger().Warn("[maniflex] boot aborted: Server.Go goroutines did not complete")
 	}
-	return firstErr
+	if dropped := c.steps.bg.Wait(ctx); dropped > 0 {
+		c.cfg.logger().Warn("[maniflex] boot aborted: background writes did not complete",
+			slog.Int64("in_flight", dropped))
+	}
 }
 
 // Shutdown initiates a graceful shutdown of the running server and waits for

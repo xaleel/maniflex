@@ -125,6 +125,14 @@ lightweight `Config.OnStart` / `Config.OnShutdown` functions.
 listen`. A `Start` (or `OnStart`) error aborts boot exactly like a failed
 migration; services that already started are stopped in reverse first.
 
+**A failed boot still tears down.** Whatever boot managed to bring up is put back
+down before `Start` returns the error — including the `server.Go` loops, which
+run from the moment you call `server.Go`, not from `Start`. If the listener fails
+to bind (the port is taken), the services stop and the goroutines drain exactly as
+they do on the graceful path, in a `ShutdownTimeout` window of its own; if the
+migration or a service refused to start, the loops are cancelled and awaited. Your
+goroutines are never abandoned mid-write, however boot ends.
+
 **Shutdown order:** `http.Shutdown → Service.Stop (reverse order) → OnShutdown
 → drain server.Go + ctx.GoBackground goroutines`. The `Start` context is
 cancelled when shutdown begins so loops wind down on their own.

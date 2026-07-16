@@ -17,9 +17,9 @@ server := maniflex.New(maniflex.Config{
 | `Port` | `8080` | TCP port the HTTP server binds to |
 | `PathPrefix` | `/api` | URL prefix prepended to every generated model route and `/openapi.json` |
 | `ServiceName` | `""` | service identifier added to logs, audit records, and the `X-Service-Name` response header |
-| `StaticDir` | `<cwd>/static` | filesystem directory served as static files (relative paths resolve against cwd) |
+| `StaticDir` | `""` | filesystem directory served as static files; empty serves nothing (opt-in). Relative paths resolve against cwd |
 | `StaticPrefix` | `/static` | URL prefix the static directory is mounted under, at the router root |
-| `StaticDisabled` | `false` | turn static file serving off entirely, even when the directory exists |
+| `StaticDisabled` | `false` | turn static file serving off even when `StaticDir` is set |
 
 `PathPrefix` does **not** affect `/static`, `/files`, or `/health`. Those are
 mounted at the router root. See [Static Files](../defining-your-api/static-files.md) for the static

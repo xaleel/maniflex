@@ -206,21 +206,28 @@ type Config struct {
 	// PathPrefix is prepended to every generated route. Default: "/api".
 	PathPrefix string
 
-	// StaticDir is the filesystem directory served as static files. A relative
-	// path is resolved against the working directory. When empty it defaults to
-	// "<cwd>/static". If the directory does not exist it is skipped with a
-	// warning (no error). Ignored when StaticDisabled is true.
+	// StaticDir is the filesystem directory served as static files, or "" to
+	// serve none. Static serving is opt-in: an empty StaticDir mounts nothing.
+	// (It used to fall back to "<cwd>/static", which silently published any
+	// static/ directory that happened to be in the working tree.) A relative
+	// path is resolved against the working directory; a named directory that
+	// does not exist is skipped with a warning, not an error. Ignored when
+	// StaticDisabled is true.
+	//
+	// Files are served verbatim under StaticPrefix: with StaticDir "public" and
+	// the default prefix, public/app.js is reachable at /static/app.js, and a
+	// single-page app under public/admin/ (with its own index.html) is served in
+	// full at /static/admin/, nested assets included.
 	StaticDir string
 
 	// StaticPrefix is the URL path prefix under which StaticDir is served.
 	// Default: "/static". Unlike model routes it is mounted at the router root,
-	// NOT under PathPrefix, preserving the historical "<cwd>/static → /static"
-	// mapping.
+	// NOT under PathPrefix.
 	StaticPrefix string
 
-	// StaticDisabled turns off static file serving entirely, even when the
-	// directory exists. Use it when "./static" is present for other reasons and
-	// must not be exposed over HTTP.
+	// StaticDisabled turns off static file serving even when StaticDir is set.
+	// It exists so an app that configures StaticDir unconditionally can still
+	// flip serving off from an env var or flag without clearing the field.
 	StaticDisabled bool
 
 	// TrustProxyHeaders controls whether the client IP is derived from the

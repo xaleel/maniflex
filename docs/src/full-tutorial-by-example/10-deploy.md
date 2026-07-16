@@ -169,7 +169,9 @@ ENTRYPOINT ["/bookstore"]
 nothing else in the framework requires a C toolchain.
 
 `static/` is copied so the Scalar OpenAPI viewer is reachable at
-`/static/openapi.html`.
+`/static/openapi.html` — provided the app opts into static serving with
+`maniflex.Config{StaticDir: "static"}` (serving is opt-in; an unset `StaticDir`
+publishes nothing).
 
 ## Production checklist
 

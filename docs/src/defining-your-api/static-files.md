@@ -7,9 +7,14 @@ OpenAPI viewer, without standing up a separate web server.
 
 ## How it works
 
-On startup the server looks for a directory named **`static/`** in the process
-working directory. If it exists, every file inside is served under the
-**`/static`** URL path:
+Static serving is **opt-in**: set `StaticDir` to the directory you want served,
+and every file inside it is served under the **`/static`** URL path.
+
+```go
+server := maniflex.New(maniflex.Config{
+    StaticDir: "static", // serve ./static — nothing is served unless you name a dir
+})
+```
 
 ```
 myapp/
@@ -20,41 +25,55 @@ myapp/
     └── logo.png          →  GET /static/logo.png
 ```
 
-By default there is nothing to configure and nothing to register — drop files in
-`static/` and they are served. If the directory does not exist, the server logs
-a warning and simply skips mounting it; the rest of the API is unaffected.
+Files are served verbatim, so a single-page app is served in full — its
+`index.html` at the directory root and every nested asset at its own path:
+
+```
+static/
+├── report.json                     →  GET /static/report.json
+└── admin/                          →  GET /static/admin/  (serves index.html)
+    ├── index.html
+    └── scripts/app.js               →  GET /static/admin/scripts/app.js
+```
+
+If `StaticDir` is left empty, no static route is mounted and maniflex serves only
+the API. If it is set but the directory does not exist, the server logs a warning
+and skips the mount; the rest of the API is unaffected.
+
+> **Changed in v0.2.1.** Static serving used to default to `<cwd>/static` — any
+> `static/` directory in the working directory was published at `/static/`
+> automatically. It is now opt-in: set `StaticDir` explicitly. If you relied on
+> the old default, add `StaticDir: "static"`.
 
 ## Customising the directory and prefix
 
-Three `maniflex.Config` fields override the defaults:
+Three `maniflex.Config` fields control static serving:
 
 ```go
 server := maniflex.New(maniflex.Config{
-    StaticDir:    "public",   // serve ./public instead of ./static
+    StaticDir:    "public",   // serve ./public
     StaticPrefix: "/assets",  // under /assets instead of /static
 })
 ```
 
-| Field            | Default          | Effect                                                            |
-| ---------------- | ---------------- | ----------------------------------------------------------------- |
-| `StaticDir`      | `<cwd>/static`   | filesystem directory served. A relative path resolves against cwd |
-| `StaticPrefix`   | `/static`        | URL prefix the directory is mounted under (at the router root)    |
-| `StaticDisabled` | `false`          | set `true` to turn static serving off entirely                    |
+| Field            | Default   | Effect                                                            |
+| ---------------- | --------- | ----------------------------------------------------------------- |
+| `StaticDir`      | `""`      | filesystem directory served; empty serves nothing. A relative path resolves against cwd |
+| `StaticPrefix`   | `/static` | URL prefix the directory is mounted under (at the router root)    |
+| `StaticDisabled` | `false`   | set `true` to turn serving off even when `StaticDir` is set       |
 
-`StaticDisabled` is for when a `static/` (or `StaticDir`) directory exists for
-other reasons — a build artifact, an embedded asset source — and must not be
-exposed over HTTP. A missing directory is still skipped with a warning, so you
-only need `StaticDisabled` to suppress an existing one.
+`StaticDisabled` exists so an app that sets `StaticDir` unconditionally can still
+flip serving off from an env var or flag without clearing the field.
 
 ## The `/static` route
 
 A few details follow from how the route is mounted (the `buildRouter` block in
 `router.go`):
 
-- **Resolved from the working directory.** The default path checked is
-  `<cwd>/static`, where `<cwd>` is wherever the process was started — not the
-  location of the binary. Run the server from the project root, or `cd` there
-  first, so `static/` is found. A `StaticDir` relative path resolves the same way.
+- **Resolved from the working directory.** A relative `StaticDir` resolves
+  against `<cwd>`, wherever the process was started — not the location of the
+  binary. Run the server from the project root, or `cd` there first, so a
+  relative path like `"static"` is found.
 - **Mounted outside `PathPrefix`.** Static files live at `/static/...` (or your
   `StaticPrefix`), *not* `/api/static/...`. The `PathPrefix` from `maniflex.Config`
   scopes only the model API and `/openapi.json`; the static mount sits at the
@@ -63,14 +82,8 @@ A few details follow from how the route is mounted (the `buildRouter` block in
   `301`-redirected to `/static/`. Requests below it are served directly.
 - **Directory listing.** Because it is backed by Go's `http.FileServer`, a
   request for a directory with no `index.html` returns a file listing. Add an
-  `index.html` to each directory you do not want browsable.
-
-## Choosing the directory
-
-By default the directory is `static/` in the working directory; set `StaticDir`
-to serve assets that live elsewhere (no symlink or `cd` gymnastics required). The
-static mount is also purely optional: omit the directory entirely — or set
-`StaticDisabled: true` — and maniflex serves only the API.
+  `index.html` to each directory you do not want browsable — and only point
+  `StaticDir` at a directory whose whole contents are safe to publish.
 
 ## Static files vs. file uploads
 
@@ -82,6 +95,6 @@ user uploads see [File Fields & Uploads](files.md).
 | | Static files | File uploads |
 |---|---|---|
 | URL | `/static/*` | `/files/*` |
-| Source | a `static/` directory you commit | user `POST`s at runtime |
-| Configured by | convention, or `Config.Static*` | `Config.FileStorage` |
+| Source | a directory you commit and name in `StaticDir` | user `POST`s at runtime |
+| Configured by | `Config.Static*` | `Config.FileStorage` |
 | Use for | app assets, admin pages | avatars, attachments |

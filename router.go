@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -99,21 +98,18 @@ func mountFileEndpoints(r chi.Router, cfg *Config, l *slog.Logger) {
 }
 
 // mountStatic serves cfg.StaticDir under cfg.StaticPrefix at the router root
-// (outside PathPrefix). StaticDir defaults to "<cwd>/static" and StaticPrefix to
-// "/static" (set in ApplyDefaults), preserving the historical mapping. A missing
-// directory is skipped with a warning; StaticDisabled turns it off entirely.
+// (outside PathPrefix). Static serving is opt-in: it mounts only when StaticDir
+// names a directory. StaticPrefix defaults to "/static" (set in ApplyDefaults).
+// A named directory that does not exist is skipped with a warning; StaticDisabled
+// turns serving off even when StaticDir is set.
+//
+// It used to fall back to "<cwd>/static" when StaticDir was empty, so a static/
+// directory that merely happened to be in the working tree — a build cache, a
+// checked-out asset bundle — was published at /static/ without anyone asking for
+// it (DX-6). An empty StaticDir now serves nothing.
 func mountStatic(r chi.Router, cfg *Config, l *slog.Logger) {
-	if cfg.StaticDisabled {
+	if cfg.StaticDisabled || cfg.StaticDir == "" {
 		return
-	}
-
-	staticPath := cfg.StaticDir
-	if staticPath == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return
-		}
-		staticPath = filepath.Join(cwd, "static")
 	}
 
 	// Guarantee a leading slash so a bare prefix ("assets") doesn't panic chi.
@@ -125,11 +121,11 @@ func mountStatic(r chi.Router, cfg *Config, l *slog.Logger) {
 		prefix = "/" + prefix
 	}
 
-	if _, err := os.Stat(staticPath); err == nil {
-		fileServer(r, prefix, http.Dir(staticPath))
+	if _, err := os.Stat(cfg.StaticDir); err == nil {
+		fileServer(r, prefix, http.Dir(cfg.StaticDir))
 	} else {
 		l.Warn("Static file path does not exist; skip mounting static",
-			slog.String("path", staticPath), slog.String("prefix", prefix))
+			slog.String("path", cfg.StaticDir), slog.String("prefix", prefix))
 	}
 }
 

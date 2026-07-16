@@ -148,10 +148,10 @@ These run only for `/openapi.json`; they do not affect the model routes.
 ## Viewing the spec
 
 The framework ships a Scalar API Reference viewer at
-[`static/openapi.html`](../defining-your-api/static-files.md). When `static/` is present in the
-working directory, it is served at `http://localhost:8080/static/openapi.html`
-and loads `/api/openapi.json` directly — no extra setup needed for human
-browsing of the generated spec.
+[`static/openapi.html`](../defining-your-api/static-files.md). Point `StaticDir`
+at the directory holding it (`maniflex.Config{StaticDir: "static"}`) and it is
+served at `http://localhost:8080/static/openapi.html`, loading `/api/openapi.json`
+directly — no extra setup needed for human browsing of the generated spec.
 
 For tooling integration, the JSON document at `/openapi.json` is consumable by
 any OpenAPI 3.1-compatible client generator, mock server, or contract testing

@@ -3,6 +3,8 @@ package maniflex
 import (
 	"log/slog"
 	"slices"
+	"sync"
+	"sync/atomic"
 )
 
 // Pipeline is the public middleware injection surface.
@@ -43,6 +45,24 @@ type Pipeline struct {
 	// OpenAPI — three-step pipeline for the GET /openapi.json endpoint.
 	// Steps: Auth → Generate → Response
 	OpenAPI *OpenAPIPipeline
+
+	// frozen mirrors the step registries: set once, when the router is built.
+	frozen atomic.Bool
+
+	// chains memoizes the whole six-step chain per (model, operation), so a request
+	// costs one lookup instead of six compositions plus a buildChain (PERF-2). Only
+	// written after frozen, so entries can never go stale.
+	chains sync.Map // chainKey → MiddlewareFunc
+}
+
+// freeze closes the registration window on every step and switches the pipeline to
+// its cached chains. The router calls it once it has finished registering its own
+// middleware (the file-cleanup hooks), after which the composed chains are fixed.
+func (p *Pipeline) freeze() {
+	for _, s := range p.steps() {
+		s.freeze()
+	}
+	p.frozen.Store(true)
 }
 
 // newPipeline wires all step registries with their built-in default handlers.
@@ -120,20 +140,34 @@ func (p *Pipeline) executeSearch(ctx *ServerContext, handler func(*ServerContext
 // If any step sets ctx.Response without calling next(), the remaining
 // steps are skipped and the response is written directly.
 func (p *Pipeline) execute(ctx *ServerContext) error {
-	model := ctx.Model.Name
-	op := ctx.Operation
+	// Wrap the composed chain so the last step's next() is a no-op.
+	return p.chainFor(ctx.Model.Name, ctx.Operation)(ctx, func() error { return nil })
+}
 
-	steps := []MiddlewareFunc{
+// chainFor returns the six-step chain for one model+operation pair, composing it
+// on first use and serving it from cache thereafter. Before the router is built it
+// always composes: the registration window is still open, so the answer can change.
+func (p *Pipeline) chainFor(model string, op Operation) MiddlewareFunc {
+	k := chainKey{model: model, op: op}
+	if p.frozen.Load() {
+		if fn, ok := p.chains.Load(k); ok {
+			return fn.(MiddlewareFunc)
+		}
+	}
+
+	fn := buildChain([]MiddlewareFunc{
 		p.Auth.build(model, op),
 		p.Deserialize.build(model, op),
 		p.Validate.build(model, op),
 		p.Service.build(model, op),
 		p.DB.build(model, op),
 		p.Response.build(model, op),
-	}
+	})
 
-	// Wrap the composed chain so the last step's next() is a no-op.
-	return buildChain(steps)(ctx, func() error { return nil })
+	if p.frozen.Load() {
+		p.chains.Store(k, fn)
+	}
+	return fn
 }
 
 // steps returns the six core step registries in execution order. Used by

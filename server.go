@@ -665,6 +665,11 @@ func (c *Server) Handler() http.Handler {
 		// Warn about middleware registered on a pipeline step its operation can
 		// never reach (e.g. ForOperation(OpSearch) on the Service step).
 		warnIneffectiveMiddleware(c.Pipeline, c.cfg.logger())
+		// Close the registration window — after this the composed chains are cached
+		// per (model, operation) instead of rebuilt six times per request, so the
+		// middleware set must stop changing. Last, because the file-cleanup hooks
+		// above register middleware of their own (PERF-2).
+		c.Pipeline.freeze()
 		h := newHandlers(c.Pipeline, c.steps, &c.cfg)
 		h.globalSearch = c.globalSearch
 		c.router = buildRouter(&c.cfg, c.registry, h, c.Pipeline, c.cfg.logger(), c.actions, c.asyncCfg)

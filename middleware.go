@@ -2,8 +2,11 @@ package maniflex
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -106,6 +109,25 @@ type StepRegistry struct {
 	defaultFn     MiddlewareFunc // built-in handler for this step
 	defaultFnName string         // trace name for the built-in handler, e.g. "default"
 	middlewares   []registeredMiddleware
+
+	// frozen is set when the router is built. It closes the registration window:
+	// after it, middlewares is immutable, which is what lets the composed chains
+	// below be cached and read without a lock (PERF-2).
+	frozen atomic.Bool
+
+	// chains memoizes compose() per (model, operation). Only written after frozen,
+	// so an entry can never go stale; two requests racing the same key just compose
+	// the same chain twice and store equivalent values.
+	chains sync.Map // chainKey → MiddlewareFunc
+}
+
+// chainKey identifies a composed chain. The (model, operation) pair is the whole
+// input to compose(): appliesTo() filters on nothing else, and the returned closure
+// reads the request off ctx at call time, so a chain is safe to reuse across every
+// request for that pair.
+type chainKey struct {
+	model string
+	op    Operation
 }
 
 func newStepRegistry(name, defaultFnName string, defaultFn MiddlewareFunc) *StepRegistry {
@@ -141,7 +163,16 @@ func newStepRegistry(name, defaultFnName string, defaultFn MiddlewareFunc) *Step
 //	    maniflex.ForOperation(maniflex.OpCreate),
 //	    maniflex.AtPosition(maniflex.Replace),
 //	)
+//
+// Must be called before Start() or Handler(): the composed chains are cached when
+// the router is built, so a middleware registered afterwards could not be applied
+// consistently — Register panics rather than take effect for some requests only.
 func (s *StepRegistry) Register(fn MiddlewareFunc, opts ...MiddlewareOption) {
+	if s.frozen.Load() {
+		panic(fmt.Sprintf(
+			"maniflex: Pipeline.%s.Register must be called before Start() or Handler() "+
+				"(the pipeline is composed and cached when the router is built)", s.displayName))
+	}
 	cfg := MiddlewareConfig{Position: Before, Name: "[unnamed]"}
 	for _, o := range opts {
 		o(&cfg)
@@ -149,10 +180,35 @@ func (s *StepRegistry) Register(fn MiddlewareFunc, opts ...MiddlewareOption) {
 	s.middlewares = append(s.middlewares, registeredMiddleware{fn: fn, cfg: cfg})
 }
 
-// build returns the composed MiddlewareFunc for the given model+operation pair.
+// freeze closes the registration window and is called once, when the router is
+// built. Every later Register panics, so middlewares stops changing and the chains
+// cache is safe to fill and read without a lock.
+func (s *StepRegistry) freeze() { s.frozen.Store(true) }
+
+// build returns the composed MiddlewareFunc for the given model+operation pair,
+// from cache once the registry is frozen. It used to compose on every call — six
+// times per request, each one walking every registered middleware and allocating
+// before/after/skipped slices plus a closure chain — although the (model,
+// operation) set is fixed by the time the router exists (PERF-2).
+func (s *StepRegistry) build(model string, op Operation) MiddlewareFunc {
+	if !s.frozen.Load() {
+		// Still registering (or a direct call in a test): compose fresh, since the
+		// answer can still change and must not be cached.
+		return s.compose(model, op)
+	}
+	k := chainKey{model: model, op: op}
+	if fn, ok := s.chains.Load(k); ok {
+		return fn.(MiddlewareFunc)
+	}
+	fn := s.compose(model, op)
+	s.chains.Store(k, fn)
+	return fn
+}
+
+// compose builds this step's chain for one model+operation pair.
 // Order: before-middlewares → (default or replace) → after-middlewares.
 // Named middleware metadata is preserved for trace logging.
-func (s *StepRegistry) build(model string, op Operation) MiddlewareFunc {
+func (s *StepRegistry) compose(model string, op Operation) MiddlewareFunc {
 	var before, after []namedFn
 	var skipped []namedFn
 	coreFn := s.defaultFn

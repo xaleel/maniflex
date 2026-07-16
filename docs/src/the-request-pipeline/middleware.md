@@ -67,6 +67,19 @@ server.Pipeline.Auth.Register(bearerToken)
 
 Without options, the middleware applies to every model and every operation.
 
+`Register` must be called **before** `Start()` or `Handler()`. Building the router
+closes the registration window: each step's chain is composed once per
+(model, operation) and cached from then on, rather than rebuilt on every request,
+so the middleware set has to stop changing. A `Register` after that point panics —
+it could otherwise only apply to some requests and not others, and it would be
+mutating a slice live requests are reading.
+
+```go
+server.Pipeline.Auth.Register(bearerToken)   // fine
+server.Start()                               // window closes
+server.Pipeline.DB.Register(audit)           // panics
+```
+
 ## Scoping
 
 Two functional options narrow the scope. They are independent and may be

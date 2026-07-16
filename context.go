@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -251,6 +252,14 @@ type ServerContext struct {
 	// on every Info/Debug emission. The derived attributes (service,
 	// request_id, trace_id) are immutable for the lifetime of the request,
 	// so a single build is sufficient.
+	//
+	// loggerOnce guards the build. The context outlives its request goroutine:
+	// GoBackground closures capture it and log from another goroutine while the
+	// request is still in later steps, so the lazy write raced those reads
+	// (PERF-3). Once keeps the build lazy — a request that never logs still pays
+	// nothing — while making it exactly-once, so every goroutine sees the same
+	// logger.
+	loggerOnce   sync.Once
 	cachedLogger *slog.Logger
 
 	// bg is the Server-owned background runner. Middleware uses
@@ -801,10 +810,18 @@ func (c *ServerContext) HasRole(role string) bool {
 // underlying attributes (service / request_id / trace_id) don't change once the
 // request enters the pipeline, so per-step middleware can call Logger() in a
 // hot path without paying a fresh base.With(...) on every emission.
+//
+// It is safe to call from any goroutine, including a ctx.GoBackground closure
+// running after the request goroutine has moved on: the memoised logger is built
+// exactly once, so every caller gets the same one.
 func (c *ServerContext) Logger() *slog.Logger {
-	if c.cachedLogger != nil {
-		return c.cachedLogger
-	}
+	c.loggerOnce.Do(func() { c.cachedLogger = c.buildLogger() })
+	return c.cachedLogger
+}
+
+// buildLogger derives the request logger from the base logger plus the attributes
+// that stay fixed for the request. Called once, under loggerOnce.
+func (c *ServerContext) buildLogger() *slog.Logger {
 	base := c.logger
 	if base == nil {
 		base = slog.Default()
@@ -820,11 +837,9 @@ func (c *ServerContext) Logger() *slog.Logger {
 		attrs = append(attrs, slog.String("trace_id", c.TraceID))
 	}
 	if len(attrs) == 0 {
-		c.cachedLogger = base
-	} else {
-		c.cachedLogger = base.With(attrs...)
+		return base
 	}
-	return c.cachedLogger
+	return base.With(attrs...)
 }
 
 // Abort populates ctx.Response with an error and should be used by middleware

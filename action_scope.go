@@ -15,11 +15,13 @@ package maniflex
 // action can reach consults it. The paths divide in two:
 //
 //   - Those that can carry a filter — ctx.GetModel's accessor, the typed
-//     List/Read/Create/Update/Delete generics, ctx.Aggregate, ctx.LockForUpdate —
-//     apply the scope, and a write to a record outside it is ErrNotFound, the
-//     same answer a scoped read gives.
-//   - Those that cannot — ctx.RawQuery, ctx.RawExec, ctx.BeginTx, ctx.Search —
-//     refuse while a scope is active, rather than running unscoped.
+//     List/Read/Create/Update/Delete generics, ctx.Aggregate, ctx.LockForUpdate,
+//     and the Tx that ctx.BeginTx returns (Tx mirrors DBAdapter, so it is scoped
+//     the same way — see scoped_tx.go) — apply the scope, and a write to a record
+//     outside it is ErrNotFound, the same answer a scoped read gives.
+//   - Those that cannot — ctx.RawQuery, ctx.RawExec, ctx.Search,
+//     ctx.RecursiveQuery — refuse while a scope is active, rather than running
+//     unscoped.
 //
 // The refusal is the point. Scoping only what is convenient and leaving raw SQL
 // to leak in silence would be a guarantee in the documentation and not in the
@@ -137,8 +139,9 @@ func (c *ServerContext) guardRaw(path string) error {
 	return fmt.Errorf(
 		"maniflex: %s is in force on this request and %s cannot enforce it — the scope is "+
 			"applied to ctx.GetModel, the typed List/Read/Create/Update/Delete generics, "+
-			"ctx.Aggregate and ctx.LockForUpdate, but not to %s. Rewrite the access through one "+
-			"of those, or call ctx.Unscoped().%s to bypass the scope deliberately",
+			"ctx.Aggregate, ctx.LockForUpdate and the Tx from ctx.BeginTx, but not to %s. "+
+			"Rewrite the access through one of those, or call ctx.Unscoped().%s to bypass the "+
+			"scope deliberately",
 		c.actionScope.scopeName(), path, path, strings.TrimSuffix(path, "()")+"(…)")
 }
 
@@ -168,8 +171,8 @@ func (u *UnscopedContext) RawExec(query string, args ...any) (int64, error) {
 	return u.c.rawExec(query, args...)
 }
 
-// BeginTx opens a transaction without the scope check. Nothing done through the
-// returned Tx is scoped — it speaks to the adapter directly.
+// BeginTx opens a transaction that is not scoped. ctx.BeginTx returns one that
+// is; this is the deliberate bypass, for work that must reach across the scope.
 func (u *UnscopedContext) BeginTx(ctx context.Context, opts *TxOptions) (Tx, error) {
 	return u.c.beginTx(ctx, opts)
 }

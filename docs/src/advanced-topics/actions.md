@@ -65,13 +65,13 @@ and `Response` middleware do.
 > [Scoping Actions](../middleware-catalogue/db.md#scoping-actions-tenancyaction--forcefilteraction)).
 
 Under `db.TenancyAction` / `db.ForceFilterAction` the handler's database work is
-scoped through `ctx.GetModel`, the typed generics, `ctx.Aggregate` and
-`ctx.LockForUpdate` — and `ctx.RawQuery`, `ctx.RawExec`, `ctx.BeginTx`,
-`ctx.Search` and `ctx.RecursiveQuery` **refuse**, because a scope cannot be
-applied to them and running them anyway would return every tenant's rows.
-`ctx.Unscoped()` bypasses that deliberately where a path genuinely must. An
-action with no scope registered is unaffected: every path behaves as it always
-has.
+scoped through `ctx.GetModel`, the typed generics, `ctx.Aggregate`,
+`ctx.LockForUpdate`, and the `Tx` from `ctx.BeginTx` (so `WithTransaction` and
+`Batch` work too) — and `ctx.RawQuery`, `ctx.RawExec`, `ctx.Search` and
+`ctx.RecursiveQuery` **refuse**, because a scope cannot be applied to raw SQL and
+running it anyway would return every tenant's rows. `ctx.Unscoped()` bypasses
+that deliberately where a path genuinely must. An action with no scope registered
+is unaffected: every path behaves as it always has.
 
 ## Per-action middleware
 

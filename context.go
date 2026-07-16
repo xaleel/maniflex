@@ -514,15 +514,22 @@ func (c *ServerContext) requestAdapter() DBAdapter {
 
 // BeginTx opens a transaction on the request's adapter.
 //
-// It refuses while an ActionScope is in force: the returned Tx speaks to the
-// adapter directly, so nothing done through it can be scoped, and handing one
-// back would silently void the scope for everything that followed. Use the
-// scoped paths, or ctx.Unscoped().BeginTx to step outside deliberately.
+// When an ActionScope is in force the returned Tx is scoped by it: reads are
+// filtered, a create is stamped, and an update or delete of a record outside the
+// scope returns ErrNotFound. ctx.Tx is a public field, so anything downstream
+// that picks the transaction up is scoped too. ctx.Unscoped().BeginTx returns an
+// unscoped transaction for work that genuinely must reach across the scope.
 func (c *ServerContext) BeginTx(ctx context.Context, opts *TxOptions) (Tx, error) {
-	if err := c.guardRaw("BeginTx()"); err != nil {
+	tx, err := c.beginTx(ctx, opts)
+	if err != nil {
 		return nil, err
 	}
-	return c.beginTx(ctx, opts)
+	// Outermost, so these overrides win over tracedTx's — which beginTx has
+	// already applied when tracing is on, and which still sees the real calls.
+	if c.actionScope != nil {
+		tx = &scopedTx{Tx: tx, ctx: c, scope: c.actionScope}
+	}
+	return tx, nil
 }
 
 func (c *ServerContext) beginTx(ctx context.Context, opts *TxOptions) (Tx, error) {

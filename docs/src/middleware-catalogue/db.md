@@ -87,8 +87,8 @@ Inside that handler every DB path either applies the scope or refuses to run:
 | `maniflex.List/Read/Create/Update/Delete[T]` | scoped |
 | `ctx.Aggregate` | scoped (AND-ed into `WHERE`) |
 | `ctx.LockForUpdate` | scoped |
+| `ctx.BeginTx` — and the `Tx` it returns | scoped |
 | `ctx.RawQuery`, `ctx.RawExec` | **refuses** |
-| `ctx.BeginTx` | **refuses** |
 | `ctx.Search`, `ctx.RecursiveQuery` | **refuses** |
 
 Reads see only matching rows. A create is stamped with the scope's values,
@@ -96,12 +96,25 @@ overwriting whatever the caller supplied — a row created outside the scope wou
 be invisible to the caller that created it. An update or delete of a record
 outside the scope returns `ErrNotFound`, the same answer the scoped read gives.
 
-**The refusals are the point.** Raw SQL is opaque to the framework, and a `Tx`
-speaks to the adapter directly, so neither can be scoped. Scoping the convenient
-paths and letting those leak in silence would put the guarantee in this page and
-not in the code — worse than no guarantee, because it would be trusted. Refusing
-means an action either honours the scope or fails at the first request that
-exercises it.
+Transactions work normally. `Tx` mirrors `DBAdapter` — its `FindByID`/`FindMany`
+take a `*QueryParams`, its `Update`/`Delete` are keyed by id — so the `Tx` that
+`ctx.BeginTx` returns is scoped the same way the accessor is, and that matters
+because `ctx.Tx` is a public field: anything downstream that picks the
+transaction up is scoped too. `maniflex.WithTransaction` and `maniflex.Batch`
+both call `ctx.BeginTx`, so both work on a scoped action:
+
+```go
+tx, err := ctx.BeginTx(ctx.Ctx, nil)  // scoped
+defer tx.Rollback()
+// tx.FindByID / tx.Update / tx.Delete all honour the scope
+return tx.Commit()
+```
+
+**The refusals are the point.** Raw SQL is opaque to the framework: a `SELECT`
+string cannot be scoped without rewriting it. Scoping the convenient paths and
+letting those leak in silence would put the guarantee in this page and not in the
+code — worse than no guarantee, because it would be trusted. Refusing means an
+action either honours the scope or fails at the first request that exercises it.
 
 When a path genuinely must step outside the scope — an audit query across
 tenants, a migration — say so:
@@ -112,19 +125,8 @@ rows, err := ctx.Unscoped().RawQuery("SELECT ... FROM orders")
 
 `ctx.Unscoped()` exposes `RawQuery`, `RawExec`, `BeginTx`, `GetModel` and
 `Search` with no scope applied. It is a distinct call rather than a flag so the
-bypass shows up at the call site, in the diff, and in a grep.
-
-Transactions still work under a scope — open one with `ctx.Unscoped().BeginTx`
-and the scoped paths inside it stay scoped, because they route through `ctx.Tx`
-and apply the scope themselves:
-
-```go
-tx, err := ctx.Unscoped().BeginTx(ctx.Ctx, nil)   // the handle is unscoped
-defer tx.Rollback()
-ctx.Tx = tx
-_, err = ctx.GetModel("Order").Update(id, patch)  // this is still scoped
-return tx.Commit()
-```
+bypass shows up at the call site, in the diff, and in a grep — which only works
+while it stays rare, so it is deliberately not needed for ordinary work.
 
 The scope applies only to Actions. A generated CRUD route gets its scoping from
 the DB step, where `ctx.RawQuery` from an After-DB middleware is a normal thing

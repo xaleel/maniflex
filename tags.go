@@ -145,6 +145,13 @@ type FieldTags struct {
 	SchedHasTo   bool   // distinguishes ;to=   absent vs. to=""   given
 	SchedBadOpt  string // first unrecognised option, "" if none — ScanModel errors on it
 
+	// UnknownOpts holds every mfx: comma-part the parser did not recognise, in
+	// declaration order. ScanModel rejects a field that has any: an unknown
+	// option used to be discarded in silence, so a directive typo'd as
+	// `read_only` left Readonly false and the field client-writable — the tag
+	// failing open in exactly the case it exists to protect.
+	UnknownOpts []string
+
 	// Derived names
 	JSONName  string
 	DBName    string
@@ -286,6 +293,13 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 			t.Scheduled = true
 		case strings.HasPrefix(part, "scheduled;"):
 			parseScheduledTag(part, &t)
+
+		// An option nobody claimed. Empty parts are not typos: a field with no
+		// mfx tag at all splits to [""], and so does a trailing comma
+		// (`mfx:"required,"`), so treating those as unknown would reject every
+		// untagged field in existence.
+		case part != "":
+			t.UnknownOpts = append(t.UnknownOpts, part)
 		}
 	}
 

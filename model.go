@@ -1004,6 +1004,15 @@ func collectFields(
 				"maniflex: model %q field %q has conflicting locale mode tags — only one of split, resolve, dynamic is allowed",
 				meta.Name, sf.Name)
 		}
+		// Checked here rather than over meta.Fields so that every field is
+		// covered — HasMany and many-to-many slices become Relations and never
+		// reach meta.Fields — while the anonymous embed, which the branch above
+		// recursed into and skipped, is not. That matters: BaseModel carries
+		// mfx:"versioned"/"cursor_field:", which ScanModel reads directly and
+		// this parser has no case for.
+		if len(tags.UnknownOpts) > 0 {
+			return unknownOptError(meta.Name, sf.Name, tags.UnknownOpts)
+		}
 
 		// Determine the element type (unwrap ptr/slice)
 		ft := sf.Type

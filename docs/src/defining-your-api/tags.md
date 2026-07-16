@@ -17,7 +17,24 @@ Title string `json:"title" db:"title" mfx:"required,filterable,sortable"`
 
 The `mfx` tag holds a comma-separated list of directives. Whitespace around each
 directive is trimmed. Directives are either **flags** (a bare word) or
-**key-value** directives (`key:value`). An unrecognised directive is ignored.
+**key-value** directives (`key:value`).
+
+An unrecognised directive is a **registration error**, and the message names the
+directive it thinks you meant:
+
+```
+maniflex: model "User" field "Role" has unknown mfx option
+"read_only" (did you mean "readonly"?) — an unrecognised option is
+not applied, so a protective directive that is misspelt leaves the
+field unprotected
+```
+
+Directives used to be matched exactly and anything else discarded in silence.
+For a descriptive directive that was merely puzzling — a misspelt `sortable` just
+meant no sorting — but for a protective one it was a hole: `mfx:"read_only"`
+left `Readonly` false, so the field stayed writable by any client, with nothing
+in the logs or the OpenAPI spec to show it. Directives are case-sensitive and
+lowercase; `mfx:"Readonly"` is rejected rather than quietly accepted.
 
 ## Excluding a field
 

@@ -40,6 +40,44 @@ var validOperators = map[FilterOperator]bool{
 	OpContains: true, OpStartsWith: true, OpEndsWith: true,
 }
 
+// Valid reports whether o is an operator the query builder implements.
+//
+// ParseFilterParam checks this for every filter arriving over HTTP, so a client
+// cannot get an unknown operator past it. A FilterExpr built in Go bypasses that
+// parse entirely, and Operator is a bare string type — which is what makes a
+// typo (Operator: "equals", where the constant OpEq is "eq") compile, register,
+// and reach the adapter as a predicate nothing recognises. Valid is exported so
+// a custom adapter can hold the same line the shipped one does.
+func (o FilterOperator) Valid() bool { return validOperators[o] }
+
+// validateFilterOperators rejects a filter whose operator no adapter implements.
+//
+// It exists because such a filter used to be ignored rather than refused: the
+// query builder's switch fell through to a constant-true predicate, so the
+// condition vanished from the WHERE clause and the query returned every row.
+// That is merely wrong for a client's filter and dangerous for a forced one —
+// db.Tenancy's scope with a misspelt operator is not a narrower scope, it is no
+// scope, on reads and (since the write path reads back through the same filters)
+// on writes too. The failure was silent in both directions: nothing logged, and
+// the extra rows look exactly like data.
+//
+// The adapters degrade an unrecognised operator to a false predicate as a
+// backstop, so a filter reaching one by some path this check does not cover
+// matches nothing rather than everything. This is the layer that can say why.
+func validateFilterOperators(fs []*FilterExpr) error {
+	for _, f := range fs {
+		if f == nil || f.Operator.Valid() {
+			continue
+		}
+		return fmt.Errorf(
+			"maniflex: filter on %q uses unknown operator %q — a FilterExpr built in Go is not "+
+				"parsed, so the operator is whatever was typed; use one of the maniflex.Op* "+
+				"constants (OpEq, OpIn, OpBetween, …)",
+			f.Field, f.Operator)
+	}
+	return nil
+}
+
 // LikeEscapeChar is the escape character in the patterns LikePattern builds. Every
 // LIKE/ILIKE that consumes such a pattern must spell out ESCAPE '\': SQLite has no
 // escape character by default and Postgres has a backslash, so saying it out loud
@@ -134,6 +172,20 @@ func forcedFilters(fs []*FilterExpr) []*FilterExpr {
 	var out []*FilterExpr
 	for _, f := range fs {
 		if f != nil && f.Forced {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// nestedForcedFilters returns the server-imposed filters among fs that scope
+// through a parent relation rather than a column of the model itself — what
+// db.ForceFilterVia builds. They are the only filters with a foreign key to
+// check, so isolating them is what lets every other write skip that check.
+func nestedForcedFilters(fs []*FilterExpr) []*FilterExpr {
+	var out []*FilterExpr
+	for _, f := range fs {
+		if f != nil && f.Forced && f.IsNested {
 			out = append(out, f)
 		}
 	}

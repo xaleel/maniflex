@@ -60,6 +60,59 @@ func ForceFilter(field string, fn ForceFilterFunc) maniflex.MiddlewareFunc {
 	}
 }
 
+// ForceFilterVia scopes a model that has no column to scope by, through the
+// column its BelongsTo parent carries.
+//
+// ForceFilter maps a field to a value, which needs the model to hold that field.
+// A child table often does not: a DamagedItem has an item_id and nothing else,
+// and whether it is yours is a fact about its Item. The alternatives are to
+// denormalise owner_id onto every such child — a schema change, plus a standing
+// obligation to keep it in step, on exactly the tables whose scoping is easiest
+// to get wrong — or to hand-write the predicate, which is what declarative
+// scoping exists to replace.
+//
+//	// A DamagedItem is the caller's if its Item is
+//	server.Pipeline.DB.Register(
+//	    db.ForceFilterVia("item", "owner_id", func(ctx *maniflex.ServerContext) any {
+//	        return ctx.Auth.Claims["owner_id"]
+//	    }),
+//	    maniflex.ForModel("DamagedItem"),
+//	)
+//
+// relationKey names the relation in the vocabulary a nested ?filter= uses
+// (?filter=author.status:neq:banned → "author"); parentField names the column on
+// the parent, by JSON or DB name. Reads join the parent and apply the predicate.
+// Updates and deletes read the row back through it and answer 404 on a miss, as
+// they do for ForceFilter. A create — and an update that rewrites the foreign key
+// — is refused unless the parent it names is itself in scope, because that key is
+// what the scope hangs from and the client is the one supplying it.
+//
+// Like ForceFilter, a fn returning nil applies no filter, so a resolver that
+// cannot identify the caller leaves the request unscoped: return a value that
+// matches nothing if that is not what you want, or use maniflex.ForOperation to
+// say where the scope applies. Unlike ForceFilter, the relation is resolved per
+// request against the model being served, so registering it on a model without
+// that relation fails the request rather than serving it unscoped.
+func ForceFilterVia(relationKey, parentField string, fn ForceFilterFunc) maniflex.MiddlewareFunc {
+	return func(ctx *maniflex.ServerContext, next func() error) error {
+		val := fn(ctx)
+		if val == nil {
+			return next()
+		}
+		f, err := ctx.ViaFilter(relationKey, parentField, val)
+		if err != nil {
+			// Fail closed. A scope that cannot be built is not a weaker scope, it is
+			// no scope, and next() here would serve the whole table.
+			return err
+		}
+		if ctx.Query == nil {
+			ctx.Query = &maniflex.QueryParams{Page: 1, Limit: 20}
+		}
+		ctx.Query.Filters = append(ctx.Query.Filters, f)
+		return next()
+	}
+}
+
 // ── Tenancy ───────────────────────────────────────────────────────────────────
 
 // TenantFunc extracts the tenant identifier from the request context.

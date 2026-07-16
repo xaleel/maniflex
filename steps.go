@@ -736,6 +736,29 @@ func (s *defaultSteps) enforceOptimisticLock(ctx *ServerContext, exec dbExec, mo
 	return exec, own, s.checkOptimisticLock(ctx, exec, model, ifMatch)
 }
 
+// ensureScopeTx puts the request on a transaction, so that a scope check and the
+// write it authorises are one unit and the row cannot leave scope in between —
+// the same bargain enforceOptimisticLock strikes for If-Match.
+//
+// It joins the request's own transaction when it has one, in which case the
+// returned Tx is nil and the caller must neither commit nor roll it back.
+// Otherwise it opens one and hands the caller ownership of it.
+func (s *defaultSteps) ensureScopeTx(ctx *ServerContext, exec dbExec) (dbExec, Tx, error) {
+	if ctx.Tx != nil {
+		return exec, nil, nil
+	}
+	// beginTx, not BeginTx: this is the framework's own transaction on the CRUD
+	// path, and the public one wraps what it returns under an ActionScope. A CRUD
+	// request never carries a scope today, but a guard that depends on that
+	// staying true is a trap for whoever changes it.
+	tx, err := ctx.beginTx(ctx.Ctx, nil)
+	if err != nil {
+		return exec, nil, err
+	}
+	ctx.Tx = tx
+	return dbExec{adapter: exec.adapter, tx: tx}, tx, nil
+}
+
 // enforceWriteScope refuses an update or delete of a record that the request's
 // server-imposed filters exclude.
 //
@@ -772,23 +795,9 @@ func (s *defaultSteps) enforceWriteScope(ctx *ServerContext, exec dbExec, model 
 		return exec, nil, nil // nothing imposed — no read, no transaction
 	}
 
-	// The check and the write must be one unit, or the row can move out of scope
-	// between them and the write still lands. Join the request's transaction when
-	// it has one, else open one for the rest of the step — the same bargain
-	// enforceOptimisticLock strikes for If-Match.
-	var own Tx
-	if ctx.Tx == nil {
-		// beginTx, not BeginTx: this is the framework's own transaction on the
-		// CRUD path, and the public one refuses under an ActionScope. A CRUD
-		// request never carries one today, but a guard that depends on that
-		// staying true is a trap for whoever changes it.
-		tx, err := ctx.beginTx(ctx.Ctx, nil)
-		if err != nil {
-			return exec, nil, err
-		}
-		own = tx
-		ctx.Tx = tx
-		exec = dbExec{adapter: exec.adapter, tx: tx}
+	exec, own, err := s.ensureScopeTx(ctx, exec)
+	if err != nil {
+		return exec, own, err
 	}
 
 	// Page/Limit are set because a zero Limit means "no rows" to the adapter;
@@ -808,6 +817,127 @@ func (s *defaultSteps) enforceWriteScope(ctx *ServerContext, exec dbExec, model 
 		return exec, own, err
 	}
 	return exec, own, nil
+}
+
+// enforceParentScope refuses a write whose parent foreign key points outside the
+// request's scope.
+//
+// A nested forced filter — what db.ForceFilterVia builds — scopes a model that
+// carries no column to scope by, through the column its BelongsTo parent does:
+// "a DamagedItem is yours if its Item is yours". The read path joins the parent
+// and applies the predicate, and enforceWriteScope reads the row back through
+// those same filters, so an update or delete of another tenant's child is
+// already the 404 it should be.
+//
+// Neither of them looks at the foreign key itself, and the foreign key is what
+// the whole scope hangs from — while being the one part of it the client
+// supplies. On a create there is no row to read back, so nothing examines item_id
+// at all and POST {"item_id": "<another tenant's>"} lands a row under their
+// parent. On an update the row read back is the one the *old* item_id points at,
+// so a PATCH that rewrites item_id passes a check of where the row used to be and
+// then moves it somewhere else. Either way the child ends up under a parent the
+// caller cannot see, and since the child's scope is read through that parent, so
+// does the child: the owner cannot see it, and the caller who planted it can.
+//
+// So the parent the write names is read through the scope's own predicate, and a
+// miss is the same 404 a scoped read of that parent would give. Only a scope that
+// runs through a parent pays for it: a flat forced filter names a column on the
+// row itself, which is checked where it is written, not through a join.
+func (s *defaultSteps) enforceParentScope(ctx *ServerContext, exec dbExec, model *ModelMeta) (dbExec, Tx, error) {
+	if ctx.Operation != OpCreate && ctx.Operation != OpUpdate {
+		return exec, nil, nil
+	}
+	if ctx.Query == nil {
+		return exec, nil, nil
+	}
+	nested := nestedForcedFilters(ctx.Query.Filters)
+	if len(nested) == 0 {
+		return exec, nil, nil // nothing scoped through a parent — no read, no transaction
+	}
+
+	var own Tx
+	for _, f := range nested {
+		var err error
+		exec, own, err = s.checkParentInScope(ctx, exec, model, f, own)
+		if err != nil || ctx.Response != nil {
+			return exec, own, err
+		}
+	}
+	return exec, own, nil
+}
+
+// checkParentInScope enforces one nested forced filter against the parent this
+// write names. own carries the transaction an earlier filter in the same sweep
+// opened, so several scopes on one model share one.
+func (s *defaultSteps) checkParentInScope(ctx *ServerContext, exec dbExec, model *ModelMeta,
+	f *FilterExpr, own Tx,
+) (dbExec, Tx, error) {
+	parent, ok := s.reg.Get(f.RelationModel)
+	if !ok {
+		// Fail closed. The filter names a parent the registry does not have, so the
+		// scope cannot be checked — and an unenforceable scope must stop the
+		// request, not be assumed satisfied.
+		return exec, own, fmt.Errorf(
+			"maniflex: the scope on %s.%s targets model %q, which is not registered",
+			model.Name, f.RelationKey, f.RelationModel)
+	}
+
+	fkID, present := s.writtenFK(ctx, model, f.RelationFK)
+	switch {
+	case !present && ctx.Operation == OpUpdate:
+		// The update leaves the foreign key alone, so it cannot move the row out of
+		// scope, and enforceWriteScope has already read the row itself back through
+		// this same filter.
+		return exec, own, nil
+	case fkID == "":
+		// A child with no parent satisfies no scope that lives on the parent: the
+		// join finds nothing, so the row would be invisible to the very caller who
+		// created it. Refusing is the honest answer; writing it is not.
+		ctx.Abort(http.StatusUnprocessableEntity, "VALIDATION_ERROR", fmt.Sprintf(
+			"%s.%s is required: it is what scopes this record, which carries no scope of its own",
+			model.Name, f.RelationFK))
+		return exec, own, nil
+	}
+
+	if own == nil {
+		var err error
+		if exec, own, err = s.ensureScopeTx(ctx, exec); err != nil {
+			return exec, own, err
+		}
+	}
+
+	// A flat filter on the parent's own table now — the join is what made the
+	// column reachable from the child, and we are reading the parent directly.
+	scoped := &QueryParams{Page: 1, Limit: 1, Filters: []*FilterExpr{{
+		Field: f.NestedField, Operator: f.Operator, Value: f.Value,
+	}}}
+	if _, err := exec.FindByID(ctx.Ctx, parent, fkID, scoped); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// The parent's own 404, verbatim: a caller who cannot read that parent
+			// learns exactly what a read of it would have told them, and no more.
+			ctx.Abort(http.StatusNotFound, "NOT_FOUND",
+				fmt.Sprintf("%s with id %q not found", parent.Name, fkID))
+			return exec, own, nil
+		}
+		return exec, own, err
+	}
+	return exec, own, nil
+}
+
+// writtenFK returns the foreign-key value this write will store in fkColumn, and
+// whether the write sets it at all. A PATCH that does not mention the column
+// reports false — the distinction matters, because "not written" leaves the row
+// where it is while "written empty" moves it out of every scope.
+func (s *defaultSteps) writtenFK(ctx *ServerContext, model *ModelMeta, fkColumn string) (string, bool) {
+	fk := model.FieldByDBName(fkColumn)
+	if fk == nil {
+		return "", false
+	}
+	v, ok := ctx.Field(fk.Tags.JSONName)
+	if !ok || v == nil {
+		return "", false
+	}
+	return strings.TrimSpace(fmt.Sprint(v)), true
 }
 
 // checkOptimisticLock re-reads the current record under a row lock, computes its
@@ -1005,6 +1135,18 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 		ctx.Logger().Debug("DB step using active transaction")
 	}
 
+	// Every filter the request carries is now final: the URL's, which were parsed
+	// and so have a known operator, and every one a middleware appended, which was
+	// built in Go and has whatever operator was typed. An operator no adapter
+	// implements used to be dropped from the WHERE clause, which for a forced
+	// filter meant the scope silently did not exist — see validateFilterOperators.
+	if ctx.Query != nil {
+		if err := validateFilterOperators(ctx.Query.Filters); err != nil {
+			ctx.Abort(http.StatusInternalServerError, "INVALID_FILTER", err.Error())
+			return nil
+		}
+	}
+
 	// Route through the active transaction when one is set, so all DB
 	// operations within this request use the same connection and isolation.
 	exec := dbExec{adapter: adapter, tx: ctx.Tx}
@@ -1079,6 +1221,24 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 	}
 	if ctx.Response != nil {
 		return nil // 404 was set — the record is out of scope
+	}
+
+	// A scope that runs through a parent (db.ForceFilterVia) hangs off a foreign
+	// key the client supplies, and neither the check above nor the read path looks
+	// at it: a create names a parent nothing has read, and an update can rewrite
+	// the key after the row was checked where it used to be. Same transaction, same
+	// fold — see enforceParentScope.
+	var parentTx Tx
+	var parentErr error
+	exec, parentTx, parentErr = s.enforceParentScope(ctx, exec, model)
+	if parentTx != nil {
+		ownTx = parentTx
+	}
+	if parentErr != nil {
+		return parentErr
+	}
+	if ctx.Response != nil {
+		return nil // 404/422 was set — the parent is out of scope, or absent
 	}
 
 	// Build the DB-column-keyed write map. With the body-mutating middleware

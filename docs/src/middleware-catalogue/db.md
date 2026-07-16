@@ -36,6 +36,76 @@ row** rather than **which rows were asked for**, set `Forced: true` on it; that 
 what carries it onto updates and deletes. `ForceFilter` and `Tenancy` set it for
 you.
 
+Use the `maniflex.Op*` constants for `Operator`. It's a bare string type, and a
+hand-built filter is never parsed — only filters arriving over HTTP are — so
+`Operator: "equals"` compiles and boots, and until v0.2.3 it produced a scope that
+silently matched every row. An operator no adapter implements is now refused with
+an error naming it, and the adapters render it as a false predicate rather than a
+true one, so a filter reaching one by some other path matches nothing instead of
+everything. `maniflex.FilterOperator.Valid()` reports whether an operator is one
+the query builder implements.
+
+### `ForceFilterVia`
+
+`ForceFilter` maps a field to a value, which needs the model to carry that field.
+A child table often doesn't: a `DamagedItem` has an `item_id` and nothing else,
+and whether it's yours is a fact about its `Item`. `ForceFilterVia` scopes such a
+model through the column its parent carries:
+
+```go
+// A DamagedItem is the caller's if its Item is
+server.Pipeline.DB.Register(
+    db.ForceFilterVia("item", "owner_id", func(ctx *maniflex.ServerContext) any {
+        return ctx.Auth.Claims["owner_id"]
+    }),
+    maniflex.ForModel("DamagedItem"),
+)
+```
+
+The first argument names the relation, in the same vocabulary a nested `?filter=`
+uses (`?filter=author.status:neq:banned` → `author`); the second names a column on
+the parent, by JSON or DB name. The relation must be a `BelongsTo` — the join needs
+a foreign key on this row pointing at the one row that owns it, which is what a
+`HasMany` doesn't have.
+
+The alternative is to denormalise `owner_id` onto every child — a schema change
+plus a standing obligation to keep it in step, on exactly the tables whose scoping
+is easiest to get wrong — or to hand-write the predicate, which is what
+declarative scoping exists to replace.
+
+Reads join the parent and apply the predicate. Updates and deletes read the row
+back through it and answer `404` on a miss, exactly as they do for `ForceFilter`.
+
+**Creates are scoped too, and they have to be.** The foreign key is what the whole
+scope hangs from, and it's the one part of it the client supplies. On a create
+there's no row to read back, so without a check nothing looks at `item_id` at all
+and `POST {"item_id": "<another tenant's>"}` lands a row under their parent — where
+they can see it and you can't. On an update the row read back is the one the *old*
+`item_id` points at, so a `PATCH` that rewrites the key passes a check of where the
+row used to be and then moves it somewhere else. So the parent a write names is
+read through the scope's own predicate first, and a miss is the same `404` a scoped
+read of that parent gives. A create that names no parent at all is refused with
+`422`: the join would find nothing, so the row would be invisible to whoever
+created it.
+
+That parent read is the only added cost, and only a scope that runs through a
+parent pays it.
+
+There's no `TenancyVia`, because `Tenancy` is `ForceFilter` plus stamping the
+tenant column onto writes — and the whole premise here is a model with no such
+column to stamp. Checking the parent is what takes its place.
+
+> **Actions:** `ForceFilterVia` registers on the DB step, so like every other
+> DB-step middleware it doesn't run for a custom `Action` — see
+> [Scoping Actions](#scoping-actions-tenancyaction--forcefilteraction). There's no
+> `ForceFilterViaAction`: an `ActionScope`'s filters apply to whatever model the
+> handler touches, while a `Via` scope is resolved against one specific model's
+> relations, and an action runs on a synthetic model with none. For a single-model
+> action, build the nested `FilterExpr` by hand (`IsNested`, `RelationKey`,
+> `RelationTable`, `RelationFK`, `NestedField`, `Forced`) and pass it to
+> `ctx.SetActionScope`. `ctx.ViaFilter` — the resolver `ForceFilterVia` is built
+> on — reports this rather than guessing if you call it from an action.
+
 ### `Tenancy`
 
 A specialised `ForceFilter` for the common multi-tenant case. Reads the tenant
@@ -263,7 +333,7 @@ cache.
 
 ## Ordering
 
-Row-level scopers (`ForceFilter`, `Tenancy`) must run **Before** the default DB
-step — the default position — so the filter is in place when the SELECT or
-UPDATE runs. Post-write hooks must run **After**, so they observe the result.
+Row-level scopers (`ForceFilter`, `ForceFilterVia`, `Tenancy`) must run **Before**
+the default DB step — the default position — so the filter is in place when the
+SELECT or UPDATE runs. Post-write hooks must run **After**, so they observe the result.
 The package's defaults follow this; only change them if you know why.

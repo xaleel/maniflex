@@ -1637,7 +1637,16 @@ func buildCond(col string, op maniflex.FilterOperator, val any, driver maniflex.
 	case maniflex.OpBetween:
 		return betweenCond(col, val, p)
 	}
-	return "1=1"
+	// Fail closed. An operator this switch does not implement cannot be turned
+	// into a predicate, and the choice is between a condition that matches nothing
+	// and one that matches everything. Matching everything deletes the filter: a
+	// list returns the whole table, and a forced filter — a tenant scope — stops
+	// scoping, on reads and on the writes that read back through it. Matching
+	// nothing is wrong too, but it is wrong in the direction that shows up on the
+	// first request rather than the first breach. maniflex's DB step rejects such
+	// a filter outright (validateFilterOperators); this is the backstop for the
+	// paths that do not run it, and for a filter built after it ran.
+	return "1=0"
 }
 
 // substringCond builds the condition for contains / starts_with / ends_with: a
@@ -1656,12 +1665,16 @@ func substringCond(col string, op maniflex.FilterOperator, val any, driver manif
 }
 
 // betweenCond expands a "lo,hi" value into "col >= lo AND col <= hi". The two
-// bounds are validated to be present upstream in ParseFilterParam; a malformed
-// value here degrades to a no-op rather than emitting broken SQL.
+// bounds are validated to be present upstream in ParseFilterParam, so only a
+// hand-built FilterExpr reaches here malformed; it degrades to a false predicate
+// rather than emitting broken SQL. False, not true, for the reason buildCond
+// gives: a between with one bound is a filter whose author meant to exclude
+// something, and answering "everything matches" is the one reading that cannot
+// be right.
 func betweenCond(col string, val any, p *ph) string {
 	vals := maniflex.SplitCSV(fmt.Sprint(val))
 	if len(vals) != 2 {
-		return "1=1"
+		return "1=0"
 	}
 	return fmt.Sprintf("(%s >= %s AND %s <= %s)", col, p.add(vals[0]), col, p.add(vals[1]))
 }

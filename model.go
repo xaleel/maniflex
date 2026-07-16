@@ -332,6 +332,29 @@ func (m *ModelMeta) Scheduled() []ScheduledSpec { return m.scheduled }
 // HasScheduled reports whether the model declares any valid scheduled field.
 func (m *ModelMeta) HasScheduled() bool { return len(m.scheduled) > 0 }
 
+// rejectHiddenRequired refuses a field tagged both hidden and required. The two
+// directives contradict: hidden keeps the client from sending the field (it
+// implies readonly, so the write path strips it), required insists the client
+// does. Nothing can satisfy that pair, and the runtime symptom actively
+// misleads — the NOT NULL column rejects every insert with "<field> is
+// required", including the requests that supplied it.
+//
+// writeonly is the directive for a value the client must supply but must never
+// read back — a password — so the error names it.
+func (m *ModelMeta) rejectHiddenRequired() error {
+	for _, f := range m.Fields {
+		if f.Tags.Hidden && f.Tags.Required && !f.Tags.WriteOnly {
+			return fmt.Errorf(
+				"maniflex: model %q field %q is both mfx:\"hidden\" and mfx:\"required\" — "+
+					"hidden means the client cannot send the field, so a required check on it "+
+					"can never pass. Use mfx:\"writeonly,required\" for a value the client must "+
+					"supply but never reads back, or drop required if the server populates it",
+				m.Name, f.Name)
+		}
+	}
+	return nil
+}
+
 func (m *ModelMeta) FieldByDBName(name string) *FieldMeta {
 	if i, ok := m.index().fieldByDB[name]; ok {
 		return &m.Fields[i]
@@ -510,6 +533,15 @@ func ScanModel(v any, cfg ModelConfig) (*ModelMeta, error) {
 						"the singleton row is auto-provisioned with column defaults", meta.Name, f.Name)
 			}
 		}
+	}
+
+	// hidden and required cannot both hold: hidden means the client may not send
+	// the field, required means it must. The write path strips it and the NOT NULL
+	// column then rejects the insert, so every create fails with "<field> is
+	// required" — including the ones that did send it. Same shape as the singleton
+	// case above: an unsatisfiable requirement, caught here rather than at runtime.
+	if err := meta.rejectHiddenRequired(); err != nil {
+		return nil, err
 	}
 
 	// Aggregate `lock_when:field=value` directives across the model's fields.

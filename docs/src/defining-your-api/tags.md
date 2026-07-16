@@ -91,6 +91,16 @@ Password string `json:"password" mfx:"required,writeonly"`
 InternalScore float64 `json:"internal_score" mfx:"hidden"`
 ```
 
+`hidden` therefore implies `readonly` — writing it out as `mfx:"hidden,readonly"`
+is allowed but redundant. If you want a field the client writes but never reads,
+that is `writeonly`, and spelling both (`mfx:"hidden,writeonly"`) leaves it
+writable: the explicit directive wins over the implication.
+
+`mfx:"hidden,required"` is **rejected at registration**. The two contradict —
+`hidden` stops the client sending the field, `required` insists it does — so no
+request could satisfy it. A value the client must supply but never reads back is
+`mfx:"writeonly,required"`.
+
 A field that is both `readonly` and not `hidden` is the opposite case: visible
 in responses, never accepted from the client.
 

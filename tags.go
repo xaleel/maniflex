@@ -26,7 +26,7 @@ type FieldTags struct {
 	Immutable  bool     // settable on create, rejected on update
 	Filterable bool     // may be used in ?filter= queries
 	Sortable   bool     // may be used in ?sort= queries
-	Hidden     bool     // excluded from all API responses
+	Hidden     bool     // excluded from all API responses; implies Readonly unless WriteOnly
 	WriteOnly  bool     // accepted on write, excluded from responses (e.g. password)
 	Unique     bool     // hint to DB adapter to add UNIQUE constraint
 	Index      bool     // mfx:"index" → CREATE INDEX on the column in AutoMigrate
@@ -287,6 +287,20 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 		case strings.HasPrefix(part, "scheduled;"):
 			parseScheduledTag(part, &t)
 		}
+	}
+
+	// hidden means the client may neither read nor write the field — that is what
+	// separates it from writeonly, which is the "client writes it, never reads it
+	// back" case (a password). Only the read half was ever enforced, so a bare
+	// hidden field was silently accepted from a request body: an `IsAdmin bool`
+	// tagged hidden could be set by anyone via mass assignment, and because the
+	// field is scrubbed from responses nothing showed that it had happened.
+	//
+	// Applied after the loop so tag order cannot matter, and skipped when
+	// writeonly is present: that is an explicit statement that the client does
+	// write the field, and an explicit directive outranks this implication.
+	if t.Hidden && !t.WriteOnly {
+		t.Readonly = true
 	}
 	return t
 }

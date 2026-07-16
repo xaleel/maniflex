@@ -81,6 +81,10 @@ type Options struct {
 	// TrustProxyHeaders sets Config.TrustProxyHeaders — when true, chi's RealIP
 	// derives RemoteAddr from X-Forwarded-For / X-Real-IP. Off by default.
 	TrustProxyHeaders bool
+	// Config, when non-nil, is handed the assembled maniflex.Config just before
+	// New. Use it for fields the convenience options above don't cover, rather
+	// than adding an option per field.
+	Config func(*maniflex.Config)
 }
 
 // NewServer creates a fully-initialised Maniflex server backed by an in-memory
@@ -113,7 +117,7 @@ func NewServer(t testing.TB, opts Options) *Server {
 		filesConfig = *opts.FilesConfig
 	}
 
-	server := maniflex.New(maniflex.Config{
+	cfg := maniflex.Config{
 		PathPrefix:         prefix,
 		DisableAutoMigrate: !autoMigrate,
 		PanicLogger:        opts.PanicLogger,
@@ -125,7 +129,12 @@ func NewServer(t testing.TB, opts Options) *Server {
 		FilesConfig:        filesConfig,
 		KeyProvider:        opts.KeyProvider,
 		TrustProxyHeaders:  opts.TrustProxyHeaders,
-	})
+	}
+	if opts.Config != nil {
+		opts.Config(&cfg)
+	}
+
+	server := maniflex.New(cfg)
 	server.MustRegister(models...)
 
 	var db maniflex.DBAdapter

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -51,10 +52,53 @@ type handlers struct {
 	// globalSearch is non-nil when Server.EnableGlobalSearch was called; it
 	// drives mounting and configuration of the built-in /search endpoint.
 	globalSearch *GlobalSearchConfig
+
+	// exportSem bounds concurrent exports (Config.MaxConcurrentExports). Each
+	// in-flight export holds one slot for its whole life. nil means no limit.
+	exportSem chan struct{}
 }
 
 func newHandlers(p *Pipeline, s *defaultSteps, cfg *Config) *handlers {
-	return &handlers{pipeline: p, steps: s, cfg: cfg}
+	h := &handlers{pipeline: p, steps: s, cfg: cfg}
+	// ApplyDefaults has already turned 0 into DefaultMaxConcurrentExports, so a
+	// non-positive value here is the caller explicitly asking for no limit.
+	if n := cfg.MaxConcurrentExports; n > 0 {
+		h.exportSem = make(chan struct{}, n)
+	}
+	return h
+}
+
+// acquireExportSlot takes a slot from the export limiter, returning the release
+// func and whether a slot was free. It does not wait: a caller that would have
+// to queue is better told to come back than left holding a connection open for
+// an unbounded time behind exports that are themselves slow by nature.
+// The returned release func must be called exactly once, which is why every
+// caller defers it.
+func (h *handlers) acquireExportSlot() (func(), bool) {
+	if h.exportSem == nil {
+		return func() {}, true // no limit configured — nothing to release
+	}
+	select {
+	case h.exportSem <- struct{}{}:
+		return func() { <-h.exportSem }, true
+	default:
+		return nil, false
+	}
+}
+
+// exportBusyRetryAfter is what a rejected export is told to wait. Exports are
+// seconds-to-minutes long, so a sub-second retry would just spin.
+const exportBusyRetryAfter = 30
+
+// writeExportBusy answers a request that found every export slot taken. It is
+// written here rather than through ctx.Abort because the point of the limit is
+// to refuse before the pipeline — and its DB read — runs at all.
+func writeExportBusy(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Retry-After", strconv.Itoa(exportBusyRetryAfter))
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = io.WriteString(w,
+		`{"error":{"code":"EXPORT_BUSY","message":"too many concurrent exports; retry shortly"}}`)
 }
 
 // buildContext constructs a ServerContext for a single request and returns a
@@ -288,8 +332,21 @@ func (h *handlers) SingletonUpdate(meta *ModelMeta) http.HandlerFunc {
 // Export returns a handler for GET /resource/export. Mounted only when the
 // model opts in via ModelConfig.ExportEnabled. The Response step detects
 // OpExport and streams CSV/XLSX directly.
+//
+// The export limiter is taken here, before the pipeline, because the memory it
+// protects is allocated by the DB step: an export reads its whole result set
+// (up to MaxExportRows records) into memory and holds it until the last byte is
+// written. Refusing at the door is the only point at which that allocation has
+// not already happened. The slot therefore spans the read and the write, and is
+// released when the request returns.
 func (h *handlers) Export(meta *ModelMeta) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		release, ok := h.acquireExportSlot()
+		if !ok {
+			writeExportBusy(w)
+			return
+		}
+		defer release()
 		h.dispatch(w, r, meta, OpExport)
 	}
 }

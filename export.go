@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"iter"
 	"net/http"
 	"strconv"
 	"strings"
@@ -53,7 +54,11 @@ func exportColumns(model *ModelMeta) []FieldMeta {
 
 // writeExportCSV writes `rows` as a CSV document with a header row to w.
 // Values are stringified via fmt.Sprintf("%v", v); nil becomes empty string.
-func writeExportCSV(w io.Writer, fields []FieldMeta, rows []map[string]any) error {
+//
+// rows is pulled one at a time rather than taken as a slice so that a row's map
+// is garbage the moment it has been written, instead of the whole export living
+// in memory at once.
+func writeExportCSV(w io.Writer, fields []FieldMeta, rows iter.Seq[map[string]any]) error {
 	cw := csv.NewWriter(w)
 	header := make([]string, len(fields))
 	for i, f := range fields {
@@ -63,13 +68,17 @@ func writeExportCSV(w io.Writer, fields []FieldMeta, rows []map[string]any) erro
 		return err
 	}
 	rec := make([]string, len(fields))
-	for _, row := range rows {
+	var werr error
+	for row := range rows {
 		for i, f := range fields {
 			rec[i] = formatCell(row[f.Tags.JSONName])
 		}
-		if err := cw.Write(rec); err != nil {
-			return err
+		if werr = cw.Write(rec); werr != nil {
+			break
 		}
+	}
+	if werr != nil {
+		return werr
 	}
 	cw.Flush()
 	return cw.Error()
@@ -101,7 +110,7 @@ func formatCell(v any) string {
 // the four XML members Excel needs to open the document. Cells are written
 // as inline strings (`t="inlineStr"`) so there's no shared-string table to
 // maintain — slightly larger files, much simpler writer.
-func writeExportXLSX(w io.Writer, fields []FieldMeta, rows []map[string]any) error {
+func writeExportXLSX(w io.Writer, fields []FieldMeta, rows iter.Seq[map[string]any]) error {
 	zw := zip.NewWriter(w)
 	defer zw.Close()
 
@@ -138,7 +147,7 @@ func writeZipFile(zw *zip.Writer, name, body string) error {
 	return err
 }
 
-func writeXLSXSheet(w io.Writer, fields []FieldMeta, rows []map[string]any) error {
+func writeXLSXSheet(w io.Writer, fields []FieldMeta, rows iter.Seq[map[string]any]) error {
 	// XML escape helper for inline strings.
 	esc := func(s string) string {
 		var sb strings.Builder
@@ -167,24 +176,36 @@ func writeXLSXSheet(w io.Writer, fields []FieldMeta, rows []map[string]any) erro
 	}
 
 	// Data rows (start at row 2).
-	for ri, row := range rows {
-		rowNum := ri + 2
-		if _, err := fmt.Fprintf(w, `<row r="%d">`, rowNum); err != nil {
-			return err
+	rowNum := 1
+	var werr error
+	for row := range rows {
+		rowNum++
+		if werr = writeXLSXRow(w, fields, row, rowNum, esc); werr != nil {
+			break
 		}
-		for ci, f := range fields {
-			cell := fmt.Sprintf(`<c r="%s%d" t="inlineStr"><is><t>%s</t></is></c>`,
-				columnLetter(ci), rowNum, esc(formatCell(row[f.Tags.JSONName])))
-			if _, err := io.WriteString(w, cell); err != nil {
-				return err
-			}
-		}
-		if _, err := io.WriteString(w, `</row>`); err != nil {
-			return err
-		}
+	}
+	if werr != nil {
+		return werr
 	}
 
 	_, err := io.WriteString(w, `</sheetData></worksheet>`)
+	return err
+}
+
+func writeXLSXRow(w io.Writer, fields []FieldMeta, row map[string]any, rowNum int,
+	esc func(string) string,
+) error {
+	if _, err := fmt.Fprintf(w, `<row r="%d">`, rowNum); err != nil {
+		return err
+	}
+	for ci, f := range fields {
+		cell := fmt.Sprintf(`<c r="%s%d" t="inlineStr"><is><t>%s</t></is></c>`,
+			columnLetter(ci), rowNum, esc(formatCell(row[f.Tags.JSONName])))
+		if _, err := io.WriteString(w, cell); err != nil {
+			return err
+		}
+	}
+	_, err := io.WriteString(w, `</row>`)
 	return err
 }
 
@@ -206,7 +227,7 @@ func columnLetter(i int) string {
 // to lock them in before any body bytes flush (the csv.Writer buffers, so
 // without an explicit WriteHeader we'd be at the mercy of the Flush
 // timing and content-type sniffing), then writes the body.
-func streamExport(w http.ResponseWriter, modelName string, format ExportFormat, fields []FieldMeta, rows []map[string]any) error {
+func streamExport(w http.ResponseWriter, modelName string, format ExportFormat, fields []FieldMeta, rows iter.Seq[map[string]any]) error {
 	fname := fmt.Sprintf("%s-%s", strings.ToLower(modelName), time.Now().UTC().Format("20060102-150405"))
 	switch format {
 	case ExportFormatCSV:

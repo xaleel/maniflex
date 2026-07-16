@@ -198,6 +198,10 @@ const SingletonID = "singleton"
 // is unset.
 const DefaultMaxExportRows = 100_000
 
+// DefaultMaxConcurrentExports is the number of exports allowed to run at once
+// when Config.MaxConcurrentExports is unset.
+const DefaultMaxConcurrentExports = 4
+
 // Config is the top-level configuration passed to New().
 type Config struct {
 	// Port the HTTP server listens on. Default: 8080.
@@ -229,6 +233,27 @@ type Config struct {
 	// It exists so an app that configures StaticDir unconditionally can still
 	// flip serving off from an env var or flag without clearing the field.
 	StaticDisabled bool
+
+	// MaxConcurrentExports caps how many export requests may run at once across
+	// the whole server. 0 means DefaultMaxConcurrentExports (4); a negative value
+	// removes the limit.
+	//
+	// An export holds its entire result set in memory — up to the model's
+	// MaxExportRows (default 100,000) records — for as long as it takes to write
+	// the body to the client. MaxExportRows bounds the row count of one export
+	// but not how wide a row is, nor how many exports run together, so a handful
+	// of concurrent exports of a wide model is enough to exhaust the heap. This
+	// bounds the product: peak export memory is at most this many result sets.
+	//
+	// A request arriving when every slot is taken is rejected immediately with
+	// 503 EXPORT_BUSY and a Retry-After header rather than queued, so it fails
+	// fast instead of adding to the pile. The limit is server-wide, not
+	// per-model: the heap it protects is shared.
+	//
+	// The slot is taken before the pipeline runs, so it is held across the DB
+	// read and the write — the whole window the rows are live — and released
+	// when the request returns.
+	MaxConcurrentExports int
 
 	// TrustProxyHeaders controls whether the client IP is derived from the
 	// X-Forwarded-For / X-Real-IP request headers (via chi's RealIP middleware).
@@ -482,6 +507,14 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.HealthCheckDB && c.HealthTimeout == 0 {
 		c.HealthTimeout = 3 * time.Second
+	}
+	// An export holds its whole result set in memory, so concurrency multiplies
+	// the largest allocation the server makes. Unlike QueryTimeout below, this
+	// defaults rather than staying off: there is no configuration in which an
+	// unbounded number of them is what the caller wanted, and the ceiling is
+	// high enough not to be felt. Negative means unlimited.
+	if c.MaxConcurrentExports == 0 {
+		c.MaxConcurrentExports = DefaultMaxConcurrentExports
 	}
 	// QueryTimeout intentionally has no default — zero means disabled.
 	// Users opt in explicitly so a misconfigured timeout does not silently

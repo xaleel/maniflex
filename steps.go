@@ -1554,12 +1554,21 @@ func (s *defaultSteps) streamExportRows(ctx *ServerContext) {
 
 	model := ctx.Model
 	fields := exportColumns(model)
-	rows := make([]map[string]any, len(lr.Items))
-	for i, row := range lr.Items {
-		m := s.marshalRecord(model, row, ctx)
-		s.rewriteFileACL(ctx.Ctx, model, m)
-		applyComputed(ctx, model, row, m)
-		rows[i] = m
+
+	// Serialise each record only as the writer asks for it. Building the whole
+	// []map[string]any up front held a second copy of the entire result set —
+	// on top of the typed records — for the length of the write, though each row
+	// is used once and then never again. Now a row's map is garbage as soon as
+	// it has been written.
+	rows := func(yield func(map[string]any) bool) {
+		for _, rec := range lr.Items {
+			m := s.marshalRecord(model, rec, ctx)
+			s.rewriteFileACL(ctx.Ctx, model, m)
+			applyComputed(ctx, model, rec, m)
+			if !yield(m) {
+				return
+			}
+		}
 	}
 
 	if err := streamExport(ctx.Writer, model.Name, format, fields, rows); err != nil {

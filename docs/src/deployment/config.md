@@ -55,6 +55,19 @@ whole-request deadlines rather than idle deadlines:
 Set them when you know your request sizes and have no streaming endpoints. The
 header phase stays bounded by `ReadHeaderTimeout` either way.
 
+## Limits
+
+| Field | Default | Purpose |
+|---|---|---|
+| `MaxConcurrentExports` | `4` | how many `GET /:model/export` requests may run at once, server-wide; negative disables the limit |
+
+An export holds its entire result set in memory until the last byte reaches the
+client, so concurrency multiplies the largest allocation the server makes. The
+per-model `MaxExportRows` bounds one export's rows but not the row width nor the
+number in flight; this bounds the product. Requests over the limit are refused
+immediately with `503 EXPORT_BUSY` and a `Retry-After`, not queued. See
+[CSV / XLSX Export](../advanced-topics/export.md#concurrency-cap).
+
 ## Database
 
 | Field | Default | Purpose |

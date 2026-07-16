@@ -732,6 +732,76 @@ func (s *defaultSteps) enforceOptimisticLock(ctx *ServerContext, exec dbExec, mo
 	return exec, own, s.checkOptimisticLock(ctx, exec, model, ifMatch)
 }
 
+// enforceWriteScope refuses an update or delete of a record that the request's
+// server-imposed filters exclude.
+//
+// The adapter's write contract carries no filter — Update(ctx, model, id, record,
+// present) and Delete(ctx, model, id) against FindByID(ctx, model, id, q) — so a
+// FilterExpr that db.Tenancy or db.ForceFilter appended to ctx.Query.Filters had
+// no reader on the write path: the emitted SQL was DELETE FROM t WHERE id = ?.
+// Reads were scoped and writes were not, so any caller could update or delete a
+// row their own reads 404 on, given its id. With Tenancy that was worse than a
+// leak, because Tenancy also stamps the tenant column onto an update: the write
+// handed the row to the caller and the owner lost it.
+//
+// So the record is read back through the same filters first, and a miss is the
+// 404 the caller would have got had they tried to read it. Only filters marked
+// Forced count: a client's own ?filter= reaches Query.Filters on a PATCH too, and
+// it has never constrained a write — a stray query parameter turning a PATCH into
+// a 404 would be a surprise, and it is not what needed fixing.
+//
+// The read costs nothing when nothing is scoped, which is the common case: with
+// no forced filters this returns before touching the database.
+//
+// It returns the exec the rest of the DB step must use and the transaction this
+// step owns — nil when it joined an existing one, in which case the caller must
+// neither commit nor roll it back.
+func (s *defaultSteps) enforceWriteScope(ctx *ServerContext, exec dbExec, model *ModelMeta) (dbExec, Tx, error) {
+	if ctx.Operation != OpUpdate && ctx.Operation != OpDelete {
+		return exec, nil, nil
+	}
+	if ctx.Query == nil {
+		return exec, nil, nil
+	}
+	forced := forcedFilters(ctx.Query.Filters)
+	if len(forced) == 0 {
+		return exec, nil, nil // nothing imposed — no read, no transaction
+	}
+
+	// The check and the write must be one unit, or the row can move out of scope
+	// between them and the write still lands. Join the request's transaction when
+	// it has one, else open one for the rest of the step — the same bargain
+	// enforceOptimisticLock strikes for If-Match.
+	var own Tx
+	if ctx.Tx == nil {
+		tx, err := ctx.BeginTx(ctx.Ctx, nil)
+		if err != nil {
+			return exec, nil, err
+		}
+		own = tx
+		ctx.Tx = tx
+		exec = dbExec{adapter: exec.adapter, tx: tx}
+	}
+
+	// Page/Limit are set because a zero Limit means "no rows" to the adapter;
+	// Filters are the forced ones alone, deliberately not ctx.Query's includes,
+	// sorts or projection — this read exists only to answer "is this row in
+	// scope?".
+	scoped := &QueryParams{Page: 1, Limit: 1, Filters: forced}
+	if _, err := exec.FindByID(ctx.Ctx, model, ctx.ResourceID, scoped); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// Indistinguishable from a genuinely absent record, on purpose: a
+			// caller learning that a row exists but belongs to someone else is
+			// the same disclosure the scoped read already refuses them.
+			ctx.Abort(http.StatusNotFound, "NOT_FOUND",
+				fmt.Sprintf("%s with id %q not found", model.Name, ctx.ResourceID))
+			return exec, own, nil
+		}
+		return exec, own, err
+	}
+	return exec, own, nil
+}
+
 // checkOptimisticLock re-reads the current record under a row lock, computes its
 // ETag (MD5 of the JSON-mapped body — same algorithm as response.Cache), and
 // sets a 412 or 404 response on ctx when the client's If-Match value does not
@@ -978,6 +1048,29 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 	}
 	if ctx.Response != nil {
 		return nil // 412 or 404 was set
+	}
+
+	// Row-level scoping: a forced filter (db.Tenancy, db.ForceFilter) constrains
+	// reads through ctx.Query, but the adapter's Update/Delete take no filter, so
+	// without this the write reaches a row the same filter hides.
+	//
+	// Runs after the If-Match guard, and at most one of the two opens a
+	// transaction — whichever gets there first leaves ctx.Tx set, and the other
+	// joins it. Its tx folds into ownTx so there stays exactly one owner, one
+	// commit below, and one rollback in the defer above: a transaction opened
+	// here but committed nowhere would roll back at return and silently discard
+	// the very write it just authorised.
+	var scopeTx Tx
+	var scopeErr error
+	exec, scopeTx, scopeErr = s.enforceWriteScope(ctx, exec, model)
+	if scopeTx != nil {
+		ownTx = scopeTx
+	}
+	if scopeErr != nil {
+		return scopeErr
+	}
+	if ctx.Response != nil {
+		return nil // 404 was set — the record is out of scope
 	}
 
 	// Build the DB-column-keyed write map. With the body-mutating middleware

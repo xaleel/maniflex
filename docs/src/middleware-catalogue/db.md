@@ -20,6 +20,22 @@ server.Pipeline.DB.Register(
 )
 ```
 
+On a list or a read the filter goes into the query. On an update or a delete
+there is nowhere to put it — the adapter's `Update` and `Delete` are keyed by id
+alone — so the DB step reads the record back through the filter first and
+answers `404` if it does not match, indistinguishably from a record that is
+genuinely absent. The check and the write share one transaction, so the row
+cannot leave scope in between.
+
+That read is the only cost, and only a request carrying a forced filter pays it:
+a write with nothing scoped goes straight to the adapter as before. A client's
+own `?filter=` never constrains a write — only filters the server imposed do.
+
+If you build a `maniflex.FilterExpr` by hand and it expresses **who may touch the
+row** rather than **which rows were asked for**, set `Forced: true` on it; that is
+what carries it onto updates and deletes. `ForceFilter` and `Tenancy` set it for
+you.
+
 ### `Tenancy`
 
 A specialised `ForceFilter` for the common multi-tenant case. Reads the tenant
@@ -34,7 +50,11 @@ server.Pipeline.DB.Register(
 ```
 
 `Tenancy` also rewrites the `org_id` field on creates and updates so a tenant
-cannot place rows into another tenant's bucket.
+cannot place rows into another tenant's bucket. That rewrite is why the scoping
+on updates matters twice over: it stamps the caller's tenant onto whatever row
+the update reaches, so an update that reached the wrong row would not merely
+overwrite it — it would move it into the caller's tenant and leave the owner
+unable to see it at all.
 
 ## Request budgeting
 

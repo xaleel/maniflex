@@ -54,6 +54,7 @@ func ForceFilter(field string, fn ForceFilterFunc) maniflex.MiddlewareFunc {
 			Field:    field,
 			Operator: maniflex.OpEq,
 			Value:    val,
+			Forced:   true, // scopes updates and deletes too, not just reads
 		})
 		return next()
 	}
@@ -90,15 +91,21 @@ func Tenancy(tenantField string, fn TenantFunc) maniflex.MiddlewareFunc {
 		// OpUpdate when the field is marked immutable. The Validate step
 		// strips immutable fields from PATCH bodies before this middleware
 		// runs, so injecting it again would either undo that protection or
-		// produce a redundant write (depending on adapter behaviour). The
-		// filter we add below is what keeps cross-tenant writes honest.
+		// produce a redundant write (depending on adapter behaviour).
+		//
+		// Note this injection is why an unscoped cross-tenant update was not
+		// merely a leak: it stamped the caller's tenant onto a row that was not
+		// theirs, handing them the record and leaving the owner to 404 on it. The
+		// forced filter below is what stops the write reaching that row at all.
 		if ctx.Operation == maniflex.OpCreate ||
 			(ctx.Operation == maniflex.OpUpdate && !tenantFieldImmutable(ctx, tenantField)) {
 			// Write through to both ParsedBody and the typed record (ctx.Record).
 			ctx.SetField(tenantField, tenantID)
 		}
 
-		// On all operations: enforce the filter
+		// On all operations: enforce the filter. Forced marks it as a scope the
+		// server imposed, which is what carries it onto updates and deletes — a
+		// plain filter only ever constrained reads.
 		if ctx.Query == nil {
 			ctx.Query = &maniflex.QueryParams{Page: 1, Limit: 20}
 		}
@@ -106,6 +113,7 @@ func Tenancy(tenantField string, fn TenantFunc) maniflex.MiddlewareFunc {
 			Field:    tenantField,
 			Operator: maniflex.OpEq,
 			Value:    tenantID,
+			Forced:   true,
 		})
 
 		return next()

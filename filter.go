@@ -109,6 +109,35 @@ type FilterExpr struct {
 	// during parsing, so e.g. ?filter[0]=a&filter[0]=b is one OR group; the
 	// external contract is unchanged.
 	Group int
+
+	// Forced marks a filter the server imposed rather than one the client asked
+	// for — a tenant scope, an ownership scope, a soft-delete guard. It changes
+	// nothing about how the filter reads; it decides whether the filter also
+	// constrains an update or a delete.
+	//
+	// The distinction is necessary because both kinds share Query.Filters. A
+	// client's ?filter= must keep being ignored on a write (it always was, and a
+	// stray query parameter turning a PATCH into a 404 would be a surprise), while
+	// a server-imposed scope must be honoured there or a caller can update and
+	// delete rows the same filter hides from their reads.
+	//
+	// db.Tenancy and db.ForceFilter set it. Set it on a hand-built FilterExpr when
+	// the filter expresses who may touch the row rather than which rows were asked
+	// for; the DB step then refuses a write to a record the filter excludes.
+	Forced bool
+}
+
+// forcedFilters returns the server-imposed filters among fs, or nil when there
+// are none. nil is the overwhelmingly common case — no tenancy, nothing to
+// enforce — and is what lets the write path skip its scope check entirely.
+func forcedFilters(fs []*FilterExpr) []*FilterExpr {
+	var out []*FilterExpr
+	for _, f := range fs {
+		if f != nil && f.Forced {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // validateFilterGroups checks that all filters within the same OR group target

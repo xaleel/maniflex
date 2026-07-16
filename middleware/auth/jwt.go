@@ -380,8 +380,14 @@ func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFu
 
 		case maniflex.OpUpdate, maniflex.OpDelete, maniflex.OpRead:
 			// The adapter's update/delete are keyed by id alone (no query filter),
-			// so a forced filter cannot constrain a write. Fetch the target record
-			// and compare its owner field to the caller before the operation runs.
+			// so the ownership test cannot ride along on the write itself: fetch the
+			// target record and compare its owner field to the caller first.
+			//
+			// The DB step now runs the same shape of pre-flight for filters marked
+			// Forced (db.Tenancy, db.ForceFilter). RequireOwner keeps its own because
+			// it compares a field to the caller rather than imposing a filter, and
+			// because it must also cover OpRead — which a forced filter already
+			// scopes on its own.
 			if abortOwnershipMismatch(ctx, ownerField) {
 				return nil
 			}

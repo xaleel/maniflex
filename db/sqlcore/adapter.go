@@ -954,6 +954,19 @@ func (a *Adapter) FindByIDForUpdate(ctx context.Context, model *maniflex.ModelMe
 
 // ── FindMany ──────────────────────────────────────────────────────────────────
 
+// countQuerySQL builds the total-count query for an offset list request. It uses
+// COUNT(*), not COUNT(DISTINCT id): every join a list query can carry is 1:1, so no
+// join fans the base table out and a DISTINCT would only force a needless sort/hash
+// over the whole filtered set (PERF-1). Nested filters and sorts join a BelongsTo
+// relation on its primary key (any other kind is rejected at parse time), and the
+// SQLite FTS join matches one shadow row per base row on rowid. HasMany /
+// ManyToMany includes are loaded in separate queries and never joined here. If a
+// fan-out join is ever added to this query, the count must go back to COUNT(DISTINCT
+// <base>.id) — COUNT(*) would then count joined rows, not distinct base rows.
+func countQuerySQL(table, joinSQL, whereSQL string) string {
+	return fmt.Sprintf("SELECT COUNT(*) FROM %s%s%s", q(table), joinSQL, whereSQL)
+}
+
 func (a *Adapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp *maniflex.QueryParams) ([]any, int64, error) {
 	if model.GoType == nil {
 		results, total, err := a.findManyMap(ctx, model, qp)
@@ -977,10 +990,7 @@ func (a *Adapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp *m
 		countConds := allWhereConds(model, qp.Filters, a.driver, cp)
 		countConds = appendSearchCond(countConds, model, qp, a.driver, cp)
 		countWhere := condToSQL(countConds)
-		countQuery := fmt.Sprintf(
-			"SELECT COUNT(DISTINCT %s.%s) FROM %s%s%s",
-			q(model.TableName), q("id"), q(model.TableName), joinSQL, countWhere,
-		)
+		countQuery := countQuerySQL(model.TableName, joinSQL, countWhere)
 		if err := a.readDb.QueryRowContext(ctx, countQuery, cp.args...).Scan(&total); err != nil {
 			return nil, 0, fmt.Errorf("count: %w", err)
 		}
@@ -1035,10 +1045,7 @@ func (a *Adapter) findManyMap(ctx context.Context, model *maniflex.ModelMeta, qp
 		countConds := allWhereConds(model, qp.Filters, a.driver, cp)
 		countConds = appendSearchCond(countConds, model, qp, a.driver, cp)
 		countWhere := condToSQL(countConds)
-		countQuery := fmt.Sprintf(
-			"SELECT COUNT(DISTINCT %s.%s) FROM %s%s%s",
-			q(model.TableName), q("id"), q(model.TableName), joinSQL, countWhere,
-		)
+		countQuery := countQuerySQL(model.TableName, joinSQL, countWhere)
 		if err := a.readDb.QueryRowContext(ctx, countQuery, cp.args...).Scan(&total); err != nil {
 			return nil, 0, fmt.Errorf("count: %w", err)
 		}

@@ -244,10 +244,7 @@ func (t *txAdapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp 
 		countConds := allWhereConds(model, qp.Filters, t.driver, cp)
 		countConds = appendSearchCond(countConds, model, qp, t.driver, cp)
 		countWhere := condToSQL(countConds)
-		countQuery := fmt.Sprintf(
-			"SELECT COUNT(DISTINCT %s.%s) FROM %s%s%s",
-			q(model.TableName), q("id"), q(model.TableName), joinSQL, countWhere,
-		)
+		countQuery := countQuerySQL(model.TableName, joinSQL, countWhere)
 		if err := t.tx.QueryRowContext(ctx, countQuery, cp.args...).Scan(&total); err != nil {
 			return nil, 0, fmt.Errorf("tx count: %w", err)
 		}
@@ -299,10 +296,7 @@ func (t *txAdapter) findManyMap(ctx context.Context, model *maniflex.ModelMeta, 
 		countConds := allWhereConds(model, qp.Filters, t.driver, cp)
 		countConds = appendSearchCond(countConds, model, qp, t.driver, cp)
 		countWhere := condToSQL(countConds)
-		countQuery := fmt.Sprintf(
-			"SELECT COUNT(DISTINCT %s.%s) FROM %s%s%s",
-			q(model.TableName), q("id"), q(model.TableName), joinSQL, countWhere,
-		)
+		countQuery := countQuerySQL(model.TableName, joinSQL, countWhere)
 		if err := t.tx.QueryRowContext(ctx, countQuery, cp.args...).Scan(&total); err != nil {
 			return nil, 0, fmt.Errorf("tx count: %w", err)
 		}

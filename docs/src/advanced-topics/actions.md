@@ -264,11 +264,21 @@ inferred schemas when both are present.
 An action and a model cannot both own the same method + path. Registering an
 action at a path a model already owns (e.g. `GET /threads` when a model's table
 is `threads`) is rejected **at startup** with a clear panic, rather than letting
-chi silently mount two handlers:
+the router silently mount two handlers and serve whichever one it happens to
+match first:
 
 ```text
-panic: maniflex: action GET /threads conflicts with auto-generated route for model "Thread"
+panic: maniflex: action GET /threads would shadow the auto-generated collection route for model "Thread"
 ```
+
+The check covers every route a model mounts, not just the five CRUD ones: the
+`export` and `aggregate` endpoints, per-field attachment paths
+(`GET /{model}/{id}/{field}`), and a singleton's `GET` / `PATCH` on its bare path.
+A conflict is reported when the action resolves the same path **and** method as a
+model route — a path parameter's name is irrelevant (`GET /threads/{threadId}`
+collides with the read route just as `GET /threads/{id}` does), while a method the
+model does not serve at that path is free to take (`POST /threads/{id}` is fine —
+the item route has no `POST`).
 
 When you want to serve a model's collection path yourself — returning a custom
 shape, or composing several models — mark the model **headless** so it mounts no

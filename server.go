@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -918,13 +919,99 @@ func (c *Server) EnableGlobalSearch(cfg ...GlobalSearchConfig) {
 	c.oasSteps.globalSearch = &resolved
 }
 
-// checkActionConflict panics if cfg.Method+cfg.Path duplicates a model route.
+// routeShape is one auto-generated route: a human-readable kind (for the panic
+// message), the URL split into segments (a path parameter is kept as "{name}"),
+// and the HTTP methods mounted on it.
+type routeShape struct {
+	kind     string
+	segments []string
+	methods  []string
+}
+
+// modelRouteShapes returns the routes mountModel actually mounts for meta, so the
+// conflict check sees the same surface the router does. The old check knew only
+// the five CRUD routes, so an action shadowing /{model}/export, /{model}/aggregate,
+// an attachment path, or a singleton's PATCH sailed past it — and because each
+// model is mounted under its own sub-tree, the collision does not panic when the
+// router builds: it silently shadows, and the model's endpoint quietly stops
+// answering with no error anywhere (DX-7).
+//
+// Attachment routes are reserved whenever the model declares file fields, even
+// though they mount only once storage is configured: SetStorage may run after
+// Action(), so the path is claimed defensively rather than raced.
+func modelRouteShapes(meta *ModelMeta) []routeShape {
+	base := strings.TrimPrefix(meta.TableName, TABLE_NAME_PREFIX)
+
+	if meta.Config.Singleton {
+		// One row on the bare path: GET/PATCH, no id subtree, no POST/DELETE/list.
+		return []routeShape{{"singleton", []string{base}, []string{"GET", "PATCH", "HEAD", "OPTIONS"}}}
+	}
+
+	shapes := []routeShape{
+		{"collection", []string{base}, []string{"GET", "POST", "HEAD", "OPTIONS"}},
+		{"item", []string{base, "{id}"}, []string{"GET", "PATCH", "DELETE", "HEAD", "OPTIONS"}},
+	}
+	if meta.Config.ExportEnabled {
+		shapes = append(shapes, routeShape{"export", []string{base, "export"}, []string{"GET"}})
+	}
+	if meta.Config.AggregateEnabled {
+		shapes = append(shapes, routeShape{"aggregate", []string{base, "aggregate"}, []string{"GET"}})
+	}
+	for _, ff := range meta.FileFields() {
+		shapes = append(shapes, routeShape{"attachment", []string{base, "{id}", ff.Tags.JSONName}, []string{"GET"}})
+	}
+	return shapes
+}
+
+// pathSegments splits a URL path into its non-empty segments, so "/users/{id}/"
+// and "/users/{id}" both yield [users {id}].
+func pathSegments(p string) []string {
+	p = strings.Trim(p, "/")
+	if p == "" {
+		return nil
+	}
+	return strings.Split(p, "/")
+}
+
+// segIsWildcard reports whether a path segment is a chi parameter ("{id}") or the
+// catch-all ("*") rather than a literal.
+func segIsWildcard(s string) bool {
+	return s == "*" || (strings.HasPrefix(s, "{") && strings.HasSuffix(s, "}"))
+}
+
+// actionShadowsRoute reports whether an action at (method, segs) would resolve the
+// same requests as the model route `shape` and so silently shadow it. That needs
+// the same path structure — identical length, literals equal, and a parameter
+// aligned with a parameter (its name is irrelevant: the router keys on position,
+// not name) — AND a shared method. A parameter opposite a literal addresses a
+// different route; so do the model's other methods, since each model is mounted
+// under its own sub-tree and the router dispatches the untaken methods there. Both
+// facts were verified against the router's actual request routing, not assumed.
+func actionShadowsRoute(method string, segs []string, shape routeShape) bool {
+	if len(segs) != len(shape.segments) {
+		return false
+	}
+	for i := range segs {
+		a, m := segs[i], shape.segments[i]
+		if segIsWildcard(a) != segIsWildcard(m) {
+			return false // a parameter and a literal address different routes
+		}
+		if !segIsWildcard(a) && a != m {
+			return false // divergent literal — a different branch entirely
+		}
+	}
+	return slices.Contains(shape.methods, method)
+}
+
+// checkActionConflict panics if cfg.Method+cfg.Path collides with another action
+// or would shadow any route an auto-generated model mounts.
 func (c *Server) checkActionConflict(cfg ActionConfig) {
 	method := strings.ToUpper(cfg.Method)
-	norm := strings.TrimSuffix(cfg.Path, "/")
+	segs := pathSegments(cfg.Path)
 
 	// Reject a second action with the same method+path. chi would mount both and
 	// silently serve only the first, so surface it at registration instead.
+	norm := strings.TrimSuffix(cfg.Path, "/")
 	for _, existing := range c.actions {
 		if strings.ToUpper(existing.Method) == method && strings.TrimSuffix(existing.Path, "/") == norm {
 			panic(fmt.Sprintf("maniflex: duplicate action %s %s", method, cfg.Path))
@@ -937,13 +1024,12 @@ func (c *Server) checkActionConflict(cfg ActionConfig) {
 		if meta.Config.Headless {
 			continue
 		}
-		base := "/" + strings.TrimPrefix(meta.TableName, TABLE_NAME_PREFIX)
-		item := base + "/{id}"
-		if norm == base && (method == "GET" || method == "POST" || method == "HEAD" || method == "OPTIONS") {
-			panic(fmt.Sprintf("maniflex: action %s %s conflicts with auto-generated route for model %q", method, cfg.Path, meta.Name))
-		}
-		if norm == item && (method == "GET" || method == "PATCH" || method == "DELETE" || method == "HEAD" || method == "OPTIONS") {
-			panic(fmt.Sprintf("maniflex: action %s %s conflicts with auto-generated route for model %q", method, cfg.Path, meta.Name))
+		for _, shape := range modelRouteShapes(meta) {
+			if actionShadowsRoute(method, segs, shape) {
+				panic(fmt.Sprintf(
+					"maniflex: action %s %s would shadow the auto-generated %s route for model %q",
+					method, cfg.Path, shape.kind, meta.Name))
+			}
 		}
 	}
 }

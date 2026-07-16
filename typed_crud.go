@@ -113,6 +113,7 @@ func List[T any](ctx *ServerContext, q *QueryParams) ([]*T, error) {
 	if q.Page <= 0 {
 		q.Page = 1
 	}
+	q = ctx.scopedQuery(q) // ActionScope, when one is in force; a no-op otherwise
 	var items []any
 	if tx != nil {
 		items, _, err = tx.FindMany(ctx.Ctx, meta, q)
@@ -137,11 +138,12 @@ func Read[T any](ctx *ServerContext, id string) (*T, error) {
 	if err != nil {
 		return nil, err
 	}
+	q := ctx.scopedQuery(&QueryParams{})
 	var v any
 	if tx != nil {
-		v, err = tx.FindByID(ctx.Ctx, meta, id, &QueryParams{})
+		v, err = tx.FindByID(ctx.Ctx, meta, id, q)
 	} else {
-		v, err = a.FindByID(ctx.Ctx, meta, id, &QueryParams{})
+		v, err = a.FindByID(ctx.Ctx, meta, id, q)
 	}
 	if err != nil {
 		return nil, err
@@ -149,11 +151,68 @@ func Read[T any](ctx *ServerContext, id string) (*T, error) {
 	return decryptTypedResult[T](ctx, meta, v)
 }
 
+// stampScope writes the ActionScope's columns onto a record about to be created.
+// Unlike the accessor's map path there is no map to overwrite — the value has to
+// be set on the struct field the column resolves to.
+func stampScope(ctx *ServerContext, meta *ModelMeta, record any) error {
+	inject, err := ctx.actionScope.injectable()
+	if err != nil || len(inject) == 0 {
+		return err
+	}
+	rv := reflect.ValueOf(record)
+	if rv.Kind() != reflect.Pointer || rv.IsNil() {
+		return fmt.Errorf("maniflex: cannot apply %s to a nil record",
+			ctx.actionScope.scopeName())
+	}
+	rv = rv.Elem()
+	for col, v := range inject {
+		f := meta.FieldByDBName(col)
+		if f == nil {
+			return fmt.Errorf(
+				"maniflex: %s scopes column %q but model %q has no such column — the scope "+
+					"cannot be applied to this model",
+				ctx.actionScope.scopeName(), col, meta.Name)
+		}
+		if !assignField(rv.FieldByIndex(f.Index), v) {
+			return fmt.Errorf(
+				"maniflex: %s scopes column %q with a %T, which does not fit field %q of model %q",
+				ctx.actionScope.scopeName(), col, v, f.Name, meta.Name)
+		}
+	}
+	return nil
+}
+
+// typedInScope is the write counterpart of the scoped read for the generics:
+// Update and Delete are keyed by id alone, so the record is looked up through
+// the scope first and a miss is ErrNotFound — the same answer Read gives.
+func typedInScope(ctx *ServerContext, meta *ModelMeta, a DBAdapter, tx Tx, id string) error {
+	sf := ctx.scopeFilters()
+	if len(sf) == 0 {
+		return nil
+	}
+	q := &QueryParams{Page: 1, Limit: 1, Filters: sf}
+	var err error
+	if tx != nil {
+		_, err = tx.FindByID(ctx.Ctx, meta, id, q)
+	} else {
+		_, err = a.FindByID(ctx.Ctx, meta, id, q)
+	}
+	return err
+}
+
 // Create inserts record (a *T) and returns the stored representation, scanned
 // back into a field-populated *T.
+//
+// Under an ActionScope the scope's columns are stamped onto the record first,
+// overwriting whatever the caller set — a row created outside the scope would be
+// invisible to the caller that created it, and letting a caller choose the value
+// is exactly the placement the scope exists to prevent.
 func Create[T any](ctx *ServerContext, record *T) (*T, error) {
 	meta, a, tx, err := modelExec[T](ctx)
 	if err != nil {
+		return nil, err
+	}
+	if err := stampScope(ctx, meta, record); err != nil {
 		return nil, err
 	}
 	// Encrypted models write through the map bridge so mfx:"encrypted" fields are
@@ -199,6 +258,9 @@ func Update[T any](ctx *ServerContext, id string, record *T) (*T, error) {
 			return nil, err
 		}
 	}
+	if err := typedInScope(ctx, meta, a, tx, id); err != nil {
+		return nil, err
+	}
 	if tx != nil {
 		_, err = tx.Update(ctx.Ctx, meta, id, write, present)
 	} else {
@@ -211,10 +273,14 @@ func Update[T any](ctx *ServerContext, id string, record *T) (*T, error) {
 	return Read[T](ctx, id)
 }
 
-// Delete removes (or soft-deletes) the T identified by id.
+// Delete removes (or soft-deletes) the T identified by id. Under an ActionScope
+// a record outside the scope is ErrNotFound and nothing is deleted.
 func Delete[T any](ctx *ServerContext, id string) error {
 	meta, a, tx, err := modelExec[T](ctx)
 	if err != nil {
+		return err
+	}
+	if err := typedInScope(ctx, meta, a, tx, id); err != nil {
 		return err
 	}
 	if tx != nil {

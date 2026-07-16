@@ -56,11 +56,22 @@ and `Response` middleware do.
 > **DB-step middlewares don't cover actions.** Anything registered on
 > `Pipeline.DB` — including `db.RateLimit`, `db.AuditLog`, `db.ForceFilter`, and
 > `db.Tenancy` — is silently skipped for action routes. For an all-action service
-> this means zero rate limiting and zero audit records unless you wire them per
-> action. Use the action-flavoured variants in the action's own `Middleware`
-> list: `db.RateLimitAction(cfg)` (keys on the caller + method/path) and
+> this means zero rate limiting, zero audit records, and **no tenancy** unless you
+> wire them per action. Use the action-flavoured variants in the action's own
+> `Middleware` list: `db.RateLimitAction(cfg)` (keys on the caller + method/path),
 > `db.AuditLogAction(sink)` (records actor/resource/result from the action
-> context). Scope ownership by hand (e.g. a filter you apply in the handler).
+> context), and `db.TenancyAction(field, fn)` / `db.ForceFilterAction(field, fn)`
+> (row-level scoping — see
+> [Scoping Actions](../middleware-catalogue/db.md#scoping-actions-tenancyaction--forcefilteraction)).
+
+Under `db.TenancyAction` / `db.ForceFilterAction` the handler's database work is
+scoped through `ctx.GetModel`, the typed generics, `ctx.Aggregate` and
+`ctx.LockForUpdate` — and `ctx.RawQuery`, `ctx.RawExec`, `ctx.BeginTx`,
+`ctx.Search` and `ctx.RecursiveQuery` **refuse**, because a scope cannot be
+applied to them and running them anyway would return every tenant's rows.
+`ctx.Unscoped()` bypasses that deliberately where a path genuinely must. An
+action with no scope registered is unaffected: every path behaves as it always
+has.
 
 ## Per-action middleware
 

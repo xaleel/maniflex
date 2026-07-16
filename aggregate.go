@@ -78,6 +78,17 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	if !ok {
 		return nil, fmt.Errorf("maniflex: model %q is not registered", modelName)
 	}
+	// An ActionScope AND-s into the WHERE. An aggregate is a read like any other,
+	// and an unscoped one leaks across the scope in summary form — a per-tenant
+	// SUM computed over every tenant's rows is still a disclosure. Copied rather
+	// than appended in place so a caller reusing one AggregateQuery does not
+	// accumulate the scope on each call.
+	if sf := c.scopeFilters(); len(sf) > 0 {
+		merged := make([]*FilterExpr, 0, len(agg.Where)+len(sf))
+		merged = append(merged, agg.Where...)
+		merged = append(merged, sf...)
+		agg.Where = merged
+	}
 	if len(agg.Select) == 0 {
 		return nil, fmt.Errorf("maniflex: AggregateQuery.Select must contain at least one field")
 	}
@@ -186,7 +197,10 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 		whereSQL, groupBySQL, havingSQL, orderBySQL, limitSQL,
 	)
 
-	return c.RawQuery(query, pb.args...)
+	// rawQuery, not RawQuery: the public one refuses while an ActionScope is in
+	// force, and rightly — but this statement is the framework's own, and the
+	// scope has already been AND-ed into its WHERE above.
+	return c.rawQuery(query, pb.args...)
 }
 
 // aggregateExpr returns the SQL expression and resolved alias for one

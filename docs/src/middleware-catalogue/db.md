@@ -56,6 +56,80 @@ the update reaches, so an update that reached the wrong row would not merely
 overwrite it — it would move it into the caller's tenant and leave the owner
 unable to see it at all.
 
+### Scoping Actions: `TenancyAction` / `ForceFilterAction`
+
+`Tenancy` and `ForceFilter` register on the **DB step**, and a custom `Action`
+does not run it — its pipeline is `Auth → middleware → handler → Response`. Their
+only output is a filter on `ctx.Query`, which nothing in that chain reads, so
+registering them on the DB step does nothing at all for an Action, silently.
+
+Use the `Action` variants instead, in the action's own `Middleware` list, where
+they run after Auth and can read `ctx.Auth`:
+
+```go
+server.Action(maniflex.ActionConfig{
+    Method: "POST", Path: "/orders/{id}/refund",
+    Middleware: []maniflex.MiddlewareFunc{
+        auth.JWTAuth(secret),
+        db.TenancyAction("org_id", func(ctx *maniflex.ServerContext) string {
+            return ctx.Auth.Claims["org_id"].(string)
+        }),
+    },
+    Handler: refund,
+})
+```
+
+Inside that handler every DB path either applies the scope or refuses to run:
+
+| Path | Under a scope |
+|---|---|
+| `ctx.GetModel(name)` — List/Read/Create/Update/Delete | scoped |
+| `maniflex.List/Read/Create/Update/Delete[T]` | scoped |
+| `ctx.Aggregate` | scoped (AND-ed into `WHERE`) |
+| `ctx.LockForUpdate` | scoped |
+| `ctx.RawQuery`, `ctx.RawExec` | **refuses** |
+| `ctx.BeginTx` | **refuses** |
+| `ctx.Search`, `ctx.RecursiveQuery` | **refuses** |
+
+Reads see only matching rows. A create is stamped with the scope's values,
+overwriting whatever the caller supplied — a row created outside the scope would
+be invisible to the caller that created it. An update or delete of a record
+outside the scope returns `ErrNotFound`, the same answer the scoped read gives.
+
+**The refusals are the point.** Raw SQL is opaque to the framework, and a `Tx`
+speaks to the adapter directly, so neither can be scoped. Scoping the convenient
+paths and letting those leak in silence would put the guarantee in this page and
+not in the code — worse than no guarantee, because it would be trusted. Refusing
+means an action either honours the scope or fails at the first request that
+exercises it.
+
+When a path genuinely must step outside the scope — an audit query across
+tenants, a migration — say so:
+
+```go
+rows, err := ctx.Unscoped().RawQuery("SELECT ... FROM orders")
+```
+
+`ctx.Unscoped()` exposes `RawQuery`, `RawExec`, `BeginTx`, `GetModel` and
+`Search` with no scope applied. It is a distinct call rather than a flag so the
+bypass shows up at the call site, in the diff, and in a grep.
+
+Transactions still work under a scope — open one with `ctx.Unscoped().BeginTx`
+and the scoped paths inside it stay scoped, because they route through `ctx.Tx`
+and apply the scope themselves:
+
+```go
+tx, err := ctx.Unscoped().BeginTx(ctx.Ctx, nil)   // the handle is unscoped
+defer tx.Rollback()
+ctx.Tx = tx
+_, err = ctx.GetModel("Order").Update(id, patch)  // this is still scoped
+return tx.Commit()
+```
+
+The scope applies only to Actions. A generated CRUD route gets its scoping from
+the DB step, where `ctx.RawQuery` from an After-DB middleware is a normal thing
+to do and is not refused.
+
 ## Request budgeting
 
 ### `Paginate`

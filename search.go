@@ -84,6 +84,17 @@ func searchSyntheticModel() *ModelMeta { return &ModelMeta{Name: searchModelName
 // With Models empty it searches every ModelConfig.GlobalSearchable model — the
 // behaviour the built-in GET /search endpoint relies on.
 func (c *ServerContext) Search(opts SearchOptions) ([]SearchResult, error) {
+	// SearchOptions carries no per-model filters — it is a text query over a set
+	// of models — so there is nowhere to put an ActionScope, and a search that
+	// quietly returned every tenant's hits would be the leak the scope exists to
+	// prevent. Refuse rather than run unscoped.
+	if err := c.guardRaw("Search()"); err != nil {
+		return nil, err
+	}
+	return c.search(opts)
+}
+
+func (c *ServerContext) search(opts SearchOptions) ([]SearchResult, error) {
 	if c.reg == nil {
 		return nil, fmt.Errorf("maniflex: registry not available on this ServerContext")
 	}
@@ -162,7 +173,10 @@ func (c *ServerContext) searchModel(m *ModelMeta, query string, limit int, drive
 		}
 	}
 
-	rows, err := c.RawQuery(sql, pb.args...)
+	// rawQuery, not RawQuery: Search's own guard has already refused a scoped
+	// caller by this point (or Unscoped() let one through deliberately), so the
+	// public one would only re-refuse the framework's own statement.
+	rows, err := c.rawQuery(sql, pb.args...)
 	if err != nil {
 		return nil, fmt.Errorf("maniflex: search %q: %w", m.Name, err)
 	}

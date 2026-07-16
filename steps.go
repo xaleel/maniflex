@@ -721,7 +721,11 @@ func (s *defaultSteps) enforceOptimisticLock(ctx *ServerContext, exec dbExec, mo
 
 	var own Tx
 	if ctx.Tx == nil {
-		tx, err := ctx.BeginTx(ctx.Ctx, nil)
+		// beginTx, not BeginTx: this is the framework's own transaction on the
+		// CRUD path, and the public one refuses under an ActionScope. A CRUD
+		// request never carries one today, but a guard that depends on that
+		// staying true is a trap for whoever changes it.
+		tx, err := ctx.beginTx(ctx.Ctx, nil)
 		if err != nil {
 			return exec, nil, err
 		}
@@ -774,7 +778,11 @@ func (s *defaultSteps) enforceWriteScope(ctx *ServerContext, exec dbExec, model 
 	// enforceOptimisticLock strikes for If-Match.
 	var own Tx
 	if ctx.Tx == nil {
-		tx, err := ctx.BeginTx(ctx.Ctx, nil)
+		// beginTx, not BeginTx: this is the framework's own transaction on the
+		// CRUD path, and the public one refuses under an ActionScope. A CRUD
+		// request never carries one today, but a guard that depends on that
+		// staying true is a trap for whoever changes it.
+		tx, err := ctx.beginTx(ctx.Ctx, nil)
 		if err != nil {
 			return exec, nil, err
 		}

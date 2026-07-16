@@ -52,6 +52,13 @@ type RecursiveQuery struct {
 //	})
 //	// rows[0]["_depth"] == int64(0) is the root; rows[1..n] are descendants.
 func (c *ServerContext) RecursiveQuery(modelName string, q RecursiveQuery) ([]Row, error) {
+	// A recursive CTE walks the tree from an anchor row outwards; a scope filter
+	// applied to it would either be wrong (dropping the anchor's descendants that
+	// happen to sit outside the scope, silently truncating the tree) or
+	// misleading (applied only to the anchor). Refuse rather than guess.
+	if err := c.guardRaw("RecursiveQuery()"); err != nil {
+		return nil, err
+	}
 	meta, err := rqValidate(c, modelName, q)
 	if err != nil {
 		return nil, err
@@ -83,7 +90,8 @@ func (c *ServerContext) RecursiveQuery(modelName string, q RecursiveQuery) ([]Ro
 		table, table, joinCond, recursiveWhere,
 	)
 
-	rows, err := c.RawQuery(query, pb.args...)
+	// rawQuery: the scope guard above has already had its say on this call.
+	rows, err := c.rawQuery(query, pb.args...)
 	if err != nil {
 		return nil, err
 	}

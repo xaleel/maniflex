@@ -230,6 +230,12 @@ type ServerContext struct {
 	// reg is the model registry, used by QueryModel. Set by the handler.
 	reg RegistryAccessor
 
+	// actionScope is the row-level scope in force for a custom Action, set by
+	// db.TenancyAction / db.ForceFilterAction (see action_scope.go). nil — the
+	// case for every generated CRUD request, whose scoping the DB step owns —
+	// means every DB path behaves exactly as it always has.
+	actionScope *ActionScope
+
 	// keyProvider encrypts/decrypts mfx:"encrypted" fields for the non-pipeline
 	// access paths (typed maniflex.Create/Read and ctx.GetModel). The handler sets
 	// it from Config.KeyProvider; background contexts set it via SetKeyProvider.
@@ -506,7 +512,20 @@ func (c *ServerContext) requestAdapter() DBAdapter {
 	return c.adapter
 }
 
+// BeginTx opens a transaction on the request's adapter.
+//
+// It refuses while an ActionScope is in force: the returned Tx speaks to the
+// adapter directly, so nothing done through it can be scoped, and handing one
+// back would silently void the scope for everything that followed. Use the
+// scoped paths, or ctx.Unscoped().BeginTx to step outside deliberately.
 func (c *ServerContext) BeginTx(ctx context.Context, opts *TxOptions) (Tx, error) {
+	if err := c.guardRaw("BeginTx()"); err != nil {
+		return nil, err
+	}
+	return c.beginTx(ctx, opts)
+}
+
+func (c *ServerContext) beginTx(ctx context.Context, opts *TxOptions) (Tx, error) {
 	adapter := c.requestAdapter()
 	if adapter == nil {
 		return nil, ErrNoAdapter
@@ -534,7 +553,19 @@ func (c *ServerContext) BeginTx(ctx context.Context, opts *TxOptions) (Tx, error
 //
 // Placeholders are rebound to the adapter's dialect, so `?` works on both SQLite
 // and Postgres ($N). Never interpolate values directly into the query string.
+//
+// It refuses while an ActionScope is in force: the statement is opaque to the
+// framework, so the scope cannot be applied to it and running it anyway would
+// return every tenant's rows under a guarantee that says otherwise. Use the
+// scoped paths, or ctx.Unscoped().RawQuery to step outside deliberately.
 func (c *ServerContext) RawQuery(query string, args ...any) ([]Row, error) {
+	if err := c.guardRaw("RawQuery()"); err != nil {
+		return nil, err
+	}
+	return c.rawQuery(query, args...)
+}
+
+func (c *ServerContext) rawQuery(query string, args ...any) ([]Row, error) {
 	if c.Tx != nil {
 		rt, ok := c.Tx.(rawableT)
 		if !ok {
@@ -565,7 +596,18 @@ func (c *ServerContext) RawQuery(query string, args ...any) ([]Row, error) {
 // If a transaction is active but its Tx cannot run raw SQL, the call fails with
 // ErrRawNotSupportedInTx rather than quietly running outside the transaction —
 // where the write would commit on its own and survive the rollback.
+//
+// It refuses while an ActionScope is in force, for the same reason RawQuery does
+// — and a write is the case where it matters most. Use ctx.Unscoped().RawExec to
+// step outside deliberately.
 func (c *ServerContext) RawExec(query string, args ...any) (int64, error) {
+	if err := c.guardRaw("RawExec()"); err != nil {
+		return 0, err
+	}
+	return c.rawExec(query, args...)
+}
+
+func (c *ServerContext) rawExec(query string, args ...any) (int64, error) {
 	if c.Tx != nil {
 		rt, ok := c.Tx.(rawableT)
 		if !ok {
@@ -633,6 +675,12 @@ func (c *ServerContext) DriverType() DriverType {
 //	    }
 //	    return next()
 //	}, maniflex.ForModel("Dispense"), maniflex.ForOperation(maniflex.OpCreate))
+//
+// When an ActionScope is in force, a record outside it is ErrNotFound and no
+// lock is taken: FindByIDForUpdate is keyed by id alone and carries no filter,
+// so the scope is applied by looking the record up through it first. The lookup
+// runs inside the same transaction as the lock, so the row cannot leave the
+// scope between the two.
 func (c *ServerContext) LockForUpdate(modelName, id string) (map[string]any, error) {
 	if c.Tx == nil {
 		return nil, fmt.Errorf("maniflex: LockForUpdate requires an active transaction (ctx.Tx is nil)")
@@ -643,6 +691,12 @@ func (c *ServerContext) LockForUpdate(modelName, id string) (map[string]any, err
 	meta, ok := c.reg.Get(modelName)
 	if !ok {
 		return nil, fmt.Errorf("maniflex: model %q is not registered", modelName)
+	}
+	if sf := c.scopeFilters(); len(sf) > 0 {
+		if _, err := c.Tx.FindByID(c.Ctx, meta, id,
+			&QueryParams{Page: 1, Limit: 1, Filters: sf}); err != nil {
+			return nil, err
+		}
 	}
 	v, err := c.Tx.FindByIDForUpdate(c.Ctx, meta, id)
 	if err != nil || v == nil {
@@ -665,7 +719,16 @@ func (c *ServerContext) QueryModel(modelName string, q *QueryParams) ([]map[stri
 // CRUD operations on the accessor route through ctx.Tx when one is active.
 // Returns an error accessor that surfaces the lookup failure on first use when
 // the model name is not registered or the registry is unavailable.
+//
+// When an ActionScope is in force the accessor is scoped by it: reads see only
+// matching records, a create is stamped with the scope's values, and an update
+// or delete of a record outside it returns ErrNotFound — the same answer the
+// scoped read gives. ctx.Unscoped().GetModel returns an unscoped accessor.
 func (c *ServerContext) GetModel(modelName string) *ModelAccessor {
+	return c.getModel(modelName, c.actionScope)
+}
+
+func (c *ServerContext) getModel(modelName string, scope *ActionScope) *ModelAccessor {
 	if c.reg == nil {
 		return &ModelAccessor{err: fmt.Errorf("maniflex: registry not available on this ServerContext")}
 	}
@@ -688,18 +751,54 @@ func (c *ServerContext) GetModel(modelName string) *ModelAccessor {
 		exec:        dbExec{adapter: targetAdapter, tx: tx},
 		ctx:         c.Ctx,
 		keyProvider: c.keyProvider,
+		scope:       scope,
 	}
 }
 
 // ModelAccessor exposes the five standard CRUD operations for a single
 // registered model. Obtain one via ServerContext.GetModel. All methods route
 // through the active transaction (ctx.Tx) when one is set.
+//
+// When the accessor carries an ActionScope every method honours it — see
+// action_scope.go. A nil scope is the ordinary case and costs nothing.
 type ModelAccessor struct {
 	meta        *ModelMeta
 	exec        dbExec
 	ctx         context.Context
-	keyProvider KeyProvider // encrypts/decrypts mfx:"encrypted" fields off the pipeline
-	err         error       // set when GetModel could not resolve the model
+	keyProvider KeyProvider  // encrypts/decrypts mfx:"encrypted" fields off the pipeline
+	scope       *ActionScope // row-level scope from the Action's middleware; nil when unscoped
+	err         error        // set when GetModel could not resolve the model
+}
+
+// scoped returns q with the accessor's scope AND-ed in, leaving the caller's q
+// untouched. nil scope returns q as-is.
+func (a *ModelAccessor) scoped(q *QueryParams) *QueryParams {
+	if a.scope == nil || len(a.scope.Filters) == 0 {
+		return q
+	}
+	if q == nil {
+		q = &QueryParams{Page: 1, Limit: defaultLimit}
+	}
+	clone := *q
+	clone.Filters = make([]*FilterExpr, 0, len(q.Filters)+len(a.scope.Filters))
+	clone.Filters = append(clone.Filters, q.Filters...)
+	clone.Filters = append(clone.Filters, a.scope.Filters...)
+	return &clone
+}
+
+// inScope reports whether id names a record the scope admits. It is the write
+// counterpart of the scoped read: the adapter's Update and Delete are keyed by
+// id alone, so the only way to hold a write to a scope is to look the record up
+// through it first. A miss is ErrNotFound — the same answer the scoped read
+// gives for that id, so a caller learns nothing from the write they could not
+// learn from the read.
+func (a *ModelAccessor) inScope(id string) error {
+	if a.scope == nil || len(a.scope.Filters) == 0 {
+		return nil
+	}
+	_, err := a.exec.FindByID(a.ctx, a.meta, id,
+		&QueryParams{Page: 1, Limit: 1, Filters: a.scope.Filters})
+	return err
 }
 
 // List returns a page of records matching q. q may be nil (defaults to page 1,
@@ -711,7 +810,7 @@ func (a *ModelAccessor) List(q *QueryParams) ([]map[string]any, error) {
 	if q == nil {
 		q = &QueryParams{Page: 1, Limit: defaultLimit}
 	}
-	rows, _, err := a.exec.FindMany(a.ctx, a.meta, q)
+	rows, _, err := a.exec.FindMany(a.ctx, a.meta, a.scoped(q))
 	if err != nil {
 		return nil, err
 	}
@@ -729,7 +828,7 @@ func (a *ModelAccessor) Read(id string) (map[string]any, error) {
 	if a.err != nil {
 		return nil, a.err
 	}
-	row, err := a.exec.FindByID(a.ctx, a.meta, id, &QueryParams{})
+	row, err := a.exec.FindByID(a.ctx, a.meta, id, a.scoped(&QueryParams{}))
 	if err != nil {
 		return nil, err
 	}
@@ -741,9 +840,26 @@ func (a *ModelAccessor) Read(id string) (map[string]any, error) {
 
 // Create inserts a new record and returns the stored representation.
 // Returns *maniflex.ErrConstraint on unique/check violations.
+// A scope is stamped onto the record rather than checked: a create has no
+// existing row to test, and a row created outside the scope would be invisible
+// to the caller that made it. The stamp overwrites whatever the caller supplied
+// for those columns, which is what stops a caller placing a row in someone
+// else's scope — the same thing db.Tenancy does on the CRUD path.
 func (a *ModelAccessor) Create(data map[string]any) (map[string]any, error) {
 	if a.err != nil {
 		return nil, a.err
+	}
+	inject, err := a.scope.injectable()
+	if err != nil {
+		return nil, err
+	}
+	if len(inject) > 0 {
+		if data == nil {
+			data = make(map[string]any, len(inject))
+		}
+		for col, v := range inject {
+			data[col] = v
+		}
 	}
 	if err := encryptForWrite(a.ctx, a.keyProvider, a.meta, data); err != nil {
 		return nil, err
@@ -761,9 +877,14 @@ func (a *ModelAccessor) Create(data map[string]any) (map[string]any, error) {
 // Update applies a partial patch to the record identified by id and returns
 // the updated representation. Returns maniflex.ErrNotFound when absent.
 // Returns *maniflex.ErrConstraint on unique/check violations.
+// A scoped update of a record outside the scope returns ErrNotFound without
+// writing.
 func (a *ModelAccessor) Update(id string, data map[string]any) (map[string]any, error) {
 	if a.err != nil {
 		return nil, a.err
+	}
+	if err := a.inScope(id); err != nil {
+		return nil, err
 	}
 	if err := encryptForWrite(a.ctx, a.keyProvider, a.meta, data); err != nil {
 		return nil, err
@@ -779,10 +900,14 @@ func (a *ModelAccessor) Update(id string, data map[string]any) (map[string]any, 
 }
 
 // Delete removes (or soft-deletes) the record identified by id.
-// Returns maniflex.ErrNotFound when absent.
+// Returns maniflex.ErrNotFound when absent, and likewise when a scope is in
+// force and the record falls outside it.
 func (a *ModelAccessor) Delete(id string) error {
 	if a.err != nil {
 		return a.err
+	}
+	if err := a.inScope(id); err != nil {
+		return err
 	}
 	return a.exec.Delete(a.ctx, a.meta, id)
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -262,6 +263,23 @@ type ServerContext struct {
 	loggerOnce   sync.Once
 	cachedLogger *slog.Logger
 
+	// queryValues memoises the parsed URL query, built at most once by
+	// queryParams(). url.Values is rebuilt from the raw string on every
+	// URL.Query() call, so reading three parameters parsed it three times
+	// (PERF-4). Lazy, so a request that never reads one parses nothing; Once
+	// because the context is shared with ctx.GoBackground goroutines.
+	queryOnce   sync.Once
+	queryValues url.Values
+
+	// existingCols memoises the DB-column map of the record as it stands before
+	// this request's write, read at most once per request by
+	// defaultSteps.existingColumns. The file step asks for it once per file field
+	// being written, and each ask re-read the same row and rebuilt the same map
+	// (PERF-4). nil when there is no such row (create, missing id, read error) —
+	// callers treat that as "no previous value".
+	existingOnce sync.Once
+	existingCols map[string]any
+
 	// bg is the Server-owned background runner. Middleware uses
 	// GoBackground to schedule fire-and-forget work (audit writes, cache
 	// invalidations) that Shutdown waits on rather than abandoning. May be
@@ -440,8 +458,29 @@ func (c *ServerContext) URLParam(name string) string {
 // Convenience wrapper around ctx.Request.URL.Query().Get(name).
 //
 //	date := ctx.QueryParam("date")   // ?date=2026-05-04
+//
+// The query string is parsed on the first call and reused for the rest of the
+// request — url.Values is rebuilt from the raw string by every Query() call, so
+// asking for three parameters used to parse it three times (PERF-4). A request
+// that never asks for one parses nothing. Safe to call from any goroutine.
 func (c *ServerContext) QueryParam(name string) string {
-	return c.Request.URL.Query().Get(name)
+	return c.queryParams().Get(name)
+}
+
+// queryParams returns the request's parsed query string, parsing it at most once.
+// Nothing in the framework rewrites URL.RawQuery mid-request, so a single parse is
+// as current as a fresh one.
+func (c *ServerContext) queryParams() url.Values {
+	c.queryOnce.Do(func() {
+		if c.Request == nil || c.Request.URL == nil {
+			// A synthesised context (NewBackground, a hand-built test ctx) has no
+			// request to read; an empty set keeps QueryParam total.
+			c.queryValues = url.Values{}
+			return
+		}
+		c.queryValues = c.Request.URL.Query()
+	})
+	return c.queryValues
 }
 
 // BeginTx starts a transaction on the underlying adapter and returns the Tx

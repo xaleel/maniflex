@@ -315,11 +315,17 @@ func (h *handlers) Aggregate(meta *ModelMeta) http.HandlerFunc {
 // middleware apply. The handler parses the query, resolves the model set, runs
 // ctx.Search, and emits the merged hits under the standard {"data": ...} envelope.
 func (h *handlers) GlobalSearch(cfg GlobalSearchConfig) http.HandlerFunc {
+	// The GlobalSearchable set is fixed by the time this mounts — every model is
+	// registered and the registry is read-only from here on — so derive it once
+	// rather than per ?models= request, where it cost a fresh reg.All() slice under
+	// the registry RLock plus a map build (PERF-4).
+	allowed := globalSearchableModels(h.steps.reg)
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cleanup := h.buildContext(w, r, searchSyntheticModel(), OpSearch)
 		defer cleanup()
 
-		handler := func(ctx *ServerContext) error { return h.runGlobalSearch(ctx, cfg) }
+		handler := func(ctx *ServerContext) error { return h.runGlobalSearch(ctx, cfg, allowed) }
 
 		if err := h.pipeline.executeSearch(ctx, handler); err != nil {
 			ctx.cleanupOrphanedFiles()
@@ -334,7 +340,7 @@ func (h *handlers) GlobalSearch(cfg GlobalSearchConfig) http.HandlerFunc {
 // ctx.Search over the GlobalSearchable model set, and set ctx.Response. Returns a
 // non-nil error only on an unexpected ctx.Search failure (→ 500); all client
 // input problems call ctx.Abort and return nil.
-func (h *handlers) runGlobalSearch(ctx *ServerContext, cfg GlobalSearchConfig) error {
+func (h *handlers) runGlobalSearch(ctx *ServerContext, cfg GlobalSearchConfig, allowed map[string]bool) error {
 	q := strings.TrimSpace(ctx.QueryParam("q"))
 	if q == "" {
 		ctx.Abort(http.StatusBadRequest, "INVALID_QUERY", "search query (?q=) must not be empty")
@@ -345,7 +351,7 @@ func (h *handlers) runGlobalSearch(ctx *ServerContext, cfg GlobalSearchConfig) e
 	if !ok {
 		return nil // ctx.Abort already called
 	}
-	models, ok := parseSearchModels(ctx)
+	models, ok := parseSearchModels(ctx, allowed)
 	if !ok {
 		return nil // ctx.Abort already called
 	}
@@ -382,15 +388,15 @@ func parseSearchLimit(ctx *ServerContext, cfg GlobalSearchConfig) (int, bool) {
 }
 
 // parseSearchModels reads the optional ?models= CSV, validating every name
-// against the GlobalSearchable set. An empty/absent param returns (nil, true) so
-// ctx.Search falls back to all GlobalSearchable models. Returns (nil, false)
-// after calling ctx.Abort on an unknown/unexposed model.
-func parseSearchModels(ctx *ServerContext) ([]string, bool) {
+// against allowed — the GlobalSearchable set, computed once at mount. An
+// empty/absent param returns (nil, true) so ctx.Search falls back to all
+// GlobalSearchable models. Returns (nil, false) after calling ctx.Abort on an
+// unknown/unexposed model.
+func parseSearchModels(ctx *ServerContext, allowed map[string]bool) ([]string, bool) {
 	raw := ctx.QueryParam("models")
 	if raw == "" {
 		return nil, true
 	}
-	allowed := globalSearchableModels(ctx.reg)
 	var models []string
 	for name := range strings.SplitSeq(raw, ",") {
 		name = strings.TrimSpace(name)

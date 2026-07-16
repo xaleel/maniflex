@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -193,6 +194,12 @@ type ScheduledSpec struct {
 
 // ModelMeta holds all reflection-derived and user-supplied metadata for a
 // registered model. Built once at registration; treated as read-only afterwards.
+//
+// Fields and Relations are indexed by name to back the accessors below, so the
+// one mutation they do not tolerate is renaming an entry in place after it has
+// been looked up once — the index keys off DBName/JSONName/RelationKey/
+// RelatedModel and would keep resolving the old name. Appending is fine (that
+// is how resolveManyToMany adds its relations when the router is built).
 type ModelMeta struct {
 	Name       string
 	GoType     reflect.Type
@@ -241,6 +248,71 @@ type ModelMeta struct {
 	SearchFields []string
 
 	scheduled []ScheduledSpec // resolved mfx:"scheduled" fields (8.6)
+
+	// idx indexes Fields and Relations by the names the accessors below look
+	// them up by. It is built on first lookup rather than at registration so
+	// that a ModelMeta assembled by hand — the history model, a test fixture —
+	// is indexed on the same terms as a scanned one.
+	idx atomic.Pointer[modelIndex]
+}
+
+// modelIndex resolves a lookup name to a position in Fields or Relations. It
+// holds positions rather than pointers because both slices are appended to
+// after they are first indexed (resolveManyToMany adds relations when the
+// router is built), and an append that reallocates the backing array would
+// leave a stored pointer addressing the old one. A position stays valid.
+type modelIndex struct {
+	// The slice lengths this index was built from. index() compares them
+	// against the live lengths and rebuilds when either has grown, so an
+	// appender does not have to know the index exists.
+	nFields, nRelations int
+
+	fieldByDB   map[string]int
+	fieldByJSON map[string]int
+	relByKey    map[string]int
+	relByModel  map[string]int
+}
+
+// index returns the lookup index, building it if it is missing or has fallen
+// behind an append. Two callers racing here build equal indexes from the same
+// slices, so whichever store lands last is the one either would have produced.
+func (m *ModelMeta) index() *modelIndex {
+	ix := m.idx.Load()
+	if ix != nil && ix.nFields == len(m.Fields) && ix.nRelations == len(m.Relations) {
+		return ix
+	}
+	return m.buildIndex()
+}
+
+func (m *ModelMeta) buildIndex() *modelIndex {
+	ix := &modelIndex{
+		nFields:     len(m.Fields),
+		nRelations:  len(m.Relations),
+		fieldByDB:   make(map[string]int, len(m.Fields)),
+		fieldByJSON: make(map[string]int, len(m.Fields)),
+		relByKey:    make(map[string]int, len(m.Relations)),
+		relByModel:  make(map[string]int, len(m.Relations)),
+	}
+	for i := range m.Fields {
+		indexFirst(ix.fieldByDB, m.Fields[i].Tags.DBName, i)
+		indexFirst(ix.fieldByJSON, m.Fields[i].Tags.JSONName, i)
+	}
+	for i := range m.Relations {
+		indexFirst(ix.relByKey, m.Relations[i].RelationKey, i)
+		indexFirst(ix.relByModel, m.Relations[i].RelatedModel, i)
+	}
+	m.idx.Store(ix)
+	return ix
+}
+
+// indexFirst records pos under name only when name is new, so a duplicate name
+// resolves to the first entry declaring it — what a linear scan returns. A
+// model can carry two fields with the same DB column (an embed shadowing a
+// BaseModel one), and the rest of the framework is built around first-wins.
+func indexFirst(m map[string]int, name string, pos int) {
+	if _, seen := m[name]; !seen {
+		m[name] = pos
+	}
 }
 
 // ResolveAdapter returns the adapter to use for this model: the per-model
@@ -261,37 +333,29 @@ func (m *ModelMeta) Scheduled() []ScheduledSpec { return m.scheduled }
 func (m *ModelMeta) HasScheduled() bool { return len(m.scheduled) > 0 }
 
 func (m *ModelMeta) FieldByDBName(name string) *FieldMeta {
-	for i := range m.Fields {
-		if m.Fields[i].Tags.DBName == name {
-			return &m.Fields[i]
-		}
+	if i, ok := m.index().fieldByDB[name]; ok {
+		return &m.Fields[i]
 	}
 	return nil
 }
 
 func (m *ModelMeta) FieldByJSONName(name string) *FieldMeta {
-	for i := range m.Fields {
-		if m.Fields[i].Tags.JSONName == name {
-			return &m.Fields[i]
-		}
+	if i, ok := m.index().fieldByJSON[name]; ok {
+		return &m.Fields[i]
 	}
 	return nil
 }
 
 func (m *ModelMeta) RelationByKey(key string) *RelationMeta {
-	for i := range m.Relations {
-		if m.Relations[i].RelationKey == key {
-			return &m.Relations[i]
-		}
+	if i, ok := m.index().relByKey[key]; ok {
+		return &m.Relations[i]
 	}
 	return nil
 }
 
 func (m *ModelMeta) RelationByModel(name string) *RelationMeta {
-	for i := range m.Relations {
-		if m.Relations[i].RelatedModel == name {
-			return &m.Relations[i]
-		}
+	if i, ok := m.index().relByModel[name]; ok {
+		return &m.Relations[i]
 	}
 	return nil
 }

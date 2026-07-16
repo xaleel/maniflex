@@ -148,7 +148,7 @@ func LocaleResolver(opts LocaleOptions) MiddlewareFunc {
 		locale := ""
 
 		// 1. ?locale= query parameter
-		if q := ctx.Request.URL.Query().Get("locale"); q != "" {
+		if q := ctx.QueryParam("locale"); q != "" {
 			// The locale becomes a JSON-path key in filter/ORDER BY SQL, so it
 			// must be a well-formed identifier (SEC-2). When Supported is empty
 			// isSupported accepts any non-empty string, so isLocaleKey is what

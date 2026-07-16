@@ -102,7 +102,7 @@ func (s *defaultSteps) deserialize(ctx *ServerContext, next func() error) error 
 	// The parameter is "aggregate" rather than the shorter "q" because ?q= is the
 	// full-text search parameter, and this request runs as a list.
 	if ctx.aggregate {
-		spec := strings.TrimSpace(ctx.Request.URL.Query().Get("aggregate"))
+		spec := strings.TrimSpace(ctx.QueryParam("aggregate"))
 		if spec == "" {
 			msg := "aggregate query must be supplied as URL-encoded JSON in the ?aggregate= parameter"
 			if ctx.Request.ContentLength > 0 {
@@ -774,18 +774,40 @@ func (s *defaultSteps) checkOptimisticLock(ctx *ServerContext, exec dbExec, mode
 	return nil
 }
 
-// getOldFileKey reads the existing record to get the current file key value.
+// existingColumns returns the record as it stands before this request's write, as
+// a DB-column map, reading it at most once per request. nil when there is nothing
+// to read (no id, no adapter) or the read failed — callers treat both as "no
+// previous value", which is what the per-call read did on error too.
+//
+// The row cannot move underneath the memo: every caller runs before this request's
+// own write, and the value they want is precisely the pre-write one.
+func (s *defaultSteps) existingColumns(ctx *ServerContext) map[string]any {
+	ctx.existingOnce.Do(func() {
+		adapter := ctx.Model.ResolveAdapter(s.adapter)
+		if ctx.ResourceID == "" || adapter == nil {
+			return
+		}
+		existing, err := adapter.FindByID(ctx.Ctx, ctx.Model, ctx.ResourceID,
+			&QueryParams{Limit: 1, Page: 1})
+		if err != nil {
+			return
+		}
+		ctx.existingCols = recordToMap(ctx.Model, existing)
+	})
+	return ctx.existingCols
+}
+
+// getOldFileKey returns the current stored key for a file field, from the record as
+// it stands before this write. It used to issue its own FindByID plus recordToMap
+// on every call, and the file step calls it once per file field — so a model with
+// three auto_delete fields read the same row three times to pull three values out
+// of it (PERF-4).
 func (s *defaultSteps) getOldFileKey(ctx *ServerContext, field FieldMeta) (string, bool) {
-	adapter := ctx.Model.ResolveAdapter(s.adapter)
-	if ctx.ResourceID == "" || adapter == nil {
+	cols := s.existingColumns(ctx)
+	if cols == nil {
 		return "", false
 	}
-	existing, err := adapter.FindByID(ctx.Ctx, ctx.Model, ctx.ResourceID,
-		&QueryParams{Limit: 1, Page: 1})
-	if err != nil {
-		return "", false
-	}
-	oldKey, ok := recordToMap(ctx.Model, existing)[field.Tags.DBName].(string)
+	oldKey, ok := cols[field.Tags.DBName].(string)
 	return oldKey, ok
 }
 
@@ -1607,16 +1629,29 @@ func recordSourcedWrite(ctx *ServerContext, model *ModelMeta) bool {
 	if present == nil {
 		return false
 	}
-	bodyKeys := toDBMap(ctx.ParsedBody, model)
-	if len(present) != len(bodyKeys) {
-		return false
-	}
-	for k := range bodyKeys {
-		if _, ok := present[k]; !ok {
+	return bodyColumnsMatch(ctx.ParsedBody, model, present)
+}
+
+// bodyColumnsMatch reports whether the body names exactly the DB columns in
+// present. It walks the body's columns rather than materialising them: this decides
+// which source a write is read from on every create and update, and it only ever
+// needed the key set — building the whole map meant converting every value and
+// JSON-marshalling every locale field just to throw the result away, and on the
+// path where the answer is "no" the caller then built the very same map again
+// (PERF-4). The fallback map is now built once, by the caller that uses it.
+func bodyColumnsMatch(b *RequestBody, model *ModelMeta, present map[string]struct{}) bool {
+	n := 0
+	for _, f := range model.Fields {
+		if _, ok := b.Get(f.Tags.JSONName); !ok {
+			continue
+		}
+		if _, inPresent := present[f.Tags.DBName]; !inPresent {
 			return false
 		}
+		n++
 	}
-	return true
+	// Every body column is present; equal counts then mean the sets match exactly.
+	return n == len(present)
 }
 
 // toDBMap converts a JSON-keyed body map to a DB-column-keyed map.
@@ -1941,45 +1976,70 @@ func (s *defaultSteps) rewriteFileACL(goCtx context.Context, model *ModelMeta, r
 	}
 }
 
+// cast coerces one driver-supplied cell to the Go kind its model field declares.
+// It runs per field per row of every read, so it dispatches on the value with a
+// type assertion rather than reflect.TypeOf(value).Kind(): the assertion compares
+// the interface's type word, while TypeOf forces the value through the reflect
+// machinery for the same answer (PERF-4). _type is already a reflect.Type, so
+// Kind() on it is just a field read.
+//
+// The assertions also retire a latent panic. `reflect.TypeOf(v).Kind() == String`
+// is true for a *named* string type (type Code string), but the `v.(string)` that
+// followed it only accepts exactly string — so such a value panicked instead of
+// being formatted. It now falls through to the same formatting path as any other
+// non-string.
 func cast(value any, _type reflect.Type) any {
 	if value == nil {
 		return nil
 	}
-	if _type.Kind() == reflect.String {
-		if reflect.TypeOf(value).Kind() == reflect.String {
-			return value.(string)
-		}
-		return fmt.Sprintf("%s", value)
+	switch _type.Kind() {
+	case reflect.String:
+		return castString(value)
+	case reflect.Bool:
+		return castBool(value)
+	default:
+		return value
 	}
-	if _type.Kind() == reflect.Bool {
-		if reflect.TypeOf(value).Kind() == reflect.Bool {
-			return value.(bool)
-		}
-		// Roadmap §11B.10 / checkpoint H10: parse strings with strconv so
-		// "false" / "0" / "no" do not silently coerce to true. SQLite drivers
-		// can surface boolean columns as numeric strings; pre-fix every
-		// non-empty string evaluated to true.
-		if reflect.TypeOf(value).Kind() == reflect.String {
-			s := value.(string)
-			if b, err := strconv.ParseBool(s); err == nil {
-				return b
-			}
-			// strconv.ParseBool accepts only canonical values; for the rest
-			// (e.g. "no", "off") treat anything case-insensitively "false"-
-			// looking as false and the rest as true to preserve the loose
-			// semantics callers may rely on.
-			switch strings.ToLower(s) {
-			case "", "no", "off", "n":
-				return false
-			}
-			return true
-		}
-		if isNumberAndGreaterThanZero(value) {
-			return true
-		}
+}
+
+// castString renders a cell into the string its field declares. Driver values that
+// are already strings pass straight through; everything else (notably []byte, which
+// is how several drivers hand back text) is formatted.
+func castString(value any) any {
+	if s, ok := value.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%s", value)
+}
+
+// castBool coerces a cell into a bool. SQLite drivers can surface a boolean column
+// as a number or a numeric string, so both are accepted.
+func castBool(value any) any {
+	switch v := value.(type) {
+	case bool:
+		return v
+	case string:
+		return looseParseBool(v)
+	}
+	return isNumberAndGreaterThanZero(value)
+}
+
+// looseParseBool reads a boolean out of a string column.
+//
+// Roadmap §11B.10 / checkpoint H10: parse with strconv so "false" / "0" / "no" do
+// not silently coerce to true — pre-fix every non-empty string evaluated to true.
+func looseParseBool(s string) bool {
+	if b, err := strconv.ParseBool(s); err == nil {
+		return b
+	}
+	// strconv.ParseBool accepts only canonical values; for the rest (e.g. "no",
+	// "off") treat anything case-insensitively "false"-looking as false and the
+	// rest as true, preserving the loose semantics callers may rely on.
+	switch strings.ToLower(s) {
+	case "", "no", "off", "n":
 		return false
 	}
-	return value
+	return true
 }
 
 func isNumberAndGreaterThanZero(value any) bool {

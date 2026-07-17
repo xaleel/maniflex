@@ -73,19 +73,13 @@ func (s *ActionScope) injectable() (map[string]any, error) {
 	if s == nil {
 		return nil, nil
 	}
-	out := make(map[string]any, len(s.Filters))
-	for _, f := range s.Filters {
-		if f == nil {
-			continue
-		}
-		if f.Operator != OpEq || f.IsNested || f.IsLocale || f.Group > 0 {
-			return nil, fmt.Errorf(
-				"maniflex: %s cannot be applied to a create: the scope filter on %q is not a "+
-					"plain equality, so there is no value to store. Set the column on the record "+
-					"yourself, or scope the create with ctx.Unscoped()",
-				s.scopeName(), f.Field)
-		}
-		out[f.Field] = f.Value
+	out, bad := scopeColumns(s.Filters)
+	if bad != nil {
+		return nil, fmt.Errorf(
+			"maniflex: %s cannot be applied to a create: the scope filter on %q is not a "+
+				"plain equality, so there is no value to store. Set the column on the record "+
+				"yourself, or scope the create with ctx.Unscoped()",
+			s.scopeName(), bad.Field)
 	}
 	return out, nil
 }

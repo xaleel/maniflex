@@ -109,7 +109,7 @@ server.MustRegister(
 | `AggregateEnabled`  | mount `GET /:model/aggregate?aggregate=<url-encoded JSON>` (grouped count/sum/avg/min/max) — see [Aggregations](../advanced-topics/raw-queries.md#auto-generated-aggregate-endpoint) |
 | `OptimisticLock`    | enable `If-Match` / ETag concurrency control on PATCH and DELETE                                                         |
 | `Adapter`           | route this model to a separate database adapter                                                                          |
-| `Singleton`         | expose the model as a single-row resource (`GET` / `PATCH`, no id) — see [Singleton models](#singleton-models-singleton) |
+| `Singleton`         | expose the model as a single-row resource (`GET` / `PATCH`, no id) — global, or [one row per tenant](#one-row-per-tenant) when scoped; see [Singleton models](#singleton-models-singleton) |
 | `Headless`          | register the model fully but mount no REST routes, freeing its path for a custom action — see [Serving a model's own path from an action](../advanced-topics/actions.md#serving-a-models-own-path-from-an-action) |
 
 ### Optimistic locking (`OptimisticLock`)
@@ -200,6 +200,76 @@ Because the row is auto-provisioned from column defaults, a singleton model may
 not declare `mfx:"required"` fields — there would be no value to satisfy them on
 first access. Such a model is rejected at registration. Give fields sensible
 `mfx:"default:…"` values (or make them pointers) instead.
+
+#### One row per tenant
+
+The example above is one row for the whole application. The other common shape is
+one row *per tenant* — a storefront, a profile, a per-org settings record — which
+is near-universal in B2B SaaS.
+
+You get it by scoping the model the same way you scope any other: register a
+`db.Tenancy` or `db.ForceFilter` for it on the DB step. The singleton then
+resolves and provisions **the caller's** row rather than a global one.
+
+```go
+type StoreSite struct {
+    maniflex.BaseModel
+    OwnerID string `json:"owner_id" db:"owner_id" mfx:"filterable,unique,default:"`
+    Banner  string `json:"banner"                 mfx:"default:untitled"`
+}
+
+server.MustRegister(StoreSite{}, maniflex.ModelConfig{Singleton: true})
+
+server.Pipeline.DB.Register(
+    db.Tenancy("owner_id", func(ctx *maniflex.ServerContext) string {
+        return ctx.Auth.Claims["owner_id"].(string)
+    }),
+    maniflex.ForModel("StoreSite"),
+)
+```
+
+```
+GET   /store_sites   (as owner A)   → 200  A's storefront, created on first access
+GET   /store_sites   (as owner B)   → 200  B's storefront — a different row
+PATCH /store_sites   (as owner A)   → 200  updates A's, never B's
+```
+
+There is no separate `SingletonScope` setting, because a bare column name cannot
+say *where the value comes from* — whether it is `ctx.Auth.UserID`, a tenant
+claim, or something else. The scoping middleware already answers that, so the
+singleton reads its scope from the request's forced filters and there is exactly
+one place to configure it.
+
+The route shape is unchanged: still the bare table path, still no id, still no
+`POST`/`DELETE`. Only *which* row it addresses changes.
+
+A few consequences worth knowing:
+
+- **A scoped row keeps an ordinary generated primary key.** `maniflex.SingletonID`
+  names the global row only; one fixed id could not name one row per scope.
+- **Give the scope column a unique index** (`mfx:"unique"`, above). Two concurrent
+  first accesses would otherwise both provision a row; with the index, the loser
+  collides and re-reads the winner's.
+- **A request with no scope gets the global row.** If your resolver returns `nil`
+  for an unauthenticated caller, that caller reads the `SingletonID` row.
+  Scope-or-refuse is what `db.Tenancy` does (it answers `403` when it cannot
+  determine the tenant); `db.ForceFilter` applies no filter instead.
+- **The scope has to be one the framework can *write*, not merely read.** It is
+  stamped onto the provisioned row, so it must be a plain equality — which is
+  what `db.Tenancy` and `db.ForceFilter` build. A scope that names no single value
+  (an `in` filter, or a `db.ForceFilterVia` whose value lives on another table)
+  cannot provision a row and is refused rather than creating one its own author
+  could not then read.
+
+This replaces the previous workaround — `Headless` plus a hand-written action —
+which cost 40–60 lines and, because [actions skip the Validate
+step](../advanced-topics/actions.md#the-trimmed-pipeline), silently gave up every
+`mfx` tag rule (`required`, `enum`, `min`/`max`, `immutable`) and the generated
+OpenAPI schema along with them.
+
+> **Upgrading:** a singleton that already has a global row and then gains a scope
+> does not migrate that row — it has no scope column value, so it matches nobody
+> and each tenant is provisioned a fresh one. Backfill or drop it deliberately.
 
 ### `ModelConfig` registration order
 

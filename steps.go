@@ -1019,14 +1019,46 @@ func (s *defaultSteps) getOldFileKey(ctx *ServerContext, field FieldMeta) (strin
 	return oldKey, ok
 }
 
-// ensureSingletonRow guarantees the single backing row of a ModelConfig.Singleton
-// model exists under SingletonID, creating it from column defaults on first
-// access. It runs through exec, so a registered transaction sees its own write.
+// ensureSingletonRow resolves the row a Singleton model's GET/PATCH addresses,
+// provisioning it on first access. It runs through exec, so a registered
+// transaction sees its own write.
+//
+// Which row that is depends on whether the request is scoped.
+//
+// With no forced filter it is the one global row, under the well-known
+// SingletonID — the "admin edits one config record" shape, and what a Singleton
+// has always been.
+//
+// With one (db.Tenancy, db.ForceFilter) it is *the caller's* row: a Singleton is
+// then one row per scope, which is what a per-tenant settings/profile/storefront
+// record is. The scope is taken from the request's forced filters rather than
+// from a config field of its own, because those filters already carry the one
+// thing a bare column name cannot — where the value comes from. db.Tenancy's
+// TenantFunc has answered that question since long before this, and asking it
+// twice, in two places that can disagree, would be the worse API.
+//
+// This also retires a bug rather than working around it: db.Tenancy on a
+// Singleton used to 404 forever, because provisioning inserted a filterless row
+// with no tenant column while the read applied the filter. There was no working
+// behaviour here to preserve — the combination simply did not work — which is
+// what makes deriving the scope safe.
+func (s *defaultSteps) ensureSingletonRow(ctx *ServerContext, exec dbExec, model *ModelMeta) error {
+	var forced []*FilterExpr
+	if ctx.Query != nil {
+		forced = forcedFilters(ctx.Query.Filters)
+	}
+	if len(forced) == 0 {
+		return s.ensureGlobalSingletonRow(ctx, exec, model)
+	}
+	return s.ensureScopedSingletonRow(ctx, exec, model, forced)
+}
+
+// ensureGlobalSingletonRow guarantees the one row under SingletonID exists.
 //
 // A concurrent first access can have two requests both miss the row and both
 // insert it; the loser hits a primary-key constraint, which we treat as success
 // because the row now exists either way.
-func (s *defaultSteps) ensureSingletonRow(ctx *ServerContext, exec dbExec, model *ModelMeta) error {
+func (s *defaultSteps) ensureGlobalSingletonRow(ctx *ServerContext, exec dbExec, model *ModelMeta) error {
 	if _, err := exec.FindByID(ctx.Ctx, model, SingletonID, &QueryParams{Limit: 1, Page: 1}); err == nil {
 		return nil // already provisioned
 	} else if !errors.Is(err, ErrNotFound) {
@@ -1043,6 +1075,94 @@ func (s *defaultSteps) ensureSingletonRow(ctx *ServerContext, exec dbExec, model
 		return err
 	}
 	return nil
+}
+
+// ensureScopedSingletonRow resolves this scope's row and points ctx.ResourceID at
+// it, provisioning it on first access.
+//
+// The row keeps an ordinary generated primary key: SingletonID is not used, and
+// could not be — it is one value, and there is now one row per scope. Nothing
+// downstream notices, because everything downstream addresses the record by
+// ctx.ResourceID, which the handler had pinned to the placeholder and this
+// replaces with the real id.
+func (s *defaultSteps) ensureScopedSingletonRow(ctx *ServerContext, exec dbExec,
+	model *ModelMeta, forced []*FilterExpr,
+) error {
+	cols, bad := scopeColumns(forced)
+	if bad != nil {
+		// Fail closed. A scope we cannot write is one whose row we cannot
+		// provision, and provisioning it anyway would create a row the caller who
+		// asked for it cannot then read.
+		return fmt.Errorf(
+			"maniflex: singleton %s is scoped by a filter on %q that is not a plain equality, "+
+				"so there is no value to provision its row with — a scoped singleton needs a "+
+				"scope it can write as well as read (db.Tenancy, db.ForceFilter), not one that "+
+				"only narrows a query",
+			model.Name, bad.Field)
+	}
+
+	id, err := s.findScopedSingleton(ctx, exec, model, forced)
+	if err != nil {
+		return err
+	}
+	if id != "" {
+		ctx.ResourceID = id
+		return nil
+	}
+
+	rec, err := exec.Create(ctx.Ctx, model, cols)
+	if err != nil {
+		var ce *ErrConstraint
+		if !errors.As(err, &ce) {
+			return err
+		}
+		// Raced with a concurrent first access. A unique index on the scope column
+		// is what turns that race into this branch rather than into two rows — see
+		// the Singleton docs; without one, the loser has nothing to collide with.
+		id, ferr := s.findScopedSingleton(ctx, exec, model, forced)
+		if ferr != nil {
+			return ferr
+		}
+		if id == "" {
+			return err // the constraint was something else entirely
+		}
+		ctx.ResourceID = id
+		return nil
+	}
+
+	if id = singletonRecordID(model, rec); id == "" {
+		return fmt.Errorf(
+			"maniflex: singleton %s: the provisioned row came back with no id", model.Name)
+	}
+	ctx.ResourceID = id
+	return nil
+}
+
+// findScopedSingleton returns the id of this scope's row, or "" when it has none
+// yet. Limit 1 because there is meant to be exactly one; if a race without a
+// unique index left two, the older wins and stays the caller's singleton.
+func (s *defaultSteps) findScopedSingleton(ctx *ServerContext, exec dbExec,
+	model *ModelMeta, forced []*FilterExpr,
+) (string, error) {
+	rows, _, err := exec.FindMany(ctx.Ctx, model, &QueryParams{Page: 1, Limit: 1, Filters: forced})
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", nil
+	}
+	return singletonRecordID(model, rows[0]), nil
+}
+
+// singletonRecordID reads a record's primary key, whether the adapter handed back
+// a typed *T or a map.
+func singletonRecordID(model *ModelMeta, rec any) string {
+	m := recordToMap(model, rec)
+	if m == nil {
+		return ""
+	}
+	id, _ := m["id"].(string)
+	return id
 }
 
 // resolveContentType decides an uploaded part's media type and rewinds the

@@ -171,12 +171,36 @@ type ModelConfig struct {
 	//	GET   /{table}   → read the one row
 	//	PATCH /{table}   → update the one row
 	//
-	// The row is provisioned lazily under the well-known SingletonID on first
-	// access, so GET returns column defaults before anything is written and
-	// PATCH always targets an existing row. This is the blessed shape for the
-	// "admin edits one config record, clients read it at launch" pattern (e.g.
-	// GET /config). Singleton models must not declare mfx:"required" fields —
-	// the auto-provisioned row has no values to satisfy them.
+	// The row is provisioned lazily on first access, so GET returns column
+	// defaults before anything is written and PATCH always targets an existing
+	// row. Singleton models must not declare mfx:"required" fields — the
+	// auto-provisioned row has no values to satisfy them.
+	//
+	// Which row is "the one row" depends on whether the request is scoped.
+	//
+	// Unscoped, it is a single global row under the well-known SingletonID: the
+	// "admin edits one config record, clients read it at launch" shape (GET
+	// /config).
+	//
+	// Scoped — a db.Tenancy or db.ForceFilter registered on the DB step for this
+	// model — it is one row per scope, resolved and provisioned per caller:
+	//
+	//	server.MustRegister(StoreSite{}, maniflex.ModelConfig{Singleton: true})
+	//	server.Pipeline.DB.Register(
+	//	    db.Tenancy("owner_id", ownerOf),
+	//	    maniflex.ForModel("StoreSite"),
+	//	)
+	//	// GET /store_sites → this owner's storefront, created on first access
+	//
+	// That covers the per-tenant settings/profile/storefront record, which is
+	// otherwise Headless plus a hand-written Action — and an Action skips the
+	// Validate step, so that workaround silently loses every mfx tag rule
+	// (required, enum, min/max, immutable) along with the generated schema.
+	//
+	// A scoped row keeps an ordinary generated primary key; SingletonID names the
+	// global row only. Give the scope column a unique index (mfx:"unique") so two
+	// concurrent first accesses cannot both provision a row — the loser then
+	// collides and re-reads the winner's.
 	Singleton bool
 
 	// Headless registers the model fully — migration, registry, typed access,
@@ -189,9 +213,13 @@ type ModelConfig struct {
 	Headless bool
 }
 
-// SingletonID is the fixed primary key of the single row backing a
+// SingletonID is the fixed primary key of the row backing an *unscoped*
 // ModelConfig.Singleton model. The row is created with this id on first access
 // and every GET/PATCH on the model addresses it.
+//
+// It does not apply to a singleton scoped by a forced filter (db.Tenancy,
+// db.ForceFilter): there is one row per scope there, so one fixed id could not
+// name them, and each keeps an ordinary generated primary key.
 const SingletonID = "singleton"
 
 // DefaultMaxExportRows is the row cap used when ModelConfig.MaxExportRows

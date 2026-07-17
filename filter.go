@@ -178,6 +178,35 @@ func forcedFilters(fs []*FilterExpr) []*FilterExpr {
 	return out
 }
 
+// scopeColumns turns a set of scope filters into the columns a row must carry to
+// satisfy them, and reports the first filter it cannot.
+//
+// An equality on a plain column says two things at once: "only rows where field =
+// value" and "a row you create has field = value". That second reading is what
+// lets a scope be *written* as well as read, and it is the only shape that has
+// one — an operator that is not equality, a nested filter (the value lives on
+// another table), a locale filter, an OR group (any one of several values would
+// do) name no single value to store.
+//
+// A caller that cannot satisfy a scope must refuse the write rather than perform
+// it: the row would otherwise be one its own author's next read cannot see.
+// Callers phrase their own error from the returned filter, because "why can this
+// not be stored" reads differently for a create through a scoped Action than for
+// provisioning a scoped singleton.
+func scopeColumns(filters []*FilterExpr) (map[string]any, *FilterExpr) {
+	out := make(map[string]any, len(filters))
+	for _, f := range filters {
+		if f == nil {
+			continue
+		}
+		if f.Operator != OpEq || f.IsNested || f.IsLocale || f.Group > 0 {
+			return nil, f
+		}
+		out[f.Field] = f.Value
+	}
+	return out, nil
+}
+
 // nestedForcedFilters returns the server-imposed filters among fs that scope
 // through a parent relation rather than a column of the model itself — what
 // db.ForceFilterVia builds. They are the only filters with a foreign key to

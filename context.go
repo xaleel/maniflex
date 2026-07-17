@@ -236,6 +236,12 @@ type ServerContext struct {
 	// means every DB path behaves exactly as it always has.
 	actionScope *ActionScope
 
+	// inProcess marks a request Server.Execute raised rather than one a client
+	// sent. Read it through InProcess(); it is unexported so that only Execute can
+	// set it — a middleware, and therefore anything a client can reach, cannot
+	// claim to be internal. See execute.go.
+	inProcess bool
+
 	// keyProvider encrypts/decrypts mfx:"encrypted" fields for the non-pipeline
 	// access paths (typed maniflex.Create/Read and ctx.GetModel). The handler sets
 	// it from Config.KeyProvider; background contexts set it via SetKeyProvider.

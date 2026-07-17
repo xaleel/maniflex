@@ -320,6 +320,13 @@ shape doesn't match the contract you want to expose for that resource.
 | Aggregations and reports | Action, or [Raw Queries & Query Models](raw-queries.md) |
 | Bulk operations | [Batch Operations & Sagas](batch-saga.md) |
 | Background processing | [Events & Background Jobs](events-jobs.md) |
+| Reaching the pipeline **from** Go, rather than exposing Go to HTTP | [`Execute`](execute.md) |
+
+An action and `Execute` are mirror images: an action lets HTTP reach your logic,
+and [`Execute`](execute.md) lets your logic reach the pipeline — with a typed
+principal instead of a header, and your transaction instead of N of them. If you
+have ever been tempted to have your server make an HTTP request to itself, that is
+the tool.
 
 Reserve actions for endpoints that genuinely don't fit CRUD. Resist the
 temptation to use them as a general-purpose handler API — the framework's

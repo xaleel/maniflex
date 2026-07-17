@@ -112,6 +112,13 @@ func (o *JWTOptions) applyDefaults() {
 //	server.Pipeline.Auth.Register(auth.JWTAuth("", auth.JWTOptions{
 //	    PublicKey: rsaPub, // RS256
 //	}))
+//
+// A request raised by Server.Execute that already carries a principal passes
+// through unverified: it has no Authorization header because it has no client,
+// and its identity arrived as a typed *AuthInfo that no client can forge. This
+// applies only when ctx.InProcess() is true, which only Execute can make it, so
+// verification of every request from a client is unchanged. An Execute with no
+// principal is anonymous and is refused here like any other. See trustedPrincipal.
 func JWTAuth(secret string, opts ...JWTOptions) maniflex.MiddlewareFunc {
 	opt := JWTOptions{}
 	if len(opts) > 0 {
@@ -158,10 +165,39 @@ func staticResolver(pub crypto.PublicKey) keyResolver {
 	return func(string, string) (crypto.PublicKey, error) { return pub, nil }
 }
 
+// trustedPrincipal reports whether this request already carries an established
+// identity that this middleware has no business re-establishing: one that
+// Server.Execute injected as a typed *AuthInfo.
+//
+// Both halves are required, and each covers a different mistake.
+//
+// InProcess is what makes it safe. It is derived from an unexported field only
+// Execute can set, so no client and no middleware can claim it — over HTTP this
+// is always false and the header path below runs exactly as it always has. A
+// short-circuit on ctx.Auth != nil alone would be a real weakening: today this
+// middleware *overwrites* a principal an earlier Auth middleware set, and an app
+// whose earlier middleware trusts a header would silently start keeping it.
+//
+// ctx.Auth != nil is what makes it useful. An Execute call with no principal is
+// anonymous, and an anonymous request must still be told so by the app's own auth
+// rather than waved through for being internal.
+//
+// Without this, Execute could not work with the auth setup nearly every app has:
+// an in-process call has no Authorization header, so readToken would answer 401
+// on every invocation, and the only ways out would be to skip the Auth step —
+// where force filters live — or to mint a token for a call the process is making
+// to itself, which is the header-forging Execute exists to abolish.
+func trustedPrincipal(ctx *maniflex.ServerContext) bool {
+	return ctx.InProcess() && ctx.Auth != nil
+}
+
 // jwtMiddleware is the shared verification core used by both JWTAuth (static
 // key) and JWKSAuth (kid-selected key from a rotating JWK Set).
 func jwtMiddleware(secret string, opt JWTOptions, resolve keyResolver) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
+		if trustedPrincipal(ctx) {
+			return next()
+		}
 		raw, ok := readToken(ctx, opt)
 		if !ok {
 			return nil

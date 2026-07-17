@@ -288,22 +288,30 @@ UserID     string `json:"user_id" mfx:"relation"` // → User (opt in)
 `file` marks a field as a file-upload field. The column stores the storage key;
 multipart form-data is then accepted for create and update on the model.
 
+The field's Go type must be `string` (one key) or `maniflex.FileKeys` (many).
+Any other type is a registration error — every rule below is keyed on the column
+being a storage key, so on another type they would all be silently skipped.
+
 | Directive           | Effect                                                                                             |
 | ------------------- | -------------------------------------------------------------------------------------------------- |
 | `file`              | mark the field as a file upload                                                                    |
-| `max_size:N`        | maximum file size; accepts `KB`, `MB`, `GB` suffixes, or plain bytes                               |
+| `max_size:N`        | maximum file size; accepts `KB`, `MB`, `GB` suffixes, or plain bytes. On `FileKeys`, per file      |
+| `max_count:N`       | `FileKeys` only — maximum number of keys (default 100)                                             |
 | `accept:p1\|p2`     | allowed MIME-type patterns, e.g. `image/*\|application/pdf`                                        |
 | `auto_delete:false` | keep the stored file when the record is hard-deleted or the field is replaced (default: delete it) |
+| `upload:presigned`  | mount `POST /{model}/{field}/upload-url` so the client uploads straight to storage                 |
 | `file_acl:private`  | (default) response carries the raw storage key                                                     |
 | `file_acl:signed`   | response replaces the key with a pre-signed URL (TTL: `Config.FileSignedURLTTL`, default 1h)       |
 | `file_acl:public`   | response replaces the key with a permanent / long-lived URL                                        |
 
 ```go
-Avatar string `json:"avatar" mfx:"file,max_size:2MB,accept:image/*"`
-Logo   string `json:"logo"   mfx:"file,file_acl:public,accept:image/*"`
+Avatar string            `json:"avatar" mfx:"file,max_size:2MB,accept:image/*"`
+Logo   string            `json:"logo"   mfx:"file,file_acl:public,accept:image/*"`
+Images maniflex.FileKeys `json:"images" mfx:"file,accept:image/*,max_count:10"`
 ```
 
-See [File Fields & Uploads](files.md) for the upload workflow.
+See [File Fields & Uploads](files.md) for the upload workflow, and
+[Many files per field](files.md#many-files-per-field-filekeys) for `FileKeys`.
 
 ## Encryption directives
 
@@ -384,7 +392,7 @@ filtering/sorting behaviour.
 | `filterable` `sortable` `searchable` `cursor_field:…`        | querying              |
 | `unique` `index`                                             | schema                |
 | `relation` `relation:…` `through:…`                          | relations             |
-| `file` `max_size:` `accept:` `auto_delete:false` `file_acl:` | file upload           |
+| `file` `max_size:` `max_count:` `accept:` `auto_delete:false` `file_acl:` `upload:presigned` | file upload |
 | `encrypted` `key:…`                                          | encryption            |
 | `scheduled;…`                                                | scheduled transitions |
 | `locale` `split` `resolve` `dynamic` `default_locale:…`      | localization          |

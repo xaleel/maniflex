@@ -377,6 +377,9 @@ func buildModelPaths(spec *OpenAPISpec, m *ModelMeta, cfg *Config) {
 	// mounted only when storage is configured (matches router.go behaviour).
 	if cfg.FilesConfig.Storage != nil {
 		for _, ff := range m.FileFields() {
+			if ff.IsFileList() {
+				continue // no attachment route is mounted for a key list
+			}
 			fieldName := ff.Tags.JSONName
 			respContent := map[string]OASMediaType{
 				"application/octet-stream": {Schema: &OASSchema{Type: "string", Format: "binary"}},
@@ -738,6 +741,11 @@ func withMultipartContent(
 	// Override file fields: binary format in schema + encoding entry.
 	encoding := make(map[string]OASEncoding)
 	for _, f := range m.FileFields() {
+		// A key list is not carried as multipart bytes — multipart holds one
+		// file per field. It keeps its array-of-keys schema in the form body.
+		if f.IsFileList() {
+			continue
+		}
 		jn := f.Tags.JSONName
 		props[jn] = &OASSchema{
 			Type:        "string",

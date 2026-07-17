@@ -215,8 +215,14 @@ func mountModel(r chi.Router, meta *ModelMeta, h *handlers, storageConfigured bo
 			// mounted when FileStorage is configured — otherwise the route
 			// would return 501 on every request, so a 404 from chi is more
 			// honest. Reuses the read pipeline so Auth and tenancy apply.
+			// A FileKeys field mounts none: the route streams one object's bytes
+			// and a list names no single one. Its keys reach the client through
+			// the record (file_acl:signed rewrites each to a URL).
 			if storageConfigured {
 				for _, ff := range meta.FileFields() {
+					if ff.IsFileList() {
+						continue
+					}
 					r.Get("/"+ff.Tags.JSONName, h.Attachment(meta, ff))
 				}
 			}

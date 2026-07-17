@@ -36,12 +36,18 @@ The column's Go and DB types are `string` — what is stored is the storage key
 returned after the upload. The on-disk bytes are managed by the storage
 backend; the database row holds only the reference.
 
+A file field's Go type must be `string` (one key) or
+[`maniflex.FileKeys`](#many-files-per-field-filekeys) (many). Anything else is a
+registration error: every file rule is keyed on the column being a storage key,
+so on another type they would all be skipped.
+
 Tag sub-options:
 
 | Sub-option | Effect |
 |---|---|
 | `file` | mark the field as a file upload |
-| `max_size:N` | per-field size limit; suffixes `KB`, `MB`, `GB` or plain bytes |
+| `max_size:N` | per-field size limit; suffixes `KB`, `MB`, `GB` or plain bytes. On a `FileKeys` field it bounds each file, not their total |
+| `max_count:N` | `FileKeys` only — maximum number of keys (default 100). See [Many files per field](#many-files-per-field-filekeys) |
 | `accept:p1\|p2` | allowed MIME-type patterns, e.g. `image/*\|application/pdf` |
 | `auto_delete:false` | keep the stored file when the row is hard-deleted or the field is replaced (default: delete) |
 | `upload:presigned` | mount `POST /{model}/{field}/upload-url` so the client uploads straight to storage instead of through the app — see [Direct-to-storage uploads](#direct-to-storage-uploads-uploadpresigned). Requires a backend that can presign (`storage/s3`; not `LocalStorage`) |
@@ -58,6 +64,60 @@ anything outside the inline allowlist (see
 [Standalone file endpoints](#standalone-file-endpoints)).
 
 Tag detail is in [Field Tags Reference](tags.md#file-upload-directives).
+
+### Many files per field (`FileKeys`)
+
+A gallery, or any attachment set, is a `maniflex.FileKeys` column:
+
+```go
+type Post struct {
+    maniflex.BaseModel
+    Title  string            `json:"title"  mfx:"required"`
+    Images maniflex.FileKeys `json:"images" mfx:"file,accept:image/*,max_size:5MB,max_count:10,file_acl:signed"`
+}
+```
+
+It stores as a JSON array (JSONB on Postgres, TEXT on SQLite), so **ordering is
+preserved exactly as written** — a gallery keeps its sequence. Every rule a
+single-key field enforces applies **per key**: existence, `max_size` (per file,
+not per array), `accept`, `file_acl` signing on read, `auto_delete`, and cleanup
+on hard delete.
+
+**Write by key reference, not multipart.** Upload each file first — via
+[`POST /files`](#standalone-file-endpoints) or a
+[presigned upload](#direct-to-storage-uploads-uploadpresigned) — then send the
+keys:
+
+```http
+PATCH /posts/1
+{"images": ["uploads/a1/one.jpg", "uploads/b2/two.jpg"]}
+```
+
+A multipart upload to a `FileKeys` field is refused (`422`). Multipart carries
+one file per field, so it could only ever store one key and would silently drop
+the rest; and routing many large files through the app process is what presigned
+uploads exist to avoid.
+
+**A PATCH replaces the whole array**, as it does any column. With `auto_delete`
+(the default), keys present before the write and absent after it are deleted from
+storage once the write commits. The diff is a **set** difference, so reordering
+deletes nothing, and a key you keep is never touched:
+
+```http
+PATCH /posts/1  {"images": ["uploads/a1/one.jpg", "uploads/c3/three.jpg"]}
+// one.jpg   kept    — still referenced
+// two.jpg   deleted — dropped by this write
+// three.jpg kept    — newly referenced
+```
+
+**`max_count` bounds the array** (default `DefaultMaxFileCount`, 100). Every key
+is `Stat`'d against storage to enforce the field's rules, so an uncapped array
+would be one request buying N storage round-trips. Over the cap is `422
+TOO_MANY_FILES`.
+
+No [attachment route](#per-model-attachment-routes) is mounted for a `FileKeys`
+field — that route streams one object's bytes and a list names no single one.
+Use `file_acl:signed` to have each key rewritten to a URL in the response.
 
 ### `file_acl` modes
 

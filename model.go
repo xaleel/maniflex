@@ -362,6 +362,78 @@ func (m *ModelMeta) rejectPresignedWithoutFile() error {
 	return nil
 }
 
+// fileKeysType is the reflect.Type of FileKeys, the multi-key file column.
+var fileKeysType = reflect.TypeOf(FileKeys(nil))
+
+// isFileFieldType reports whether t is a Go type an mfx:"file" field may have:
+// a string (one storage key) or a FileKeys (many).
+func isFileFieldType(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	return t.Kind() == reflect.String || t == fileKeysType
+}
+
+// rejectBadFileFieldType refuses mfx:"file" on a field that is neither a string
+// nor a FileKeys.
+//
+// This closes a silent hole rather than a cosmetic one. A bare []string field
+// fails loudly at AutoMigrate ("no SQL column mapping"), which is fine — but the
+// documented way around that error is to wrap it in a named SQLTyper, and such a
+// field then migrates cleanly, parses mfx:"file" cleanly, and is skipped by every
+// single file path: the existence/max_size/accept check, file_acl signing,
+// auto_delete GC and hard-delete cleanup each assert .(string) and fall through
+// with no else. So the field looks protected and enforces nothing — strictly
+// worse than the loud error it was routed around. FileKeys exists so that shape
+// has a supported form; anything else is refused here.
+func (m *ModelMeta) rejectBadFileFieldType() error {
+	for _, f := range m.Fields {
+		if !f.Tags.File || isFileFieldType(f.Type) {
+			continue
+		}
+		return fmt.Errorf(
+			"maniflex: model %q field %q is mfx:\"file\" but its Go type is %s — a file "+
+				"field stores a storage key (string), or maniflex.FileKeys for many. Every "+
+				"file rule (existence, max_size, accept, file_acl, auto_delete) is keyed on "+
+				"that, so on any other type they would all be silently skipped",
+			m.Name, f.Name, f.Type)
+	}
+	return nil
+}
+
+// rejectBadMaxCount refuses a malformed mfx:"max_count:N", and max_count on a
+// field it cannot bound.
+//
+// The parser marks a malformed value -1 rather than swallowing it the way min:
+// and max: swallow theirs, because max_count is protective: mfx:"max_count:1O"
+// would otherwise widen the cap from 10 to the default 100 in silence. On a
+// single-key file field the option bounds nothing, and on a non-file field it
+// means nothing at all.
+func (m *ModelMeta) rejectBadMaxCount() error {
+	for _, f := range m.Fields {
+		if f.Tags.MaxCount == 0 {
+			continue // unset — DefaultMaxFileCount applies
+		}
+		if f.Tags.MaxCount < 0 {
+			return fmt.Errorf(
+				"maniflex: model %q field %q has a malformed mfx:\"max_count:\" value — "+
+					"it takes a positive whole number, e.g. mfx:\"max_count:20\"",
+				m.Name, f.Name)
+		}
+		if f.Type != fileKeysType {
+			return fmt.Errorf(
+				"maniflex: model %q field %q is mfx:\"max_count\" but its Go type is %s — "+
+					"max_count bounds how many keys a maniflex.FileKeys field holds, so "+
+					"here it would bound nothing",
+				m.Name, f.Name, f.Type)
+		}
+	}
+	return nil
+}
+
 func (m *ModelMeta) rejectHiddenRequired() error {
 	for _, f := range m.Fields {
 		if f.Tags.Hidden && f.Tags.Required && !f.Tags.WriteOnly {
@@ -402,6 +474,16 @@ func (m *ModelMeta) RelationByModel(name string) *RelationMeta {
 		return &m.Relations[i]
 	}
 	return nil
+}
+
+// IsFileList reports whether this field is an mfx:"file" column holding many
+// storage keys (maniflex.FileKeys) rather than one.
+//
+// The single-key shape is what mounts an attachment route (GET /{model}/{id}/
+// {field} streams one object) and what multipart can populate (one file per
+// part). A list does neither, so the paths that assume one key ask this first.
+func (f FieldMeta) IsFileList() bool {
+	return f.Tags.File && f.Type == fileKeysType
 }
 
 // FileFields returns all fields with the File tag set.
@@ -569,6 +651,18 @@ func ScanModel(v any, cfg ModelConfig) (*ModelMeta, error) {
 	// that stores no file it configures nothing — and would do so in silence,
 	// which is the failure mode the unknown-option error exists to end.
 	if err := meta.rejectPresignedWithoutFile(); err != nil {
+		return nil, err
+	}
+
+	// Every file rule is keyed on the column being a storage key, so a file field
+	// of any other type has them all silently skipped rather than applied.
+	if err := meta.rejectBadFileFieldType(); err != nil {
+		return nil, err
+	}
+
+	// max_count is protective, so a malformed or misplaced one must not pass as
+	// a wider cap than the author wrote.
+	if err := meta.rejectBadMaxCount(); err != nil {
 		return nil, err
 	}
 

@@ -80,8 +80,15 @@ type FieldTags struct {
 	// accepted for create/update operations on models containing this field.
 	File bool
 	// MaxSize is the maximum allowed file size in bytes. Parsed from
-	// mfx:"max_size:10MB". Zero means no per-field limit.
+	// mfx:"max_size:10MB". Zero means no per-field limit. On a FileKeys field
+	// it bounds each key's object, not their total.
 	MaxSize int64
+	// MaxCount bounds how many keys a maniflex.FileKeys field accepts. Parsed
+	// from mfx:"max_count:20". Zero means DefaultMaxFileCount — every key is
+	// Stat'd against storage, so an uncapped array is one request costing N
+	// round-trips. Meaningless on a single-key (string) file field, which is a
+	// registration error rather than a silently ignored option.
+	MaxCount int
 	// Accept is a list of allowed MIME type patterns, e.g. ["image/*", "application/pdf"].
 	// Parsed from mfx:"accept:image/*|application/pdf".
 	Accept []string
@@ -268,6 +275,17 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 			t.AutoDelete = true
 		case strings.HasPrefix(part, "max_size:"):
 			t.MaxSize = parseByteSize(strings.TrimPrefix(part, "max_size:"))
+		case strings.HasPrefix(part, "max_count:"):
+			// -1 marks a malformed value for ScanModel to reject by name. It
+			// cannot go to UnknownOpts (the key IS known, and knownPrefixOpts
+			// must accept any value), and it must not be swallowed the way min:
+			// and max: swallow theirs: max_count is protective, so a typo'd
+			// mfx:"max_count:1O" would silently widen the cap from 10 to the
+			// default 100 rather than tighten it.
+			t.MaxCount = -1
+			if v, err := strconv.Atoi(strings.TrimPrefix(part, "max_count:")); err == nil && v > 0 {
+				t.MaxCount = v
+			}
 		case strings.HasPrefix(part, "accept:"):
 			t.Accept = strings.Split(strings.TrimPrefix(part, "accept:"), "|")
 		case part == "auto_delete:false":

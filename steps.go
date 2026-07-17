@@ -502,7 +502,16 @@ func (s *defaultSteps) processFileFields(ctx *ServerContext) error {
 		jn := field.Tags.JSONName
 
 		if uf, ok := ctx.Files[jn]; ok {
-			// Case A: file uploaded
+			// Case A: file uploaded. A key list cannot be populated this way —
+			// multipart carries one file per field (fileHeaders[0]), so letting
+			// this through would write a single key into a column that holds an
+			// array, and silently drop every other part the client sent.
+			if field.IsFileList() {
+				ctx.Abort(http.StatusUnprocessableEntity, "VALIDATION_ERROR",
+					fmt.Sprintf("field %q holds many files and cannot be uploaded as multipart — "+
+						"upload each file (POST /files, or a presigned upload) and send the keys as an array", jn))
+				return fmt.Errorf("field %q: multipart upload to a file list", jn)
+			}
 			if err := s.handleFileUpload(ctx, field, uf); err != nil {
 				return err
 			}
@@ -522,7 +531,13 @@ func (s *defaultSteps) processFileFields(ctx *ServerContext) error {
 			s.handleFileClear(ctx, field)
 			continue
 		}
-		// Case B: string key reference
+		// Case B: key reference — one key, or a FileKeys list.
+		if field.Type == fileKeysType {
+			if err := s.handleFileKeyList(ctx, field, keyVal); err != nil {
+				return err
+			}
+			continue
+		}
 		keyStr, isString := keyVal.(string)
 		if isString && keyStr != "" {
 			if err := s.handleFileKeyReference(ctx, field, keyStr); err != nil {
@@ -531,6 +546,147 @@ func (s *defaultSteps) processFileFields(ctx *ServerContext) error {
 		}
 	}
 	return nil
+}
+
+// handleFileKeyList verifies every key of a maniflex.FileKeys field and handles
+// GC of the keys this write drops.
+//
+// Each key runs the same checkStoredFileRules the single-key path runs, so
+// max_size and accept bind per object rather than to the array as a whole — a
+// gallery of ten 5MB images is ten valid files, not one 50MB one.
+func (s *defaultSteps) handleFileKeyList(ctx *ServerContext, field FieldMeta, keyVal any) error {
+	keys, err := s.parseFileKeyList(ctx, field, keyVal)
+	if err != nil {
+		return err
+	}
+	if err := s.verifyFileKeys(ctx, field, keys); err != nil {
+		return err
+	}
+	s.gcDroppedFileKeys(ctx, field, keys)
+
+	// Normalise to FileKeys so the write path hands the column a driver.Valuer.
+	// The body decodes to []any, which database/sql cannot store.
+	ctx.SetField(field.Tags.JSONName, FileKeys(keys))
+	return nil
+}
+
+// parseFileKeyList coerces the body value to a key list and bounds its length.
+func (s *defaultSteps) parseFileKeyList(ctx *ServerContext, field FieldMeta, keyVal any) ([]string, error) {
+	jn := field.Tags.JSONName
+	keys, ok := toFileKeys(keyVal)
+	if !ok {
+		ctx.Abort(http.StatusUnprocessableEntity, "VALIDATION_ERROR",
+			fmt.Sprintf("field %q takes an array of storage keys", jn))
+		return nil, fmt.Errorf("field %q: not a key array", jn)
+	}
+
+	// Bound the array before touching storage: every key costs a Stat, so an
+	// uncapped list is one request buying N round-trips.
+	maxCount := field.Tags.MaxCount
+	if maxCount <= 0 {
+		maxCount = DefaultMaxFileCount
+	}
+	if len(keys) > maxCount {
+		ctx.Abort(http.StatusUnprocessableEntity, "TOO_MANY_FILES",
+			fmt.Sprintf("field %q accepts at most %d files, got %d", jn, maxCount, len(keys)))
+		return nil, fmt.Errorf("field %q: too many files", jn)
+	}
+	return keys, nil
+}
+
+// verifyFileKeys Stats every key and runs the field's rules against each object.
+func (s *defaultSteps) verifyFileKeys(ctx *ServerContext, field FieldMeta, keys []string) error {
+	jn := field.Tags.JSONName
+	for _, key := range keys {
+		if key == "" {
+			ctx.Abort(http.StatusUnprocessableEntity, "VALIDATION_ERROR",
+				fmt.Sprintf("field %q contains an empty storage key", jn))
+			return fmt.Errorf("field %q: empty key", jn)
+		}
+		meta, err := s.storage.Stat(ctx.Ctx, key)
+		if err != nil {
+			if errors.Is(err, ErrFileNotFound) {
+				ctx.Abort(http.StatusUnprocessableEntity, "FILE_NOT_FOUND",
+					fmt.Sprintf("file key %q for field %q does not exist in storage", key, jn))
+				return fmt.Errorf("file key not found")
+			}
+			ctx.Abort(http.StatusInternalServerError, "STORAGE_ERROR",
+				fmt.Sprintf("failed to verify file key for %q: %s", jn, err.Error()))
+			return err
+		}
+		if err := s.checkStoredFileRules(ctx, field, key, meta); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// gcDroppedFileKeys records for deletion every key the record held before this
+// write and no longer holds after it.
+//
+// A PATCH replaces the whole array, so "dropped" is a set difference, not a
+// positional one: reordering a gallery deletes nothing. Deletion happens after
+// the write commits, via the same deleteReplacedFiles runner the single-key path
+// uses — its replacedFiles list was already list-shaped.
+func (s *defaultSteps) gcDroppedFileKeys(ctx *ServerContext, field FieldMeta, keys []string) {
+	if ctx.Operation != OpUpdate || !field.Tags.AutoDelete {
+		return
+	}
+	kept := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		kept[k] = struct{}{}
+	}
+	for _, old := range s.getOldFileKeys(ctx, field) {
+		if _, still := kept[old]; !still && old != "" {
+			ctx.trackReplacedFile(old, s.storage)
+		}
+	}
+}
+
+// getOldFileKeys returns the keys a FileKeys field holds in the record as it
+// stands before this write.
+func (s *defaultSteps) getOldFileKeys(ctx *ServerContext, field FieldMeta) []string {
+	cols := s.existingColumns(ctx)
+	if cols == nil {
+		return nil
+	}
+	v, ok := cols[field.Tags.DBName]
+	if !ok || v == nil {
+		return nil
+	}
+	if keys, ok := toFileKeys(v); ok {
+		return keys
+	}
+	// A map-shaped read carries the column as its stored JSON text.
+	if raw, ok := v.(string); ok {
+		var out FileKeys
+		if err := out.unmarshal([]byte(raw)); err == nil {
+			return out
+		}
+	}
+	return nil
+}
+
+// toFileKeys coerces a file-list value to []string. The JSON body decodes to
+// []any of strings; a typed record carries FileKeys directly.
+func toFileKeys(v any) ([]string, bool) {
+	switch t := v.(type) {
+	case FileKeys:
+		return t, true
+	case []string:
+		return t, true
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			s, ok := e.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, s)
+		}
+		return out, true
+	}
+	return nil, false
 }
 
 // handleFileClear processes an explicit null on a file field. The DB write
@@ -2434,16 +2590,24 @@ func (s *defaultSteps) rewriteFileACL(goCtx context.Context, model *ModelMeta, r
 		if acl == FileACLPrivate || acl == "" {
 			continue
 		}
-		key, _ := row[f.Tags.JSONName].(string)
-		if key == "" {
-			continue
-		}
 		ttl := s.signedURLTTL
 		if ttl == 0 {
 			ttl = DefaultFileSignedURLTTL
 		}
 		if acl == FileACLPublic {
 			ttl = 0
+		}
+
+		// A FileKeys column rewrites every key in place, so the array a client
+		// reads is URLs throughout rather than URLs-or-keys depending on shape.
+		if f.Type == fileKeysType {
+			s.rewriteFileACLList(goCtx, f, row, ttl)
+			continue
+		}
+
+		key, _ := row[f.Tags.JSONName].(string)
+		if key == "" {
+			continue
 		}
 		u, err := s.storage.URL(goCtx, key, ttl)
 		if err != nil {
@@ -2452,6 +2616,29 @@ func (s *defaultSteps) rewriteFileACL(goCtx context.Context, model *ModelMeta, r
 		}
 		row[f.Tags.JSONName] = u
 	}
+}
+
+// rewriteFileACLList rewrites each key of a FileKeys column to a URL.
+//
+// Best-effort per key, matching the single-key path: a key whose URL cannot be
+// built stays a raw key rather than dropping out of the array, so the array
+// keeps its length and its order either way.
+func (s *defaultSteps) rewriteFileACLList(goCtx context.Context, f FieldMeta, row map[string]any, ttl time.Duration) {
+	keys, ok := toFileKeys(row[f.Tags.JSONName])
+	if !ok || len(keys) == 0 {
+		return
+	}
+	out := make([]string, len(keys))
+	for i, key := range keys {
+		out[i] = key
+		if key == "" {
+			continue
+		}
+		if u, err := s.storage.URL(goCtx, key, ttl); err == nil {
+			out[i] = u
+		}
+	}
+	row[f.Tags.JSONName] = out
 }
 
 // cast coerces one driver-supplied cell to the Go kind its model field declares.

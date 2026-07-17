@@ -63,6 +63,7 @@ var knownPrefixOpts = []string{
 	"lock_scope:",
 	"lock_when:",
 	"max:",
+	"max_count:",
 	"max_size:",
 	"min:",
 	"relation:",

@@ -71,6 +71,16 @@ type ACLDoc struct {
 	PublicFile  string `json:"public_file"  db:"public_file"  mfx:"file,file_acl:public"` // -> URL via FileStorage.URL(0)
 }
 
+// Gallery exercises maniflex.FileKeys — a file field holding many storage keys.
+// Images is auto_delete (the default) so an update's dropped keys are GC'd;
+// Attachments opts out, and caps its count, so both halves are probed.
+type Gallery struct {
+	maniflex.BaseModel
+	Title       string            `json:"title"       db:"title"       mfx:"required"`
+	Images      maniflex.FileKeys `json:"images"      db:"images"      mfx:"file,accept:image/*,max_size:1MB,file_acl:signed"`
+	Attachments maniflex.FileKeys `json:"attachments" db:"attachments" mfx:"file,max_count:2,auto_delete:false"`
+}
+
 // SoftDoc exercises file fields on a soft-delete model (files should persist).
 type SoftDoc struct {
 	maniflex.BaseModel

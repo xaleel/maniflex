@@ -721,11 +721,12 @@ func (c *Server) registerFileCleanup() {
 				return next() // can't fetch — skip cleanup, not critical
 			}
 			existing := recordToMap(ctx.Model, existingRec)
-			keys := make(map[string]string)
+			// A flat key list, not one key per field: a maniflex.FileKeys column
+			// holds many, so keying by column name could only ever carry the last
+			// of them and would leak the rest.
+			var keys []string
 			for _, ff := range autoDeleteFields {
-				if v, ok := existing[ff.Tags.DBName].(string); ok && v != "" {
-					keys[ff.Tags.DBName] = v
-				}
+				keys = append(keys, fileKeysOfColumn(existing[ff.Tags.DBName])...)
 			}
 			ctx.Set("__file_old_keys", keys)
 			return next()
@@ -741,7 +742,7 @@ func (c *Server) registerFileCleanup() {
 				return nil
 			}
 			oldKeys, _ := ctx.Get("__file_old_keys")
-			if keys, ok := oldKeys.(map[string]string); ok {
+			if keys, ok := oldKeys.([]string); ok {
 				ctx.GoBackground(func(bgCtx context.Context) {
 					for _, key := range keys {
 						if key != "" {

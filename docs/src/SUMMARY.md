@@ -62,6 +62,7 @@
 - [Custom Endpoints (Actions)](advanced-topics/actions.md)
 - [In-Process Invocation (Execute)](advanced-topics/execute.md)
 - [Raw Queries, Aggregates, & Recursion](advanced-topics/raw-queries.md)
+- [Maintained Rollups](advanced-topics/rollups.md)
 - [Model Accessor](advanced-topics/model-accessor.md)
 - [Batch Operations & Sagas](advanced-topics/batch-saga.md)
 - [Events & Background Jobs](advanced-topics/events-jobs.md)

@@ -92,6 +92,10 @@ them.
 When `ctx.Tx` is active the aggregate participates in the transaction,
 matching `RawQuery`/`QueryModel`.
 
+To keep an aggregate on a parent column rather than compute it per request —
+`Order.PaidAmount` maintained as `SUM(OrderPayment.amount)` — see
+[Maintained Rollups](rollups.md), the write-side counterpart of `ctx.Aggregate`.
+
 ### Auto-generated aggregate endpoint
 
 Opt a model into a built-in HTTP aggregation route with

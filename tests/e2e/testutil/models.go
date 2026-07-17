@@ -43,6 +43,25 @@ type Comment struct {
 	Approved bool   `json:"approved" db:"approved" mfx:"filterable,sortable,default:false"`
 }
 
+// Order and OrderPayment exercise maniflex.Rollup. Order carries denormalised
+// columns (PaidAmount, PaymentCount) maintained from its OrderPayment children.
+type Order struct {
+	maniflex.BaseModel
+	Reference    string `json:"reference"     db:"reference"     mfx:"required,filterable"`
+	PaidAmount   int    `json:"paid_amount"   db:"paid_amount"   mfx:"filterable,sortable,default:0"`
+	PaymentCount int    `json:"payment_count" db:"payment_count" mfx:"filterable,default:0"`
+	TopPayment   *int   `json:"top_payment"   db:"top_payment"`
+}
+
+// OrderPayment is a payment against an Order. Soft-deletable, so a rollup must
+// exclude soft-deleted payments.
+type OrderPayment struct {
+	maniflex.BaseModel
+	maniflex.WithDeletedAt
+	OrderID string `json:"order_id" db:"order_id" mfx:"required,filterable,relation"`
+	Amount  int    `json:"amount"   db:"amount"   mfx:"required,filterable"`
+}
+
 // Tag exercises soft-delete via WithIsDeleted (bool style).
 type Tag struct {
 	maniflex.BaseModel

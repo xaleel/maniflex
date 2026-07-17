@@ -51,6 +51,7 @@ type Server struct {
 	actions      []ActionConfig
 	asyncCfg     *AsyncAPIConfig     // non-nil → mount /asyncapi.json (set via RealtimeDoc)
 	globalSearch *GlobalSearchConfig // non-nil → mount /search (set via EnableGlobalSearch)
+	rollups      []compiledRollup    // maintained aggregate columns (set via RegisterRollup)
 	lifecycle    *lifecycle          // supervised services + Server.Go goroutines
 
 	// mu guards the four fields below — the only Server state mutated after

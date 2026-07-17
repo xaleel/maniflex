@@ -72,6 +72,22 @@ func (s *defaultSteps) deserialize(ctx *ServerContext, next func() error) error 
 		return nil
 	}
 	enrichLocaleQueryParams(q, ctx, ctx.Model)
+
+	// Carry over forced filters an earlier step set on ctx.Query. ParseQueryParams
+	// builds a fresh QueryParams from the request, so a scope appended before this
+	// step — an Auth-step middleware restricting a caller to their own rows — would
+	// otherwise be silently discarded (this is what left jobs/maniflex's job-status
+	// scope inert: P1-18). Only Forced filters are preserved: a scope the server
+	// imposed, marked with FilterExpr.Forced, survives, while anything derived from
+	// the request itself comes from the parse alone, so a client cannot smuggle a
+	// filter in ahead of the parse.
+	if ctx.Query != nil && q != nil {
+		for _, f := range ctx.Query.Filters {
+			if f != nil && f.Forced {
+				q.Filters = append(q.Filters, f)
+			}
+		}
+	}
 	ctx.Query = q
 
 	// Capture the ?select= projection set onto the transient carrier-staging

@@ -41,7 +41,14 @@ func writeBlocker(ctx *maniflex.ServerContext, next func() error) error {
 }
 
 // makeForceFilter returns a middleware that restricts list/read to the caller's
-// own actor_id unless they hold adminRole.
+// own actor_id (and tenant_id) unless they hold adminRole.
+//
+// The filters are marked Forced: it runs on the Auth step, which is before the
+// Deserialize step that builds ctx.Query from the request, and only a Forced
+// filter is carried across that rebuild — a plain one would be discarded, which
+// is exactly what left this scope inert until v0.2.3 (P1-18). Forced is also the
+// correct label regardless: this is a scope the server imposes, not a filter the
+// client chose.
 func makeForceFilter(adminRole string) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
 		if ctx.HasRole(adminRole) || ctx.Auth == nil {
@@ -54,12 +61,14 @@ func makeForceFilter(adminRole string) maniflex.MiddlewareFunc {
 			Field:    "actor_id",
 			Operator: maniflex.OpEq,
 			Value:    ctx.Auth.UserID,
+			Forced:   true,
 		})
 		if ctx.Auth.TenantID != "" {
 			ctx.Query.Filters = append(ctx.Query.Filters, &maniflex.FilterExpr{
 				Field:    "tenant_id",
 				Operator: maniflex.OpEq,
 				Value:    ctx.Auth.TenantID,
+				Forced:   true,
 			})
 		}
 		return next()

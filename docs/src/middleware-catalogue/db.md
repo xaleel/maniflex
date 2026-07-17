@@ -36,6 +36,14 @@ row** rather than **which rows were asked for**, set `Forced: true` on it; that 
 what carries it onto updates and deletes. `ForceFilter` and `Tenancy` set it for
 you.
 
+`Forced: true` also lets a scope be imposed **before** the DB step. The
+Deserialize step rebuilds `ctx.Query` from the request, which discards a plain
+filter an earlier step appended — but a `Forced` filter survives that rebuild.
+So an Auth-step middleware may append a `Forced` filter to `ctx.Query.Filters`
+and have it reach the query; a non-forced one set that early is dropped. The DB
+step remains the idiomatic home for scoping (`ForceFilter`, `Tenancy`), and is
+required when the scope must also cover writes end-to-end within one transaction.
+
 Use the `maniflex.Op*` constants for `Operator`. It's a bare string type, and a
 hand-built filter is never parsed — only filters arriving over HTTP are — so
 `Operator: "equals"` compiles and boots, and until v0.2.3 it produced a scope that

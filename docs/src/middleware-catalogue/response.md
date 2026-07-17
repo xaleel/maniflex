@@ -90,6 +90,12 @@ server.Pipeline.Response.Register(
 columns. For all-or-nothing exclusion across an entire model, the `hidden` or
 `writeonly` field tag is simpler.
 
+For the write side — *"only a superuser may set this field"* — use
+[`validate.FieldRole` / `validate.RestrictField`](validate.md#fieldrole--restrictfield),
+which takes the same predicate on the Validate step. Note the two differ on
+purpose when the predicate fails: a redacted read returns the record without the
+field, while a refused write returns `403` rather than quietly dropping it.
+
 ### `Envelope`
 
 Replaces the default `{"data": ...}` envelope with one of your own:

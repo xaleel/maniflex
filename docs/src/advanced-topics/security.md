@@ -63,6 +63,9 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
   `KeyProvider`. Pair with the `key:` sub-option for per-domain keys.
 - **Redact in responses with `response.RedactField`** when a column is
   visible to some callers and hidden from others.
+- **Gate writes with `validate.FieldRole`** when a column is writable by some
+  callers and not others (`readonly` is all-or-nothing). Without it, a
+  privileged field needs its own endpoint to keep it off the general PATCH.
 
 ## Input
 

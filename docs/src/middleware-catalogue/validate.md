@@ -2,7 +2,9 @@
 
 The `maniflex/middleware/validate` package supplies validators that go beyond what
 `mfx:` tags can express. Each one runs on the **Validate** step alongside the
-built-in tag enforcement and aborts with `422 VALIDATION_FAILED` on rejection.
+built-in tag enforcement, and aborts with `422 VALIDATION_ERROR` on rejection —
+except `RestrictField`/`FieldRole`, which answer `403 FIELD_FORBIDDEN` because
+they gate on *who is asking*, not on whether the value is valid.
 
 ## `UniqueField`
 
@@ -103,7 +105,7 @@ server.Pipeline.Validate.Register(
 )
 ```
 
-The returned error becomes the `message` of a `422 VALIDATION_FAILED` response.
+The returned error becomes the `message` of a `422 VALIDATION_ERROR` response.
 
 ## `DateRange`
 
@@ -152,3 +154,70 @@ value — it does not prevent the field from being supplied.
 Numeric comparisons (`gt`, `gte`, `lt`, `lte`) coerce both the body value and
 the condition value to `float64`. Non-numeric body values cause the condition to
 evaluate as false (the target field stays optional).
+
+## `FieldRole` / `RestrictField`
+
+Gate a field on **who is writing it**. These are the write-side twin of
+[`response.RedactField`](response.md#redactfield) — the same predicate shape, on
+the opposite step.
+
+```go
+// Only a superuser may write status; everyone else may write the rest of the row
+server.Pipeline.Validate.Register(
+    validate.FieldRole("subscription_expires_at", "superuser"),
+    maniflex.ForModel("User"),
+    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate),
+)
+```
+
+`RestrictField` takes a predicate instead of a role list, for gates roles cannot
+express (ownership, tenant, plan tier):
+
+```go
+server.Pipeline.Validate.Register(
+    validate.RestrictField("document_quota_bytes",
+        func(ctx *maniflex.ServerContext) bool {
+            return ctx.HasRole("superuser") || isBillingAdmin(ctx)
+        }),
+    maniflex.ForModel("User"),
+    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate),
+)
+```
+
+`FieldRole(field, roles...)` is exactly `RestrictField` with a `ctx.HasRole`
+predicate (OR-semantics). With **no roles passed it rejects every write** of the
+field, so an accidentally empty list fails closed — matching `auth.RequireRole`.
+
+### Why this isn't `readonly`
+
+The `mfx:` write controls are static: `readonly`, `immutable`, `hidden` apply to
+every caller identically. They cover *"no client ever writes this"*. They cannot
+express *"only a superuser may set `subscription_expires_at`, while the owner
+writes the rest of their own row"* — which, without this, costs a separate
+endpoint per privileged field.
+
+### Refused, not stripped
+
+A caller without permission gets **`403 FIELD_FORBIDDEN`** naming the field.
+This deliberately differs from `readonly`, which silently drops the field:
+
+| | `readonly` | `FieldRole` |
+|---|---|---|
+| meaning | nobody writes this, ever | *someone* writes this — not you |
+| client sending it | confused about the schema | making a privilege error |
+| on violation | field dropped, `200` | whole write refused, `403` |
+
+Answering `200` to a write that did not happen, echoing the old value back, is
+indistinguishable from success. The write is refused **whole** — a mixed
+`PATCH {"title": …, "status": …}` from a non-holder changes neither field.
+
+### Details
+
+- **Only a field present in the body is gated.** A PATCH that does not mention it
+  passes untouched. An explicit `null` *is* a write, and is gated.
+- **Create and update both**, when you scope it with `ForOperation`.
+- `field` is the **JSON** name.
+- **Scope it with `maniflex.ForModel`.** Registered without one it applies to
+  every model, and a gate naming a field the model does not have can never fire.
+  It warns once per model in that case, since a typo would otherwise leave the
+  real field ungated in silence.

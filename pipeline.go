@@ -118,8 +118,19 @@ func (p *Pipeline) executeAction(ctx *ServerContext, cfg ActionConfig) error {
 // registered on the skipped steps with ForOperation(OpSearch) is inert (and
 // warned about at startup by warnIneffectiveMiddleware).
 func (p *Pipeline) executeSearch(ctx *ServerContext, handler func(*ServerContext) error) error {
-	model := ctx.Model.Name // synthetic "__search", never empty
-	op := ctx.Operation     // OpSearch
+	return p.executeTrimmed(ctx, handler)
+}
+
+// executeTrimmed runs Auth → handler → Response for an operation that has no
+// body to deserialize, no rules to validate and no row to read or write. The
+// skipped steps must be declared in stepsSkippedByOp, or the startup scan will
+// not know to warn about middleware registered on them.
+//
+// Auth is never among the skipped: an operation that reaches data — even to name
+// it, as minting an upload URL does — is one the app's auth must gate.
+func (p *Pipeline) executeTrimmed(ctx *ServerContext, handler func(*ServerContext) error) error {
+	model := ctx.Model.Name
+	op := ctx.Operation
 
 	handlerFn := func(ctx *ServerContext, next func() error) error {
 		if err := handler(ctx); err != nil {
@@ -183,8 +194,9 @@ func (p *Pipeline) steps() []*StepRegistry {
 // ineffective-registration scan below — a future op that trims the pipeline adds
 // one entry here.
 var stepsSkippedByOp = map[Operation][]string{
-	OpAction: {"deserialize", "validate", "service", "db"},
-	OpSearch: {"deserialize", "validate", "service", "db"},
+	OpAction:        {"deserialize", "validate", "service", "db"},
+	OpSearch:        {"deserialize", "validate", "service", "db"},
+	OpPresignUpload: {"deserialize", "validate", "service", "db"},
 }
 
 // opSkipsStep reports whether the pipeline for op skips the step named stepName.

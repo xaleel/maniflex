@@ -44,6 +44,7 @@ Tag sub-options:
 | `max_size:N` | per-field size limit; suffixes `KB`, `MB`, `GB` or plain bytes |
 | `accept:p1\|p2` | allowed MIME-type patterns, e.g. `image/*\|application/pdf` |
 | `auto_delete:false` | keep the stored file when the row is hard-deleted or the field is replaced (default: delete) |
+| `upload:presigned` | mount `POST /{model}/{field}/upload-url` so the client uploads straight to storage instead of through the app — see [Direct-to-storage uploads](#direct-to-storage-uploads-uploadpresigned). Requires a backend that can presign (`storage/s3`; not `LocalStorage`) |
 | `file_acl:private` | (default) response carries the raw storage key; downloads go via `/files/<key>` or the per-model attachment route |
 | `file_acl:signed` | response replaces the key with a pre-signed URL valid for `Config.FileSignedURLTTL` (default 1h). Requires `FileStorage.URL()` |
 | `file_acl:public` | response replaces the key with a permanent / long-lived URL (e.g. S3 7-day max). Pair with public-read ACL on the bucket for true permanence |
@@ -257,12 +258,100 @@ already uploaded via the standalone endpoint. This is useful when the upload
 is decoupled from the record creation (large files uploaded ahead of time,
 re-using an existing file, and so on).
 
-The key is **existence-checked against storage** before the write: setting a
-`file` field to a string key that does not exist in the configured `FileStorage`
-is rejected with `422 FILE_NOT_FOUND`, so a record can never reference a dangling
-key. (Pass JSON `null` to clear the field.) In production the key exists because
-the client uploaded it first — via the multipart part or a prior `POST /files`.
-In tests, seed the key into the shared storage before referencing it.
+The key is **checked against storage** before the write: setting a `file` field to
+a string key that does not exist in the configured `FileStorage` is rejected with
+`422 FILE_NOT_FOUND`, so a record can never reference a dangling key. (Pass JSON
+`null` to clear the field.) In production the key exists because the client
+uploaded it first — via the multipart part, a prior `POST /files`, or a
+[presigned upload](#direct-to-storage-uploads-uploadpresigned). In tests, seed the
+key into the shared storage before referencing it.
+
+The field's `max_size` and `accept` rules apply here too, checked against the
+object actually in storage — the same bytes get the same answer whichever way they
+arrived. **This is new in v0.2.3:** before it, this path checked only that the key
+existed, so uploading out of band and referencing the key was a way past both
+rules. See the changelog if you relied on that.
+
+## Direct-to-storage uploads (`upload:presigned`)
+
+By default an upload travels client → app → storage, and the app holds the whole
+body while it does: the multipart form is drained before the handler runs, and the
+in-memory buffer defaults to the same 32 MB as the body cap, so nothing spools to
+disk either. A 60 MB video therefore costs 60 MB of server memory and two hops of
+bandwidth to store one object.
+
+Add `upload:presigned` and the bytes go straight to the bucket:
+
+```go
+type Post struct {
+    maniflex.BaseModel
+    Title string `json:"title"`
+    Video string `json:"video" mfx:"file,upload:presigned,accept:video/mp4,max_size:60MB"`
+}
+```
+
+That mounts one extra route:
+
+```
+POST /posts/video/upload-url
+```
+
+There is **no record id in that path**, deliberately: a create-time file field has
+no record yet, so a record-scoped route could not serve one. The same route works
+for create and update.
+
+The flow is two phases, and the second one is just an ordinary write:
+
+```
+① POST /posts/video/upload-url
+   {"filename": "clip.mp4", "content_type": "video/mp4", "size": 41231234}
+
+   → 200 {
+       "url":        "https://bucket.s3.amazonaws.com/",
+       "method":     "POST",
+       "fields":     { "key": "...", "policy": "...", "x-amz-signature": "..." },
+       "key":        "uploads/<uuid>/clip.mp4",
+       "max_size":   62914560,
+       "expires_at": "2026-07-17T13:05:00Z"
+     }
+
+② the client POSTs the file straight to `url` as multipart/form-data,
+   sending every entry of `fields` first and the file last
+
+③ POST /posts   {"title": "...", "video": "uploads/<uuid>/clip.mp4"}
+   → the ordinary create, which verifies the object and stores the key
+```
+
+Phase ③ is the completion step, and there is nothing else to call: the record
+either names the key or it does not. That is why no pending-upload state exists to
+reconcile — if a client uploads and never completes, no record references the
+object and nothing is corrupt (the object itself is an orphan; see `auto_delete`).
+
+**The field's rules bind at both ends.** At ① the declared `content_type` and
+`size` are checked against `accept` and `max_size`, so a URL is never minted for a
+file the field would refuse. The limits are then **pinned into the signature** —
+S3's POST policy carries a `content-length-range`, so S3 itself rejects an
+oversize body — and at ③ the stored object's real size and type are checked again.
+That last check is the one that matters: a signature can only bound what the
+backend enforces, and the record is what makes an object real.
+
+**The client never chooses the key.** It is minted server-side through
+`FilesConfig.KeyGen` (so a per-tenant prefix scheme covers presigned uploads too)
+and returned in the response. A client that could name the key could aim its
+upload at another record's object.
+
+**Auth applies.** The mint route runs `Auth → handler → Response`, so whatever
+gates the model gates the minting — granting the right to write an object is not
+something to leave unauthenticated. Note the operation is
+`maniflex.OpPresignUpload`, not `OpCreate`: the mint is not the create and can
+precede one by minutes, so scope middleware with `ForOperation(OpPresignUpload)`
+if you need it there.
+
+> **Backend support.** Presigning requires a backend that can mint one.
+> `storage/s3` can (AWS S3, R2, MinIO, Spaces, …). `LocalStorage` **cannot**, and
+> says so: the route answers `501 PRESIGN_UNSUPPORTED` rather than handing back an
+> unsigned URL, which would be an open write endpoint rather than a degraded
+> presigned one. Use the ordinary multipart upload with `LocalStorage`.
 
 ## Standalone file endpoints
 
@@ -396,9 +485,29 @@ type FileStorage interface {
     Retrieve(ctx context.Context, key string) (io.ReadCloser, FileMeta, error)
     Delete(ctx context.Context, key string) error
     Exists(ctx context.Context, key string) (bool, error)
+    Stat(ctx context.Context, key string) (FileMeta, error)
+    PresignUpload(ctx context.Context, key string, opts PresignUploadOptions) (*PresignedUpload, error)
     URL(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 ```
+
+> **`Stat` and `PresignUpload` are new in v0.2.3** and break every third-party
+> backend until it implements them.
+>
+> **`Stat`** returns an object's metadata without fetching its body. Return
+> `maniflex.ErrFileNotFound` for a missing key. Its `Size` and `ContentType` are
+> what a `file` field's `max_size` and `accept` are checked against when a record
+> references a key, so they must describe what is really stored — a client that
+> uploaded 5 GB to a 60 MB field is caught here or nowhere. If your backend has no
+> cheap metadata call, `Retrieve` and measure; it is correct, merely slower.
+>
+> **`PresignUpload`** mints a direct-to-storage authorisation. If your backend
+> cannot, **return `maniflex.ErrPresignUnsupported`** — the framework turns that
+> into a clean `501`. Do *not* return an unsigned URL instead: that is not a
+> degraded presigned upload, it is an unauthenticated write endpoint. Pin
+> `opts.MaxSize` into the signature if you can (S3's POST policy does, via
+> `content-length-range`; a presigned PUT cannot), since the framework's own check
+> can only run once the bytes are already stored and paid for.
 
 `Retrieve` returns `maniflex.ErrFileNotFound` when the key does not exist.
 `Delete` *should* also return `maniflex.ErrFileNotFound` for missing keys so

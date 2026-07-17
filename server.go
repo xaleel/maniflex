@@ -964,6 +964,13 @@ func modelRouteShapes(meta *ModelMeta) []routeShape {
 	}
 	for _, ff := range meta.FileFields() {
 		shapes = append(shapes, routeShape{"attachment", []string{base, "{id}", ff.Tags.JSONName}, []string{"GET"}})
+		if ff.Tags.PresignedUpload {
+			shapes = append(shapes, routeShape{
+				"presigned upload",
+				[]string{base, ff.Tags.JSONName, "upload-url"},
+				[]string{"POST"},
+			})
+		}
 	}
 	return shapes
 }

@@ -502,6 +502,11 @@ func (s *Server) GETRaw(path string) *Response {
 type MemoryStorage struct {
 	mu    sync.RWMutex
 	files map[string]memFile
+
+	// PresignFails makes PresignUpload report maniflex.ErrPresignUnsupported, so a
+	// test can exercise the branch a backend that cannot presign takes — the one
+	// that must answer 501 rather than hand out something unsigned.
+	PresignFails bool
 }
 
 type memFile struct {
@@ -551,6 +556,66 @@ func (m *MemoryStorage) Exists(_ context.Context, key string) (bool, error) {
 	defer m.mu.RUnlock()
 	_, ok := m.files[key]
 	return ok, nil
+}
+
+// PutObject writes an object straight into the store, standing in for a client
+// that uploaded directly to storage with a presigned authorisation. It is the
+// only way to reach the completion path in a test without a real bucket.
+//
+// contentType is stored verbatim, including empty — a backend that recorded no
+// type is a real case the completion check has to answer for.
+func PutObject(t testing.TB, m *MemoryStorage, key, contentType string, body []byte) {
+	t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.files[key] = memFile{
+		data: body,
+		meta: maniflex.FileMeta{Key: key, ContentType: contentType, Size: int64(len(body))},
+	}
+}
+
+// Stat implements maniflex.FileStorage. The recorded size is the byte count
+// actually held, not what the uploader claimed, so a test that stores N bytes and
+// asserts a max_size check is asserting against the real thing.
+func (m *MemoryStorage) Stat(_ context.Context, key string) (maniflex.FileMeta, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	f, ok := m.files[key]
+	if !ok {
+		return maniflex.FileMeta{}, maniflex.ErrFileNotFound
+	}
+	meta := f.meta
+	meta.Key = key
+	meta.Size = int64(len(f.data))
+	return meta, nil
+}
+
+// PresignUpload implements maniflex.FileStorage with a fake that is honest about
+// being one: it mints no signature and stores nothing, it just reports the shape
+// a real backend would return, so the route and the completion step can be tested
+// without AWS.
+//
+// PresignFails makes it report ErrPresignUnsupported instead — the answer a
+// backend that cannot presign must give, and the branch that must never degrade
+// into handing out an unsigned URL.
+func (m *MemoryStorage) PresignUpload(_ context.Context, key string,
+	opts maniflex.PresignUploadOptions,
+) (*maniflex.PresignedUpload, error) {
+	if m.PresignFails {
+		return nil, maniflex.ErrPresignUnsupported
+	}
+	return &maniflex.PresignedUpload{
+		URL:    "https://storage.test/upload",
+		Method: http.MethodPost,
+		Fields: map[string]string{
+			"key":          key,
+			"Content-Type": opts.ContentType,
+			"policy":       "fake-signed-policy",
+		},
+		Key:       key,
+		ExpiresAt: time.Now().Add(opts.TTL),
+		MaxSize:   opts.MaxSize,
+	}, nil
 }
 
 // URL implements maniflex.FileStorage. Returns a server-relative /files/<key> path

@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
@@ -78,6 +79,10 @@ type S3Storage struct {
 	// key and TTL. Nil when the backend was constructed without presigning
 	// support (test seam via newWithClient without a presigner).
 	presign func(ctx context.Context, fullKey string, ttl time.Duration) (string, error)
+	// presignPost mints an S3 POST-policy upload for the given full key. Nil on
+	// the same test seam as presign; PresignUpload reports that rather than
+	// minting something unsigned.
+	presignPost func(ctx context.Context, fullKey string, opts maniflex.PresignUploadOptions) (*awss3.PresignedPostRequest, error)
 }
 
 // s3API is the slice of the AWS SDK we depend on. Defining it as an interface
@@ -152,6 +157,33 @@ func New(ctx context.Context, cfg Config) (*S3Storage, error) {
 			return "", fmt.Errorf("s3: presign %q: %w", fullKey, err)
 		}
 		return req.URL, nil
+	}
+	s.presignPost = func(ctx context.Context, fullKey string,
+		up maniflex.PresignUploadOptions,
+	) (*awss3.PresignedPostRequest, error) {
+		in := &awss3.PutObjectInput{
+			Bucket: awsv2.String(cfg.Bucket),
+			Key:    awsv2.String(fullKey),
+		}
+		if up.ContentType != "" {
+			in.ContentType = awsv2.String(up.ContentType)
+		}
+		req, err := presignClient.PresignPostObject(ctx, in, func(o *awss3.PresignPostOptions) {
+			if up.TTL > 0 {
+				o.Expires = up.TTL
+			}
+			// The whole reason this is a POST policy and not a presigned PUT: S3
+			// itself refuses a body outside the range, so max_size is enforced
+			// before the bytes are stored rather than after they are paid for. A
+			// presigned PUT is a bearer token to write any number of bytes.
+			if up.MaxSize > 0 {
+				o.Conditions = append(o.Conditions, []any{"content-length-range", 0, up.MaxSize})
+			}
+		})
+		if err != nil {
+			return nil, fmt.Errorf("s3: presign upload %q: %w", fullKey, err)
+		}
+		return req, nil
 	}
 	return s, nil
 }
@@ -260,6 +292,76 @@ func (s *S3Storage) Exists(ctx context.Context, key string) (bool, error) {
 	}
 	return true, nil
 }
+
+// Stat implements maniflex.FileStorage. HeadObject returns the metadata without
+// transferring the body — which is the point, since the objects this is asked
+// about are the large ones a presigned upload exists to keep out of the process.
+func (s *S3Storage) Stat(ctx context.Context, key string) (maniflex.FileMeta, error) {
+	full, err := s.fullKey(key)
+	if err != nil {
+		return maniflex.FileMeta{}, err
+	}
+	out, err := s.client.HeadObject(ctx, &awss3.HeadObjectInput{
+		Bucket: awsv2.String(s.cfg.Bucket),
+		Key:    awsv2.String(full),
+	})
+	if err != nil {
+		if isNoSuchKey(err) {
+			return maniflex.FileMeta{}, maniflex.ErrFileNotFound
+		}
+		return maniflex.FileMeta{}, fmt.Errorf("s3: stat %q: %w", key, err)
+	}
+
+	meta := maniflex.FileMeta{Key: key}
+	if out.ContentLength != nil {
+		meta.Size = *out.ContentLength
+	}
+	if out.ContentType != nil {
+		meta.ContentType = *out.ContentType
+	}
+	if out.Metadata != nil {
+		meta.Filename = out.Metadata["filename"]
+	}
+	return meta, nil
+}
+
+// PresignUpload implements maniflex.FileStorage with an S3 POST policy: the
+// returned Fields carry the signed policy, and S3 enforces it — including
+// opts.MaxSize, via content-length-range.
+func (s *S3Storage) PresignUpload(ctx context.Context, key string,
+	opts maniflex.PresignUploadOptions,
+) (*maniflex.PresignedUpload, error) {
+	if s.presignPost == nil {
+		// The test seam (newWithClient) leaves this nil. Report it as unsupported
+		// rather than mint nothing and let the caller send an unsigned upload.
+		return nil, maniflex.ErrPresignUnsupported
+	}
+	full, err := s.fullKey(key)
+	if err != nil {
+		return nil, err
+	}
+	req, err := s.presignPost(ctx, full, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	ttl := opts.TTL
+	if ttl <= 0 {
+		ttl = defaultPresignTTL
+	}
+	return &maniflex.PresignedUpload{
+		URL:       req.URL,
+		Method:    http.MethodPost,
+		Fields:    req.Values,
+		Key:       key,
+		ExpiresAt: time.Now().Add(ttl).UTC(),
+		MaxSize:   opts.MaxSize,
+	}, nil
+}
+
+// defaultPresignTTL mirrors the AWS SDK's own default for a POST policy, so the
+// ExpiresAt we report matches the policy we actually minted rather than guessing.
+const defaultPresignTTL = 15 * time.Minute
 
 // URL implements maniflex.FileStorage. Returns a presigned GET URL for the given key
 // valid for ttl. When ttl is 0 (FileACLPublic), a long-lived presigned URL is

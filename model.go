@@ -341,6 +341,27 @@ func (m *ModelMeta) HasScheduled() bool { return len(m.scheduled) > 0 }
 //
 // writeonly is the directive for a value the client must supply but must never
 // read back — a password — so the error names it.
+// rejectPresignedWithoutFile refuses mfx:"upload:presigned" on a field that is
+// not mfx:"file".
+//
+// upload:presigned says how a file field's bytes get to storage. A field that
+// stores no file has no bytes and mounts no upload route, so the directive would
+// simply not apply — and a protective-looking directive that quietly does nothing
+// is the exact shape v0.2.3 stopped tolerating for a misspelt option. The tag
+// parses, so the unknown-option check cannot catch this one; it is caught here.
+func (m *ModelMeta) rejectPresignedWithoutFile() error {
+	for _, f := range m.Fields {
+		if f.Tags.PresignedUpload && !f.Tags.File {
+			return fmt.Errorf(
+				"maniflex: model %q field %q is mfx:\"upload:presigned\" but not mfx:\"file\" — "+
+					"upload:presigned chooses how a file field's bytes reach storage, so on a "+
+					"field that stores no file it does nothing. Add file, or drop upload:presigned",
+				m.Name, f.Name)
+		}
+	}
+	return nil
+}
+
 func (m *ModelMeta) rejectHiddenRequired() error {
 	for _, f := range m.Fields {
 		if f.Tags.Hidden && f.Tags.Required && !f.Tags.WriteOnly {
@@ -541,6 +562,13 @@ func ScanModel(v any, cfg ModelConfig) (*ModelMeta, error) {
 	// required" — including the ones that did send it. Same shape as the singleton
 	// case above: an unsatisfiable requirement, caught here rather than at runtime.
 	if err := meta.rejectHiddenRequired(); err != nil {
+		return nil, err
+	}
+
+	// upload:presigned configures how a file field's bytes arrive, so on a field
+	// that stores no file it configures nothing — and would do so in silence,
+	// which is the failure mode the unknown-option error exists to end.
+	if err := meta.rejectPresignedWithoutFile(); err != nil {
 		return nil, err
 	}
 

@@ -190,6 +190,19 @@ func mountModel(r chi.Router, meta *ModelMeta, h *handlers, storageConfigured bo
 			r.Get("/aggregate", h.Aggregate(meta))
 		}
 
+		// Presigned-upload mint route (R5). One POST per file field that opts in
+		// with mfx:"upload:presigned". It carries no {id}: the record need not
+		// exist, which is what lets a create-time file field use it at all.
+		// Mounted only when storage is configured, for the same reason as the
+		// attachment routes — a 404 is more honest than a 501 on every request.
+		if storageConfigured {
+			for _, ff := range meta.FileFields() {
+				if ff.Tags.PresignedUpload {
+					r.Post("/"+ff.Tags.JSONName+"/upload-url", h.PresignUpload(meta, ff))
+				}
+			}
+		}
+
 		r.Route("/{id}", func(r chi.Router) {
 			r.Get("/", h.Read(meta))
 			r.Patch("/", h.Update(meta))

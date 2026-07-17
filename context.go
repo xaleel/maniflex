@@ -75,6 +75,17 @@ const (
 	// Middleware filtered with ForOperation(OpList) does NOT match exports;
 	// use ForOperation(OpList, OpExport) to cover both.
 	OpExport Operation = "export"
+
+	// Minting a presigned upload for an mfx:"file,upload:presigned" field —
+	// POST /{model}/{field}/upload-url. It runs a trimmed pipeline of
+	// Auth → handler → Response: there is no body to validate, no record to read,
+	// and no row to write, so Deserialize, Validate, Service and DB are skipped.
+	//
+	// Auth runs, which is the point: minting a URL is granting the right to write
+	// an object, so it must be gated by whatever gates the model. Middleware
+	// filtered with ForOperation(OpCreate) does NOT match it — the mint is not the
+	// create, and can precede one by minutes.
+	OpPresignUpload Operation = "presign_upload"
 )
 
 // AuthIdentityType classifies the principal behind an authenticated request.

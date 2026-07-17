@@ -17,6 +17,11 @@ const (
 	OnDeleteRestrict OnDeleteAction = "restrict" // DELETE parent → ERROR if children exist
 )
 
+// uploadPresigned is the only value mfx:"upload:" takes. It is a value-carrying
+// option rather than a bare "presigned" so the tag says what it configures, and
+// so a second upload strategy has somewhere to go.
+const uploadPresigned = "presigned"
+
 // FieldTags holds every directive that can appear in a `mfx:"..."` struct tag,
 // plus the derived JSON and DB column names.
 type FieldTags struct {
@@ -84,6 +89,17 @@ type FieldTags struct {
 	// when the record is hard-deleted or the field value is replaced by an update.
 	// Default: true when File is set. Set to false with mfx:"auto_delete:false".
 	AutoDelete bool
+	// PresignedUpload mounts POST /{model}/{field}/upload-url for this field, so a
+	// client uploads its bytes straight to storage and then sends back only the
+	// key. Parsed from mfx:"upload:presigned". Requires File.
+	//
+	// The default (multipart through the app) materialises the whole body in the
+	// server process before the handler runs, so a 60 MB video costs 60 MB of
+	// server memory and two hops. This is the way out of both, and the field's
+	// max_size and accept rules still bind: they are pinned into the signature
+	// where the backend can, and re-checked against the stored object when the
+	// record references the key.
+	PresignedUpload bool
 	// FileACL controls how the field value is presented in API responses.
 	// Parsed from mfx:"file_acl:private|signed|public". Default: FileACLPrivate.
 	// FileACLSigned replaces the storage key with a pre-signed URL.
@@ -272,6 +288,12 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 				t.FileACL = FileACLPublic
 			default:
 				t.FileACL = FileACLPrivate
+			}
+		case strings.HasPrefix(part, "upload:"):
+			if mode := strings.TrimPrefix(part, "upload:"); mode == uploadPresigned {
+				t.PresignedUpload = true
+			} else {
+				t.UnknownOpts = append(t.UnknownOpts, part)
 			}
 		// relation:RelationName;onDelete:cascade
 		// The semicolon-separated sub-options all live inside this single comma-part.

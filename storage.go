@@ -206,6 +206,34 @@ type FileStorage interface {
 	// Exists reports whether the file at key exists in storage.
 	Exists(ctx context.Context, key string) (bool, error)
 
+	// Stat returns the metadata of the object at key without fetching its body.
+	// Returns ErrFileNotFound when the key does not exist.
+	//
+	// Size and ContentType must reflect what is actually stored, because they are
+	// what the framework checks an mfx:"file" field's max_size and accept rules
+	// against when a record references a key uploaded out of band — a client that
+	// uploaded 5 GB to a 60 MB field is caught here or nowhere.
+	//
+	// It exists because Exists answers only yes/no and Retrieve would download the
+	// object to read its size, which for the large files this path is for is the
+	// cost the path was created to avoid.
+	Stat(ctx context.Context, key string) (FileMeta, error)
+
+	// PresignUpload returns a one-shot authorisation for a client to write one
+	// object directly to storage at key, bypassing the app process entirely.
+	//
+	// Return ErrPresignUnsupported when the backend cannot mint one. Do NOT return
+	// an unauthenticated URL instead: a presigned upload that degrades to an open
+	// one is a hole, not a fallback, and the caller answers 501 rather than
+	// handing a client something that only looks signed.
+	//
+	// A backend that can pin opts.MaxSize into the signature must do so (S3's
+	// POST-policy content-length-range does; a presigned PUT cannot). The
+	// framework re-checks the stored object on completion regardless, so a backend
+	// that cannot pin it is not unsafe — but the bytes have to be paid for and
+	// stored before it can be caught, so pin it where you can.
+	PresignUpload(ctx context.Context, key string, opts PresignUploadOptions) (*PresignedUpload, error)
+
 	// URL returns a URL suitable for the given access mode.
 	// For FileACLSigned, ttl is how long the URL remains valid; the backend
 	// must return an error if it cannot produce time-limited URLs.
@@ -219,6 +247,69 @@ type FileStorage interface {
 // ErrFileNotFound is returned by FileStorage.Retrieve when the requested key
 // does not exist.
 var ErrFileNotFound = errors.New("file not found")
+
+// ErrPresignUnsupported is returned by FileStorage.PresignUpload from a backend
+// that cannot mint a presigned upload. The upload-url route answers 501 with it.
+//
+// Returning this is the correct, safe answer — the wrong one is an unsigned URL,
+// which would be an unauthenticated write endpoint wearing a presigned URL's
+// clothes. LocalStorage.URL already sets that precedent on the read side (it
+// returns /files/<key> whatever the ttl), and a read served openly is a leak
+// where a write served openly is an upload endpoint for the internet.
+var ErrPresignUnsupported = errors.New("storage backend cannot presign uploads")
+
+// PresignUploadOptions describes the upload a presigned request must permit. The
+// framework fills it from the target mfx:"file" field's tags.
+type PresignUploadOptions struct {
+	// TTL is how long the presigned request stays valid.
+	TTL time.Duration
+
+	// MaxSize caps the object in bytes, from mfx:"max_size". Zero means no cap.
+	// Pin it into the signature if the backend can (S3 POST-policy's
+	// content-length-range); the framework re-checks on completion either way.
+	MaxSize int64
+
+	// ContentType is the media type the client declared at mint time. It has
+	// already been checked against the field's mfx:"accept" list, so a backend
+	// that can bind the signature to it should: that is what stops a client
+	// declaring video/mp4 to get the URL and then uploading something else.
+	ContentType string
+
+	// Filename is the client's original filename, for a Content-Disposition the
+	// backend may wish to store. Already sanitised into the key.
+	Filename string
+}
+
+// PresignedUpload is a one-shot authorisation for a client to write one object
+// directly to storage. It is what the upload-url route returns.
+type PresignedUpload struct {
+	// URL is where the client sends the upload.
+	URL string `json:"url"`
+
+	// Method is the HTTP method to use — "POST" for an S3 POST-policy form,
+	// "PUT" for a presigned PUT.
+	Method string `json:"method"`
+
+	// Fields are form values the client must send alongside the file, in this
+	// order, as multipart/form-data with the file last. POST-policy only.
+	Fields map[string]string `json:"fields,omitempty"`
+
+	// Headers are headers the client must set verbatim. Presigned PUT only.
+	Headers map[string]string `json:"headers,omitempty"`
+
+	// Key is the storage key the object will land at — the value to send back in
+	// the record's file field to complete the upload. The framework mints it; a
+	// client never chooses it, or it could aim an upload at another record's
+	// object.
+	Key string `json:"key"`
+
+	// ExpiresAt is when the authorisation stops working.
+	ExpiresAt time.Time `json:"expires_at"`
+
+	// MaxSize echoes the cap the signature pins, so a client can fail a too-large
+	// file before spending the upload rather than after.
+	MaxSize int64 `json:"max_size,omitempty"`
+}
 
 // UploadedFile holds a parsed file from a multipart request, ready for
 // processing by the Service step.

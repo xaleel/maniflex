@@ -549,23 +549,62 @@ func (s *defaultSteps) handleFileClear(ctx *ServerContext, field FieldMeta) {
 	// (e.g. {field}_hmac) handle that via their own Validate middleware.
 }
 
+// checkFileRules enforces an mfx:"file" field's max_size and accept rules
+// against one candidate's size and type.
+//
+// Both ways a file can reach a field run through this, and that is the point:
+// the bytes are the same bytes whether they arrived as multipart through the
+// server or were uploaded straight to storage and named by key afterwards, so
+// the answer must be the same too. Keeping one copy of the rule is what stops
+// the two paths drifting into disagreeing about it, which is exactly what had
+// happened — the key path enforced neither.
+func (s *defaultSteps) checkFileRules(ctx *ServerContext, field FieldMeta,
+	size int64, contentType string,
+) error {
+	jn := field.Tags.JSONName
+
+	if field.Tags.MaxSize > 0 && size > field.Tags.MaxSize {
+		ctx.Abort(http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE",
+			fmt.Sprintf("file %q exceeds maximum size of %d bytes", jn, field.Tags.MaxSize))
+		return fmt.Errorf("file too large")
+	}
+	if !matchesAccept(contentType, field.Tags.Accept) {
+		ctx.Abort(http.StatusUnsupportedMediaType, "FILE_TYPE_NOT_ALLOWED",
+			fmt.Sprintf("file %q has type %q, allowed: %v", jn, contentType, field.Tags.Accept))
+		return fmt.Errorf("file type not allowed")
+	}
+	return nil
+}
+
+// checkStoredFileRules applies checkFileRules to an object already in storage,
+// named by key.
+//
+// A backend that reports no content type at all is the awkward case: refusing
+// would break every LocalStorage deployment whose metadata sidecar predates
+// this, while accepting means an accept rule passes on an unknown type. It is
+// refused when the field constrains the type and accepted when it does not, so
+// the rule is never quietly waived — an accept list that cannot be checked is
+// not satisfied.
+func (s *defaultSteps) checkStoredFileRules(ctx *ServerContext, field FieldMeta,
+	key string, meta FileMeta,
+) error {
+	if meta.ContentType == "" && len(field.Tags.Accept) > 0 {
+		ctx.Abort(http.StatusUnsupportedMediaType, "FILE_TYPE_NOT_ALLOWED",
+			fmt.Sprintf("file key %q for field %q has no content type recorded in storage, "+
+				"so it cannot be checked against the field's accepted types %v",
+				key, field.Tags.JSONName, field.Tags.Accept))
+		return fmt.Errorf("file type unknown")
+	}
+	return s.checkFileRules(ctx, field, meta.Size, meta.ContentType)
+}
+
 // handleFileUpload validates and stores an uploaded file, then sets the storage
 // key in ctx.ParsedBody so it flows through to the DB as a normal string value.
 func (s *defaultSteps) handleFileUpload(ctx *ServerContext, field FieldMeta, uf *UploadedFile) error {
 	jn := field.Tags.JSONName
 
-	// Validate file size
-	if field.Tags.MaxSize > 0 && uf.Size > field.Tags.MaxSize {
-		ctx.Abort(http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE",
-			fmt.Sprintf("file %q exceeds maximum size of %d bytes", jn, field.Tags.MaxSize))
-		return fmt.Errorf("file too large")
-	}
-
-	// Validate content type
-	if !matchesAccept(uf.ContentType, field.Tags.Accept) {
-		ctx.Abort(http.StatusUnsupportedMediaType, "FILE_TYPE_NOT_ALLOWED",
-			fmt.Sprintf("file %q has type %q, allowed: %v", jn, uf.ContentType, field.Tags.Accept))
-		return fmt.Errorf("file type not allowed")
+	if err := s.checkFileRules(ctx, field, uf.Size, uf.ContentType); err != nil {
+		return err
 	}
 
 	// On update with auto_delete: record the old file for deletion after the
@@ -612,17 +651,32 @@ func (s *defaultSteps) handleFileUpload(ctx *ServerContext, field FieldMeta, uf 
 func (s *defaultSteps) handleFileKeyReference(ctx *ServerContext, field FieldMeta, key string) error {
 	jn := field.Tags.JSONName
 
-	// Verify the referenced key exists in storage
-	exists, err := s.storage.Exists(ctx.Ctx, key)
+	// Read the object's metadata. This both proves the key exists and yields the
+	// size and type the field's rules are checked against below — which is why it
+	// is Stat and not Exists: a yes/no answer cannot enforce max_size, and
+	// Retrieve would download the object to find out, which for the large files
+	// this path exists for is precisely the cost being avoided.
+	meta, err := s.storage.Stat(ctx.Ctx, key)
 	if err != nil {
+		if errors.Is(err, ErrFileNotFound) {
+			ctx.Abort(http.StatusUnprocessableEntity, "FILE_NOT_FOUND",
+				fmt.Sprintf("file key %q for field %q does not exist in storage", key, jn))
+			return fmt.Errorf("file key not found")
+		}
 		ctx.Abort(http.StatusInternalServerError, "STORAGE_ERROR",
 			fmt.Sprintf("failed to verify file key for %q: %s", jn, err.Error()))
 		return err
 	}
-	if !exists {
-		ctx.Abort(http.StatusUnprocessableEntity, "FILE_NOT_FOUND",
-			fmt.Sprintf("file key %q for field %q does not exist in storage", key, jn))
-		return fmt.Errorf("file key not found")
+
+	// The field's rules bind here exactly as they bind an upload through the
+	// server. They did not until v0.2.3: this path checked only that the key
+	// existed, so uploading out of band and then referencing the key was a way
+	// past max_size and accept — the same bytes the multipart path answered 413
+	// for were accepted with a 201. A presigned upload makes this path the normal
+	// one for the largest files in the system, which is exactly where an
+	// unenforced size limit is worth the most.
+	if err := s.checkStoredFileRules(ctx, field, key, meta); err != nil {
+		return err
 	}
 
 	// On update with auto_delete: if the key changed, record the old file for

@@ -16,9 +16,17 @@ import (
 	"strings"
 )
 
-// knownBareOpts are the mfx options that stand alone, with no value. Kept in
-// sync with the switch in parseFieldTags — an option added there must be added
-// here or it will be rejected as unknown, which the round-trip test enforces.
+// knownBareOpts are the mfx options matched by their exact, whole spelling —
+// those that stand alone with no value, and those that carry one from a fixed set
+// ("auto_delete:false", "upload:presigned"). The latter belong here rather than in
+// knownPrefixOpts because the value is part of what is known: mfx:"upload:x" is
+// not a valid option written badly, it is not an option, and listing the bare
+// prefix would both claim otherwise and cost the better suggestion — "upload:foo"
+// is one edit from "upload:presigned" and offers it.
+//
+// Kept in sync with the switch in parseFieldTags — an option added there must be
+// added here or it will be rejected as unknown, which the round-trip test
+// enforces.
 var knownBareOpts = []string{
 	"auto_delete:false",
 	"dynamic",
@@ -39,6 +47,7 @@ var knownBareOpts = []string{
 	"sortable",
 	"split",
 	"unique",
+	"upload:presigned",
 	"writeonly",
 }
 
@@ -83,7 +92,15 @@ func suggestOpt(opt string) string {
 				return k
 			}
 		}
-		return nearest(lowerKey, knownPrefixOpts)
+		if s := nearest(lowerKey, knownPrefixOpts); s != "" {
+			return s
+		}
+		// The key matches no free-value prefix, but a value-constrained option is
+		// known by its whole spelling and lives in the bare list — so measure the
+		// whole literal there before giving up. Without this, every misspelling of
+		// one ("upload:presined", "auto_delete:flase") is told only that it is
+		// unknown, though the option it means is a single edit away.
+		return nearest(lower, knownBareOpts)
 	}
 
 	for _, k := range knownBareOpts {

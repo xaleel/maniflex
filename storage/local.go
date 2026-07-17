@@ -162,6 +162,52 @@ func (s *LocalStorage) URL(_ context.Context, key string, _ time.Duration) (stri
 	return "/files/" + key, nil
 }
 
+// Stat implements maniflex.FileStorage. It reads the metadata sidecar without
+// opening the file itself.
+func (s *LocalStorage) Stat(_ context.Context, key string) (maniflex.FileMeta, error) {
+	full, err := s.resolve(key, false)
+	if err != nil {
+		return maniflex.FileMeta{}, err
+	}
+	fi, err := os.Stat(full)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return maniflex.FileMeta{}, maniflex.ErrFileNotFound
+		}
+		return maniflex.FileMeta{}, fmt.Errorf("storage: stat %q: %w", key, err)
+	}
+	if fi.IsDir() {
+		return maniflex.FileMeta{}, maniflex.ErrFileNotFound
+	}
+
+	meta, err := s.readMeta(full)
+	if err != nil {
+		return maniflex.FileMeta{}, err
+	}
+	meta.Key = key
+	// The file on disk is the authority on its own length; the sidecar records
+	// what the uploader claimed. They agree unless something wrote around us, and
+	// where they disagree the caller is enforcing a size limit — so the byte count
+	// that actually exists is the one that must be checked.
+	meta.Size = fi.Size()
+	return meta, nil
+}
+
+// PresignUpload implements maniflex.FileStorage. LocalStorage cannot presign:
+// there is no signature to mint and no endpoint to mint one for.
+//
+// It returns ErrPresignUnsupported rather than a /files/<key> path, deliberately.
+// URL() does return such a path for FileACLSigned — it has always pretended to
+// presign on the read side — but repeating that here would publish an
+// unauthenticated write endpoint to any client that asked for one, which is not
+// a degraded presigned upload but the absence of authentication. The upload-url
+// route turns this into a 501 that says so.
+func (s *LocalStorage) PresignUpload(_ context.Context, _ string,
+	_ maniflex.PresignUploadOptions,
+) (*maniflex.PresignedUpload, error) {
+	return nil, maniflex.ErrPresignUnsupported
+}
+
 // Compile-time interface check.
 var _ maniflex.FileStorage = (*LocalStorage)(nil)
 

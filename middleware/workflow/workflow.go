@@ -5,12 +5,25 @@
 //
 // Rules are checked against the *current* stored value of the chosen status
 // field on update, so every PATCH that touches the field issues one extra
-// `ctx.GetModel(...).Read(id)`. Reads are routed through `ctx.Tx` when one
-// is active, so the cost is bounded by the request's existing transaction.
+// read of the record.
 //
 // On rejection the middleware aborts with `422 INVALID_TRANSITION`. Guard
 // errors (e.g. role checks) use the same code; the guard's error string
 // becomes the response message.
+//
+// # Two registrations, one Machine
+//
+// A Machine with no OnTransition hooks registers with Middleware() on the
+// Validate step. It needs no transaction, and its read takes no lock: two
+// concurrent PATCHes can both read from="draft" and both pass. That is
+// tolerable without hooks — the writes race, one wins, and the record lands in
+// a state some rule allowed.
+//
+// It stops being tolerable the moment a transition has a side effect, because
+// both callers would fire it. So a Machine with hooks registers with Hooks() on
+// the DB step, where WithTransaction's transaction exists and `from` can be
+// re-read under a row lock. Declaring a hook makes Middleware() panic rather
+// than let that distinction be missed.
 package workflow
 
 import (
@@ -26,6 +39,7 @@ import (
 type Machine struct {
 	field      string
 	rules      []rule
+	hooks      []hook
 	initial    map[string]struct{}
 	hasInitial bool
 }
@@ -88,7 +102,21 @@ func AllowInitial(states ...string) Option {
 }
 
 // Middleware returns the Validate-step MiddlewareFunc for this Machine.
+//
+// It panics when the Machine declares OnTransition hooks. Hooks must run inside
+// the write's transaction, which does not exist yet on the Validate step, so a
+// Machine with hooks is registered with Hooks() on the DB step instead —
+// enforcing the same rules and guards, and more strictly. Registering this one
+// would leave the hooks silently unfired.
 func (m *Machine) Middleware() maniflex.MiddlewareFunc {
+	if len(m.hooks) > 0 {
+		panic(fmt.Sprintf(
+			"workflow: machine for field %q declares %d OnTransition hook(s); "+
+				"register sm.Hooks() on the DB step instead of sm.Middleware() on Validate. "+
+				"Middleware() runs before maniflex.WithTransaction opens the transaction, so it "+
+				"cannot fire hooks atomically with the write. Hooks() enforces the same rules and guards.",
+			m.field, len(m.hooks)))
+	}
 	return func(ctx *maniflex.ServerContext, next func() error) error {
 		if ctx.ParsedBody == nil || ctx.Model == nil {
 			return next()

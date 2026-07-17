@@ -1,18 +1,66 @@
 package maniflex
 
 import (
-	"context"
 	"fmt"
 	"sync"
 )
 
-// ComputedFunc derives a virtual field value from the loaded row. It runs in
+// maxComputedConcurrency bounds how many rows of one page resolve their
+// per-row computed fields at once.
+//
+// It used to be unbounded: applyComputedList spawned one goroutine per row, so
+// a 100-row page of a model with a DB-backed computed field fired 100 concurrent
+// round-trips, and the load scaled as page-size × concurrent-requests with
+// nothing in the middle. The parallelism is still worth having — it is what stops
+// one slow resolver serialising a page — but it needs a ceiling.
+//
+// This is a floor on the fix, not the answer: a resolver that touches a database
+// per row is an N+1 whatever its fan-out. Use AddBatchComputedField, which
+// resolves the whole page in one call.
+const maxComputedConcurrency = 8
+
+// computedExportChunk is how many rows an export resolves batch computed fields
+// for at a time. The export writer consumes rows through a lazy iterator so it
+// never holds a second copy of the page (v0.2.2); resolving in chunks keeps a
+// batch field's extra memory proportional to the chunk rather than the export.
+const computedExportChunk = 500
+
+// ComputedFunc derives a virtual field value from one loaded row. It runs in
 // the Response step after the DB row has been converted to JSON keys, so the
 // `row` map keys are JSON field names.
 //
-// A non-nil error is logged and the field is omitted from the response — a
+// A non-nil error is logged and the field is omitted from that row — a
 // computed-field failure must not poison the whole record.
-type ComputedFunc func(ctx context.Context, row map[string]any) (any, error)
+//
+// The callback receives the *ServerContext, so it can reach ctx.Tx,
+// ctx.GetModel and ctx.Auth. Note that rows of a list resolve concurrently
+// (bounded by maxComputedConcurrency): work through ctx.Tx is serialised by the
+// transaction's single connection, so a per-row resolver that queries is an N+1
+// regardless. Prefer BatchComputedFunc for anything that touches a database.
+type ComputedFunc func(ctx *ServerContext, row map[string]any) (any, error)
+
+// BatchComputedFunc derives a virtual field for a whole page in one call. It
+// receives every row being returned and must return exactly one value per row,
+// positionally aligned to `rows` — a length mismatch is logged and the field is
+// omitted rather than misaligned onto the wrong records.
+//
+// This is the answer to the N+1 that ComputedFunc invites: one query resolves a
+// column for the whole page.
+//
+//	srv.AddBatchComputedField("StoreSite", "item_count",
+//	    func(ctx *maniflex.ServerContext, rows []map[string]any) ([]any, error) {
+//	        ids := make([]any, len(rows))
+//	        for i, r := range rows { ids[i] = r["id"] }
+//	        counts, err := itemCountsBySite(ctx, ids) // ONE query
+//	        if err != nil { return nil, err }
+//	        out := make([]any, len(rows))
+//	        for i, r := range rows { out[i] = counts[r["id"].(string)] }
+//	        return out, nil
+//	    })
+//
+// A single read and the create/update echo call it with a one-row slice, so one
+// registration serves every read path.
+type BatchComputedFunc func(ctx *ServerContext, rows []map[string]any) ([]any, error)
 
 // ComputedField is one registered virtual field on a model. Name is the JSON
 // key it appears under in responses; collisions with real model fields are
@@ -21,11 +69,40 @@ type ComputedFunc func(ctx context.Context, row map[string]any) (any, error)
 type ComputedField struct {
 	Name string
 	Fn   ComputedFunc
+	// Schema is the OpenAPI schema emitted for this field in the model's
+	// response schema. Nil means "any type" — the framework cannot infer it,
+	// since the callbacks return `any`. Set it with ComputedSchema.
+	Schema *OASSchema
+	// batchFn resolves the whole page at once. When non-nil it takes precedence
+	// over Fn.
+	batchFn BatchComputedFunc
 	// recordFn is the typed path (set by the generic AddComputedField[T]): it
 	// receives the loaded record (the *T from the read/list path, or the result
 	// map on create/update echo) instead of the JSON response row. When non-nil
 	// it takes precedence over Fn.
 	recordFn func(ctx *ServerContext, record any) (any, error)
+	// batchRecordFn is the typed batch path (set by AddBatchComputedField[T]).
+	// It takes precedence over every other callback.
+	batchRecordFn func(ctx *ServerContext, records []any) ([]any, error)
+}
+
+// isBatch reports whether this field resolves a whole page in one call.
+func (c ComputedField) isBatch() bool {
+	return c.batchFn != nil || c.batchRecordFn != nil
+}
+
+// ComputedOption configures a computed field at registration.
+type ComputedOption func(*ComputedField)
+
+// ComputedSchema declares the OpenAPI schema for a computed field's value.
+// Without it the field is still emitted in the spec (read-only), but with no
+// type — the framework has no way to know one, since the callbacks return `any`,
+// and guessing would put a claim in the spec that nothing enforces.
+//
+//	srv.AddBatchComputedField("StoreSite", "item_count", fn,
+//	    maniflex.ComputedSchema(&maniflex.OASSchema{Type: "integer"}))
+func ComputedSchema(s *OASSchema) ComputedOption {
+	return func(c *ComputedField) { c.Schema = s }
 }
 
 // AddComputedField registers a derived field on the named model. The field
@@ -34,20 +111,58 @@ type ComputedField struct {
 // field name collides with an existing real field or another computed field.
 //
 //	server.AddComputedField("Product", "stock_level",
-//	    func(ctx context.Context, row map[string]any) (any, error) {
-//	        return stockService.CurrentLevel(ctx, row["id"].(string))
+//	    func(ctx *maniflex.ServerContext, row map[string]any) (any, error) {
+//	        return stockService.CurrentLevel(ctx.Ctx, row["id"].(string))
 //	    })
-func (s *Server) AddComputedField(modelName, name string, fn ComputedFunc) error {
+//
+// For anything that queries a database, prefer AddBatchComputedField — this
+// callback runs once per row.
+func (s *Server) AddComputedField(modelName, name string, fn ComputedFunc, opts ...ComputedOption) error {
 	if fn == nil {
 		return fmt.Errorf("maniflex: AddComputedField requires a non-nil function")
 	}
-	return s.registerComputed(modelName, ComputedField{Name: name, Fn: fn})
+	return s.registerComputed(modelName, ComputedField{Name: name, Fn: fn}, opts)
+}
+
+// AddBatchComputedField registers a derived field resolved for a whole page in
+// one call. The callback receives every row being returned and must return one
+// value per row, positionally aligned.
+//
+//	server.AddBatchComputedField("StoreSite", "item_count", fn,
+//	    maniflex.ComputedSchema(&maniflex.OASSchema{Type: "integer"}))
+//
+// A single read and the create/update echo call it with a one-row slice; an
+// export calls it once per chunk of rows.
+func (s *Server) AddBatchComputedField(modelName, name string, fn BatchComputedFunc, opts ...ComputedOption) error {
+	if fn == nil {
+		return fmt.Errorf("maniflex: AddBatchComputedField requires a non-nil function")
+	}
+	return s.registerComputed(modelName, ComputedField{Name: name, batchFn: fn}, opts)
+}
+
+// MustAddComputedField is the panic-on-error variant, intended for use in
+// `main` or package initialisation.
+func (s *Server) MustAddComputedField(modelName, name string, fn ComputedFunc, opts ...ComputedOption) {
+	if err := s.AddComputedField(modelName, name, fn, opts...); err != nil {
+		panic(err)
+	}
+}
+
+// MustAddBatchComputedField is the panic-on-error variant of
+// AddBatchComputedField.
+func (s *Server) MustAddBatchComputedField(modelName, name string, fn BatchComputedFunc, opts ...ComputedOption) {
+	if err := s.AddBatchComputedField(modelName, name, fn, opts...); err != nil {
+		panic(err)
+	}
 }
 
 // registerComputed validates and appends a computed field to a model.
-func (s *Server) registerComputed(modelName string, cf ComputedField) error {
+func (s *Server) registerComputed(modelName string, cf ComputedField, opts []ComputedOption) error {
 	if cf.Name == "" {
 		return fmt.Errorf("maniflex: AddComputedField requires a non-empty name")
+	}
+	for _, o := range opts {
+		o(&cf)
 	}
 	meta, ok := s.registry.Get(modelName)
 	if !ok {
@@ -78,57 +193,174 @@ func (s *Server) registerComputed(modelName string, cf ComputedField) error {
 // is bridged best-effort from the stored row.
 //
 //	maniflex.AddComputedField(srv, "Product", "stock_level",
-//	    func(ctx context.Context, p *Product) (any, error) {
-//	        return stockService.CurrentLevel(ctx, p.ID)
+//	    func(ctx *maniflex.ServerContext, p *Product) (any, error) {
+//	        return stockService.CurrentLevel(ctx.Ctx, p.ID)
 //	    })
-func AddComputedField[T any](s *Server, modelName, name string, fn func(ctx context.Context, record *T) (any, error)) error {
+func AddComputedField[T any](s *Server, modelName, name string, fn func(ctx *ServerContext, record *T) (any, error), opts ...ComputedOption) error {
 	if fn == nil {
 		return fmt.Errorf("maniflex: AddComputedField requires a non-nil function")
 	}
 	wrapped := func(ctx *ServerContext, record any) (any, error) {
-		rec, ok := record.(*T)
-		if !ok {
-			// create/update echo carries the stored row as a map; re-read it via
-			// the typed (scanStruct) path so the callback gets populated fields.
-			if m, isMap := record.(map[string]any); isMap {
-				if id, _ := m["id"].(string); id != "" {
-					if r, err := Read[T](ctx, id); err == nil {
-						rec = r
-					}
-				}
+		return fn(ctx, typedRecord[T](ctx, record))
+	}
+	return s.registerComputed(modelName, ComputedField{Name: name, recordFn: wrapped}, opts)
+}
+
+// AddBatchComputedField registers a typed batch-resolved derived field: the
+// callback receives the whole page as []*T and returns one value per record,
+// positionally aligned.
+//
+//	maniflex.AddBatchComputedField(srv, "StoreSite", "item_count",
+//	    func(ctx *maniflex.ServerContext, sites []*StoreSite) ([]any, error) {
+//	        counts, err := itemCountsBySite(ctx, ids(sites)) // ONE query
+//	        ...
+//	    })
+func AddBatchComputedField[T any](s *Server, modelName, name string, fn func(ctx *ServerContext, records []*T) ([]any, error), opts ...ComputedOption) error {
+	if fn == nil {
+		return fmt.Errorf("maniflex: AddBatchComputedField requires a non-nil function")
+	}
+	wrapped := func(ctx *ServerContext, records []any) ([]any, error) {
+		typed := make([]*T, len(records))
+		for i, r := range records {
+			typed[i] = typedRecord[T](ctx, r)
+		}
+		return fn(ctx, typed)
+	}
+	return s.registerComputed(modelName, ComputedField{Name: name, batchRecordFn: wrapped}, opts)
+}
+
+// typedRecord coerces a loaded record to *T. The create/update echo carries the
+// stored row as a map rather than the scanned record, so it is re-read through
+// the typed path to give the callback populated fields. Never returns nil.
+func typedRecord[T any](ctx *ServerContext, record any) *T {
+	if rec, ok := record.(*T); ok && rec != nil {
+		return rec
+	}
+	if m, isMap := record.(map[string]any); isMap {
+		if id, _ := m["id"].(string); id != "" {
+			if r, err := Read[T](ctx, id); err == nil {
+				return r
 			}
 		}
-		if rec == nil {
-			rec = new(T)
-		}
-		return fn(ctx.Ctx, rec)
 	}
-	return s.registerComputed(modelName, ComputedField{Name: name, recordFn: wrapped})
+	return new(T)
 }
 
-// MustAddComputedField is the panic-on-error variant, intended for use in
-// `main` or package initialisation.
-func (s *Server) MustAddComputedField(modelName, name string, fn ComputedFunc) {
-	if err := s.AddComputedField(modelName, name, fn); err != nil {
-		panic(err)
-	}
-}
+// ── resolution ────────────────────────────────────────────────────────────────
 
-// applyComputed runs every registered computed field and writes the result
-// under its JSON name into row. The legacy Fn receives the JSON response row;
-// the typed recordFn receives the loaded record. Errors are logged but do not
-// abort the response — a single bad function must not blank the whole record.
+// applyComputed resolves every computed field for one row. Batch fields are
+// called with a one-row slice, so a single read and the create/update echo need
+// no separate registration.
 func applyComputed(ctx *ServerContext, model *ModelMeta, record any, row map[string]any) {
+	applyComputedRows(ctx, model, []map[string]any{row}, []any{record})
+}
+
+// applyComputedList resolves computed fields across a page of response rows,
+// with records[i] the loaded record for rows[i].
+func applyComputedList(ctx *ServerContext, model *ModelMeta, rows []any, records []any) {
+	maps := make([]map[string]any, 0, len(rows))
+	recs := make([]any, 0, len(rows))
+	for i, r := range rows {
+		m, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		maps = append(maps, m)
+		recs = append(recs, recordAt(records, i))
+	}
+	applyComputedRows(ctx, model, maps, recs)
+}
+
+// applyComputedRows is the one resolution path. rows and records are aligned;
+// batch fields resolve in a single call, per-row fields fan out across a
+// bounded worker pool.
+func applyComputedRows(ctx *ServerContext, model *ModelMeta, rows []map[string]any, records []any) {
 	model.mu.RLock()
 	fields := model.Computed
 	model.mu.RUnlock()
+	if len(fields) == 0 || len(rows) == 0 {
+		return
+	}
+
+	var perRow []ComputedField
+	for _, c := range fields {
+		if c.isBatch() {
+			applyBatchComputed(ctx, model, c, rows, records)
+			continue
+		}
+		perRow = append(perRow, c)
+	}
+	if len(perRow) > 0 {
+		applyPerRowComputed(ctx, model, perRow, rows, records)
+	}
+}
+
+// applyBatchComputed resolves one batch field for every row in a single call.
+func applyBatchComputed(ctx *ServerContext, model *ModelMeta, c ComputedField, rows []map[string]any, records []any) {
+	var vals []any
+	var err error
+	if c.batchRecordFn != nil {
+		vals, err = c.batchRecordFn(ctx, records)
+	} else {
+		vals, err = c.batchFn(ctx, rows)
+	}
+	if err != nil {
+		ctx.Logger().Warn("batch computed field failed",
+			"model", model.Name, "field", c.Name, "error", err.Error())
+		return
+	}
+	// One value per row, positionally. A short or long slice would silently
+	// write values onto the wrong records, so refuse the whole field instead —
+	// an absent column is diagnosable; a misaligned one is not.
+	if len(vals) != len(rows) {
+		ctx.Logger().Warn("batch computed field returned the wrong number of values — field omitted",
+			"model", model.Name, "field", c.Name,
+			"rows", len(rows), "values", len(vals))
+		return
+	}
+	for i, v := range vals {
+		rows[i][c.Name] = v
+	}
+}
+
+// applyPerRowComputed runs the per-row callbacks over rows, bounded to
+// maxComputedConcurrency goroutines rather than one per row.
+func applyPerRowComputed(ctx *ServerContext, model *ModelMeta, fields []ComputedField, rows []map[string]any, records []any) {
+	if len(rows) == 1 {
+		computeRow(ctx, model, fields, recordAt(records, 0), rows[0])
+		return
+	}
+
+	workers := min(maxComputedConcurrency, len(rows))
+	idx := make(chan int)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for i := range idx {
+				computeRow(ctx, model, fields, recordAt(records, i), rows[i])
+			}
+		}()
+	}
+	for i := range rows {
+		idx <- i
+	}
+	close(idx)
+	wg.Wait()
+}
+
+// computeRow runs every per-row callback for a single row. Errors are logged
+// but do not abort the response — a single bad function must not blank the
+// whole record.
+func computeRow(ctx *ServerContext, model *ModelMeta, fields []ComputedField, record any, row map[string]any) {
 	for _, c := range fields {
 		var v any
 		var err error
 		if c.recordFn != nil {
 			v, err = c.recordFn(ctx, record)
 		} else {
-			v, err = c.Fn(ctx.Ctx, row)
+			v, err = c.Fn(ctx, row)
 		}
 		if err != nil {
 			ctx.Logger().Warn("computed field failed",
@@ -139,40 +371,18 @@ func applyComputed(ctx *ServerContext, model *ModelMeta, record any, row map[str
 	}
 }
 
-// applyComputedList runs computed fields across a slice of response rows, with
-// records[i] the loaded record for rows[i]. Each row is processed in its own
-// goroutine when there are 2+ rows so a slow computed-field doesn't serialise
-// the whole page.
-func applyComputedList(ctx *ServerContext, model *ModelMeta, rows []any, records []any) {
+// recordAt returns the record aligned to row index i, or nil when the caller
+// supplied fewer records than rows.
+func recordAt(records []any, i int) any {
+	if i < len(records) {
+		return records[i]
+	}
+	return nil
+}
+
+// hasComputedFields reports whether model has any computed field registered.
+func hasComputedFields(model *ModelMeta) bool {
 	model.mu.RLock()
-	hasComputed := len(model.Computed) > 0
-	model.mu.RUnlock()
-	if !hasComputed || len(rows) == 0 {
-		return
-	}
-	recordAt := func(i int) any {
-		if i < len(records) {
-			return records[i]
-		}
-		return nil
-	}
-	if len(rows) == 1 {
-		if m, ok := rows[0].(map[string]any); ok {
-			applyComputed(ctx, model, recordAt(0), m)
-		}
-		return
-	}
-	var wg sync.WaitGroup
-	wg.Add(len(rows))
-	for i := range rows {
-		go func(idx int) {
-			defer wg.Done()
-			m, ok := rows[idx].(map[string]any)
-			if !ok {
-				return
-			}
-			applyComputed(ctx, model, recordAt(idx), m)
-		}(i)
-	}
-	wg.Wait()
+	defer model.mu.RUnlock()
+	return len(model.Computed) > 0
 }

@@ -6,7 +6,6 @@ package e2e
 // "double_amount" and verify it shows up on every read path.
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"sync/atomic"
@@ -32,7 +31,7 @@ func TestComputedField_AppearsOnCreate(t *testing.T) {
 	t.Parallel()
 	srv := computedServer(t, func(s *maniflex.Server) {
 		s.MustAddComputedField("LockedInvoice", "double_amount",
-			func(_ context.Context, row map[string]any) (any, error) {
+			func(_ *maniflex.ServerContext, row map[string]any) (any, error) {
 				// `amount` may arrive as int64 (SQLite scan) or float64 (JSON
 				// round-trip); handle both.
 				switch v := row["amount"].(type) {
@@ -65,7 +64,7 @@ func TestComputedField_AppearsOnRead(t *testing.T) {
 	t.Parallel()
 	srv := computedServer(t, func(s *maniflex.Server) {
 		s.MustAddComputedField("LockedInvoice", "label",
-			func(_ context.Context, row map[string]any) (any, error) {
+			func(_ *maniflex.ServerContext, row map[string]any) (any, error) {
 				return row["number"].(string) + " (" + row["status"].(string) + ")", nil
 			})
 	})
@@ -86,7 +85,7 @@ func TestComputedField_AppearsOnList(t *testing.T) {
 	t.Parallel()
 	srv := computedServer(t, func(s *maniflex.Server) {
 		s.MustAddComputedField("LockedInvoice", "tag",
-			func(_ context.Context, row map[string]any) (any, error) {
+			func(_ *maniflex.ServerContext, row map[string]any) (any, error) {
 				return "tag-" + row["number"].(string), nil
 			})
 	})
@@ -117,7 +116,7 @@ func TestComputedField_AppearsOnUpdate(t *testing.T) {
 	t.Parallel()
 	srv := computedServer(t, func(s *maniflex.Server) {
 		s.MustAddComputedField("LockedInvoice", "is_settled",
-			func(_ context.Context, row map[string]any) (any, error) {
+			func(_ *maniflex.ServerContext, row map[string]any) (any, error) {
 				return row["status"].(string) == "posted", nil
 			})
 	})
@@ -141,7 +140,7 @@ func TestComputedField_ErrorIsLoggedAndFieldOmitted(t *testing.T) {
 	var calls int32
 	srv := computedServer(t, func(s *maniflex.Server) {
 		s.MustAddComputedField("LockedInvoice", "broken",
-			func(_ context.Context, _ map[string]any) (any, error) {
+			func(_ *maniflex.ServerContext, _ map[string]any) (any, error) {
 				atomic.AddInt32(&calls, 1)
 				return nil, errors.New("intentional failure")
 			})
@@ -164,7 +163,7 @@ func TestComputedField_CollisionRejected(t *testing.T) {
 	srv := computedServer(t, func(s *maniflex.Server) {
 		// Direct collision with an existing field on the model.
 		err := s.AddComputedField("LockedInvoice", "amount",
-			func(_ context.Context, _ map[string]any) (any, error) { return 0, nil })
+			func(_ *maniflex.ServerContext, _ map[string]any) (any, error) { return 0, nil })
 		if err == nil {
 			t.Error("expected error for computed field colliding with real field")
 		}
@@ -180,9 +179,9 @@ func TestComputedField_DuplicateRejected(t *testing.T) {
 	t.Parallel()
 	computedServer(t, func(s *maniflex.Server) {
 		_ = s.AddComputedField("LockedInvoice", "extra",
-			func(_ context.Context, _ map[string]any) (any, error) { return 1, nil })
+			func(_ *maniflex.ServerContext, _ map[string]any) (any, error) { return 1, nil })
 		err := s.AddComputedField("LockedInvoice", "extra",
-			func(_ context.Context, _ map[string]any) (any, error) { return 2, nil })
+			func(_ *maniflex.ServerContext, _ map[string]any) (any, error) { return 2, nil })
 		if err == nil {
 			t.Error("expected error for duplicate computed field name")
 		}
@@ -193,7 +192,7 @@ func TestComputedField_UnknownModelRejected(t *testing.T) {
 	t.Parallel()
 	computedServer(t, func(s *maniflex.Server) {
 		err := s.AddComputedField("DoesNotExist", "x",
-			func(_ context.Context, _ map[string]any) (any, error) { return 0, nil })
+			func(_ *maniflex.ServerContext, _ map[string]any) (any, error) { return 0, nil })
 		if err == nil {
 			t.Error("expected error for unknown model")
 		}

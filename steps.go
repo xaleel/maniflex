@@ -1990,25 +1990,59 @@ func (s *defaultSteps) streamExportRows(ctx *ServerContext) {
 	model := ctx.Model
 	fields := exportColumns(model)
 
-	// Serialise each record only as the writer asks for it. Building the whole
-	// []map[string]any up front held a second copy of the entire result set —
-	// on top of the typed records — for the length of the write, though each row
-	// is used once and then never again. Now a row's map is garbage as soon as
-	// it has been written.
-	rows := func(yield func(map[string]any) bool) {
+	if err := streamExport(ctx.Writer, model.Name, format, fields, s.exportRowSeq(ctx, model, lr)); err != nil {
+		ctx.Logger().Warn("export write failed", "error", err.Error())
+	}
+}
+
+// exportRowSeq yields each export row, serialising a record only as the writer
+// asks for it. Building the whole []map[string]any up front held a second copy
+// of the entire result set — on top of the typed records — for the length of the
+// write, though each row is used once and then never again. A row's map is now
+// garbage as soon as it has been written.
+//
+// A model with computed fields resolves them a chunk at a time instead: a batch
+// resolver then costs one call per computedExportChunk records rather than one
+// per record, and only a chunk's maps are live at once. A model with no computed
+// fields never buffers a chunk.
+func (s *defaultSteps) exportRowSeq(ctx *ServerContext, model *ModelMeta, lr *ListResult) func(func(map[string]any) bool) {
+	if hasComputedFields(model) {
+		return s.exportRowSeqComputed(ctx, model, lr)
+	}
+	return func(yield func(map[string]any) bool) {
 		for _, rec := range lr.Items {
-			m := s.marshalRecord(model, rec, ctx)
-			s.rewriteFileACL(ctx.Ctx, model, m)
-			applyComputed(ctx, model, rec, m)
-			if !yield(m) {
+			if !yield(s.exportRow(ctx, model, rec)) {
 				return
 			}
 		}
 	}
+}
 
-	if err := streamExport(ctx.Writer, model.Name, format, fields, rows); err != nil {
-		ctx.Logger().Warn("export write failed", "error", err.Error())
+// exportRowSeqComputed is exportRowSeq for a model carrying computed fields:
+// same laziness, but resolved a chunk at a time.
+func (s *defaultSteps) exportRowSeqComputed(ctx *ServerContext, model *ModelMeta, lr *ListResult) func(func(map[string]any) bool) {
+	return func(yield func(map[string]any) bool) {
+		for start := 0; start < len(lr.Items); start += computedExportChunk {
+			recs := lr.Items[start:min(start+computedExportChunk, len(lr.Items))]
+			maps := make([]map[string]any, len(recs))
+			for i, rec := range recs {
+				maps[i] = s.exportRow(ctx, model, rec)
+			}
+			applyComputedRows(ctx, model, maps, recs)
+			for _, m := range maps {
+				if !yield(m) {
+					return
+				}
+			}
+		}
 	}
+}
+
+// exportRow serialises one record to its export row, computed fields aside.
+func (s *defaultSteps) exportRow(ctx *ServerContext, model *ModelMeta, rec any) map[string]any {
+	m := s.marshalRecord(model, rec, ctx)
+	s.rewriteFileACL(ctx.Ctx, model, m)
+	return m
 }
 
 // streamAttachment serves the per-model attachment route. It dereferences the

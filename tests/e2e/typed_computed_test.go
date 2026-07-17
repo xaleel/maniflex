@@ -5,7 +5,6 @@ package e2e
 // and create echo (where the row is re-read via the scanStruct path).
 
 import (
-	"context"
 	"net/http"
 	"testing"
 
@@ -18,7 +17,7 @@ func TestTyped_ComputedField(t *testing.T) {
 		Models: []any{widget{}},
 		Middleware: func(s *maniflex.Server) {
 			if err := maniflex.AddComputedField(s, "widget", "doubled",
-				func(ctx context.Context, w *widget) (any, error) {
+				func(ctx *maniflex.ServerContext, w *widget) (any, error) {
 					return w.Qty * 2, nil
 				}); err != nil {
 				t.Fatalf("AddComputedField: %v", err)

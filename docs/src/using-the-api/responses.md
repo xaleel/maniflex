@@ -116,15 +116,14 @@ being stored:
 
 ```go
 server.MustAddComputedField("Product", "stock_level",
-    func(ctx context.Context, row map[string]any) (any, error) {
-        return stockService.CurrentLevel(ctx, row["id"].(string))
+    func(ctx *maniflex.ServerContext, row map[string]any) (any, error) {
+        return stockService.CurrentLevel(ctx.Ctx, row["id"].(string))
     })
 ```
 
 The function runs in the Response step after the DB row has been converted
-to JSON keys, so `row`'s keys are JSON field names. For list responses each
-row is processed in its own goroutine — a slow function does not serialise
-a whole page.
+to JSON keys, so `row`'s keys are JSON field names. It receives the
+`*ServerContext`, so it can reach `ctx.Tx`, `ctx.GetModel` and `ctx.Auth`.
 
 Computed fields:
 
@@ -136,9 +135,76 @@ Computed fields:
   is unaffected.
 - **Run on every read path** that goes through the default Response step,
   including the create and update echoes.
+- **Appear in the OpenAPI spec** as read-only properties of the model's
+  response schema (never in a create or update body).
 
 Use them for derived values that change too often to denormalise (stock
 level, leave balance, account balance) or that depend on external systems.
+
+### Batch resolution (`AddBatchComputedField`)
+
+`AddComputedField` runs **once per row**, so a resolver that queries is an
+N+1: a 50-row page costs 50 round-trips. `AddBatchComputedField` resolves
+the whole page in one call instead — this is what lets a generated
+`GET /store-sites` return an `item_count` without a hand-written action:
+
+```go
+server.MustAddBatchComputedField("StoreSite", "item_count",
+    func(ctx *maniflex.ServerContext, rows []map[string]any) ([]any, error) {
+        ids := make([]any, len(rows))
+        for i, r := range rows {
+            ids[i] = r["id"]
+        }
+        counts, err := itemCountsBySite(ctx, ids) // ONE query for the page
+        if err != nil {
+            return nil, err
+        }
+        out := make([]any, len(rows))
+        for i, r := range rows {
+            out[i] = counts[r["id"].(string)]
+        }
+        return out, nil
+    },
+    maniflex.ComputedSchema(&maniflex.OASSchema{Type: "integer"}))
+```
+
+The callback must return **exactly one value per row, positionally aligned
+to `rows`**. A length mismatch is logged and the field is omitted from the
+whole response rather than landed on the wrong records — an absent column is
+diagnosable, a misaligned one is not.
+
+One registration serves every read path: a single read and the create/update
+echo call it with a one-row slice, and an export calls it once per chunk of
+rows (so a batch field costs one call per 500 records there, not one per
+record).
+
+**Prefer the batch form for anything that touches a database.** Per-row
+resolvers run concurrently across a page, but bounded at 8 at a time — the
+fan-out used to be one goroutine per row with no ceiling, so a 100-row page
+fired 100 concurrent round-trips and the load scaled as page-size ×
+concurrent-requests. The bound stops that from being unbounded; it does not
+stop it from being an N+1. Note too that work through `ctx.Tx` is serialised
+by the transaction's single connection, so per-row parallelism buys nothing
+there.
+
+### Declaring the type
+
+Both callbacks return `any`, so the framework cannot infer a computed
+field's type. Without `ComputedSchema` the field still appears in the spec
+(read-only) but carries no type — a generated client knows it exists but not
+what it holds. `maniflex.ComputedSchema(&maniflex.OASSchema{…})` declares it.
+
+### Typed variants
+
+`maniflex.AddComputedField[T]` and `maniflex.AddBatchComputedField[T]` take
+the loaded record(s) as `*T` / `[]*T` instead of JSON maps:
+
+```go
+maniflex.AddBatchComputedField(server, "StoreSite", "item_count",
+    func(ctx *maniflex.ServerContext, sites []*StoreSite) ([]any, error) {
+        // …one query, one value per site
+    })
+```
 
 ## Replacing the envelope
 

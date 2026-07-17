@@ -219,6 +219,8 @@ func buildModelSchemas(spec *OpenAPISpec, m *ModelMeta, reg RegistryAccessor) {
 		}
 	}
 
+	addComputedProperties(full, m)
+
 	sort.Strings(create.Required)
 
 	spec.Components.Schemas[m.Name] = full
@@ -228,6 +230,37 @@ func buildModelSchemas(spec *OpenAPISpec, m *ModelMeta, reg RegistryAccessor) {
 	// Envelope schemas for list and single-record responses
 	spec.Components.Schemas[m.Name+"ListResponse"] = listEnvelopeSchema(m.Name)
 	spec.Components.Schemas[m.Name+"Response"] = singleEnvelopeSchema(m.Name)
+}
+
+// addComputedProperties emits every registered computed field into the model's
+// response schema. They appear in every read response but are never accepted in
+// a write body, so they are readOnly and belong to the full schema alone.
+//
+// A field with no declared ComputedSchema is emitted with no type: the callbacks
+// return `any`, so the framework genuinely cannot know one, and inventing a type
+// would put a claim in the spec that nothing enforces. Untyped-but-present still
+// beats absent — a generated client at least knows the field exists.
+func addComputedProperties(full *OASSchema, m *ModelMeta) {
+	m.mu.RLock()
+	computed := m.Computed
+	m.mu.RUnlock()
+
+	for _, c := range computed {
+		// A collision with a real field is rejected at registration; guard anyway
+		// rather than let a hand-built ModelMeta overwrite a stored column here.
+		if _, taken := full.Properties[c.Name]; taken {
+			continue
+		}
+		s := copySchema(c.Schema) // copy: never mutate the registered schema
+		if s == nil {
+			s = &OASSchema{} // no declared type — any
+		}
+		s.ReadOnly = true
+		if s.Description == "" {
+			s.Description = "Computed field — derived on read, not stored and not writable."
+		}
+		full.Properties[c.Name] = s
+	}
 }
 
 // ── Path generation ───────────────────────────────────────────────────────────

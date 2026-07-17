@@ -23,10 +23,13 @@ const maxBodyBytes = 4 << 20 // 4 MB
 
 // defaultSteps owns the built-in handler for every pipeline step.
 type defaultSteps struct {
-	adapter      DBAdapter
-	reg          RegistryAccessor
-	storage      FileStorage
-	keyProvider  KeyProvider
+	adapter     DBAdapter
+	reg         RegistryAccessor
+	storage     FileStorage
+	keyProvider KeyProvider
+	// keyScope resolves the owning principal of a minted file key; nil →
+	// defaultKeyScope (P1-20).
+	keyScope     func(ctx *ServerContext) string
 	signedURLTTL time.Duration // TTL for FileACLSigned URLs; 0 → DefaultFileSignedURLTTL
 	// maxUpload caps a multipart request's total size; maxUploadMem caps how much
 	// of it is buffered in memory. Zero → DefaultMaxUploadBytes / DefaultMaxUploadMemory.
@@ -603,6 +606,11 @@ func (s *defaultSteps) verifyFileKeys(ctx *ServerContext, field FieldMeta, keys 
 				fmt.Sprintf("field %q contains an empty storage key", jn))
 			return fmt.Errorf("field %q: empty key", jn)
 		}
+		// Refuse a key minted for another principal, per key, before its Stat —
+		// one leaked key in the array taints the whole write (P1-20).
+		if err := s.verifyKeyScope(ctx, field, key); err != nil {
+			return err
+		}
 		meta, err := s.storage.Stat(ctx.Ctx, key)
 		if err != nil {
 			if errors.Is(err, ErrFileNotFound) {
@@ -773,11 +781,13 @@ func (s *defaultSteps) handleFileUpload(ctx *ServerContext, field FieldMeta, uf 
 	}
 
 	// Generate storage key: {table}/{record_uuid}/{field_db_name}/{sanitized_filename}
-	key := fmt.Sprintf("%s/%s/%s/%s",
+	// then bind it to the uploading principal (P1-20), so if the key is later
+	// referenced by name it is refused for anyone but its owner.
+	key := applyKeyScope(resolveKeyScope(s.keyScope, ctx), fmt.Sprintf("%s/%s/%s/%s",
 		ctx.Model.TableName,
 		uuid.New().String(),
 		field.Tags.DBName,
-		sanitizeFilename(uf.Filename))
+		sanitizeFilename(uf.Filename)))
 
 	meta := FileMeta{
 		Key:         key,
@@ -806,6 +816,12 @@ func (s *defaultSteps) handleFileUpload(ctx *ServerContext, field FieldMeta, uf 
 // and handles old-file cleanup on update.
 func (s *defaultSteps) handleFileKeyReference(ctx *ServerContext, field FieldMeta, key string) error {
 	jn := field.Tags.JSONName
+
+	// Refuse a key minted for another principal before touching storage — a
+	// leaked key must not be referenceable onto this caller's record (P1-20).
+	if err := s.verifyKeyScope(ctx, field, key); err != nil {
+		return err
+	}
 
 	// Read the object's metadata. This both proves the key exists and yields the
 	// size and type the field's rules are checked against below — which is why it
@@ -845,6 +861,28 @@ func (s *defaultSteps) handleFileKeyReference(ctx *ServerContext, field FieldMet
 
 	// Leave ctx.ParsedBody[jn] as-is — the verified key flows through to DB
 	return nil
+}
+
+// verifyKeyScope refuses a scoped file key that was minted for a different
+// principal than the one referencing it now (P1-20). A key carrying no scope
+// marker — one minted before this release, or for an anonymous caller — is left
+// to the existence and rules checks, so the guarantee closes the cross-principal
+// hole for every key minted under a principal without breaking references to
+// keys that predate it. The check is I/O-free and runs before the Stat, so a
+// cross-principal reference is refused without a storage round-trip.
+func (s *defaultSteps) verifyKeyScope(ctx *ServerContext, field FieldMeta, key string) error {
+	seg, scoped := keyScopeSegmentOf(key)
+	if !scoped {
+		return nil
+	}
+	caller := resolveKeyScope(s.keyScope, ctx)
+	if caller != "" && scopeSegment(caller) == seg {
+		return nil
+	}
+	ctx.Abort(http.StatusForbidden, "FILE_FORBIDDEN",
+		fmt.Sprintf("file key for field %q was uploaded under a different principal "+
+			"and cannot be referenced here", field.Tags.JSONName))
+	return fmt.Errorf("file key scope mismatch for field %q", field.Tags.JSONName)
 }
 
 // checkRecordLocked loads the currently-stored record and tests every

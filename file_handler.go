@@ -68,7 +68,10 @@ func (fh *fileHandlers) Upload(ctx *ServerContext) http.HandlerFunc {
 		}
 		defer file.Close()
 
-		key := fh.config.KeyGen(ctx, header)
+		// Bind the minted key to the caller (P1-20). ctx.Auth is populated by any
+		// BeforeMiddlewares that ran; an unauthenticated POST /files yields no scope
+		// and an unscoped, freely-referenceable key — as before this release.
+		key := applyKeyScope(resolveKeyScope(fh.config.KeyScope, ctx), fh.config.KeyGen(ctx, header))
 
 		contentType, err := resolveContentType(header.Header.Get("Content-Type"), file)
 		if err != nil {

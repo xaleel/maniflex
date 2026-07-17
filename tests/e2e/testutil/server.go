@@ -236,11 +236,7 @@ func (s *Server) Do(method, url string, body any, headers ...map[string]string) 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	for _, hMap := range headers {
-		for k, v := range hMap {
-			req.Header.Set(k, v)
-		}
-	}
+	applyHeaders(req, headers)
 
 	resp, err := s.Server.Client().Do(req)
 	if err != nil {
@@ -254,6 +250,15 @@ func (s *Server) Do(method, url string, body any, headers ...map[string]string) 
 	}
 
 	return &Response{t: s.t, Status: resp.StatusCode, Body: raw, Header: resp.Header}
+}
+
+// applyHeaders sets every key/value from the given header maps on req.
+func applyHeaders(req *http.Request, headers []map[string]string) {
+	for _, hMap := range headers {
+		for k, v := range hMap {
+			req.Header.Set(k, v)
+		}
+	}
 }
 
 func (s *Server) GET(path string, headers ...map[string]string) *Response {
@@ -411,15 +416,17 @@ func (s *Server) MustID(resp *Response) string {
 
 // POSTMultipart sends a multipart/form-data POST request.
 // fields contains regular form values, files maps field name → FileUpload.
-func (s *Server) POSTMultipart(path string, fields map[string]string, files map[string]FileUpload) *Response {
+// Optional header maps are applied to the request (e.g. to drive a test auth
+// middleware off a header).
+func (s *Server) POSTMultipart(path string, fields map[string]string, files map[string]FileUpload, headers ...map[string]string) *Response {
 	s.t.Helper()
-	return s.doMultipart(http.MethodPost, path, fields, files)
+	return s.doMultipart(http.MethodPost, path, fields, files, headers...)
 }
 
 // PATCHMultipart sends a multipart/form-data PATCH request.
-func (s *Server) PATCHMultipart(path string, fields map[string]string, files map[string]FileUpload) *Response {
+func (s *Server) PATCHMultipart(path string, fields map[string]string, files map[string]FileUpload, headers ...map[string]string) *Response {
 	s.t.Helper()
-	return s.doMultipart(http.MethodPatch, path, fields, files)
+	return s.doMultipart(http.MethodPatch, path, fields, files, headers...)
 }
 
 // FileUpload describes a file to include in a multipart request.
@@ -429,7 +436,7 @@ type FileUpload struct {
 	Body        []byte
 }
 
-func (s *Server) doMultipart(method, path string, fields map[string]string, files map[string]FileUpload) *Response {
+func (s *Server) doMultipart(method, path string, fields map[string]string, files map[string]FileUpload, headers ...map[string]string) *Response {
 	s.t.Helper()
 
 	var buf bytes.Buffer
@@ -463,6 +470,7 @@ func (s *Server) doMultipart(method, path string, fields map[string]string, file
 		s.t.Fatalf("testutil: new request: %v", err)
 	}
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	applyHeaders(req, headers)
 
 	resp, err := s.Server.Client().Do(req)
 	if err != nil {

@@ -241,6 +241,10 @@ user-supplied component yourself (the default uses `sanitizeFilename`). `KeyGen`
 applies only to the standalone `POST /files` route; per-model attachment keys
 are framework-generated.
 
+`KeyGen` controls the *layout* of a key; it does not bind the key to a caller.
+The framework adds a scope prefix on top of whatever `KeyGen` returns — see
+[Key ownership](#key-ownership) and `FilesConfig.KeyScope`.
+
 ### S3, R2, MinIO, DigitalOcean Spaces
 
 The satellite module `maniflex/storage/s3` ships a `FileStorage` implementation
@@ -331,6 +335,44 @@ object actually in storage — the same bytes get the same answer whichever way 
 arrived. **This is new in v0.2.3:** before it, this path checked only that the key
 existed, so uploading out of band and referencing the key was a way past both
 rules. See the changelog if you relied on that.
+
+#### Key ownership
+
+A storage key is **bound to the principal that mints it**, so a key one caller
+learns cannot be pinned onto another caller's record. Keys are not secrets — they
+travel in signed URLs and `file_acl:private` responses — and without this a caller
+who obtained another record's (or another tenant's) key could reference it on their
+own record, and an `auto_delete` field could then delete a blob it never owned.
+
+Every minting path — `POST /files`, a presigned upload, and a multipart upload
+through a model — prefixes the key with a hash of the caller's **scope**, and a
+reference by a different scope is refused with `403 FILE_FORBIDDEN`. The scope
+defaults to `ctx.Auth.TenantID` (so a tenant's members share one), else
+`ctx.Auth.UserID`. Override it when your principal lives elsewhere:
+
+```go
+FilesConfig: maniflex.FilesConfig{
+    Storage: store,
+    // Bind each key to the user rather than the tenant. Guard the nil case:
+    // an anonymous request has no principal, and returns an unscoped key.
+    KeyScope: func(ctx *maniflex.ServerContext) string {
+        if ctx.Auth == nil {
+            return ""
+        }
+        return ctx.Auth.UserID
+    },
+}
+```
+
+The scope must resolve **consistently** across the mint request and the later
+reference — if your `POST /files` auth and your model auth populate `ctx.Auth`
+differently, read whatever both share.
+
+A key minted while no principal was present is unscoped and referenceable by
+anyone; returning `""` from `KeyScope` opts a request out. Keys minted before
+v0.2.3 carry no scope marker and are likewise left to the existence check, so
+upgrading breaks no reference to an already-stored key — the guarantee holds for
+every key minted under a principal from v0.2.3 on.
 
 ## Direct-to-storage uploads (`upload:presigned`)
 

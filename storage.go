@@ -138,6 +138,33 @@ type FilesConfig struct {
 	// sanitizeFilename / DefaultKeyGen for the framework's default).
 	KeyGen func(ctx *ServerContext, header *multipart.FileHeader) string
 
+	// KeyScope binds a minted storage key to the principal that minted it, so a
+	// later create/update that references the key by name can be refused when the
+	// referencing principal is not the one it was minted for. Without this, any
+	// caller who learns a key (they leak through signed URLs and file_acl:private
+	// responses) can point their own record at another record's — or another
+	// tenant's — object, and an auto_delete field can then delete a blob it does
+	// not own.
+	//
+	// KeyScope returns an opaque token identifying the owner of keys minted in
+	// this request. Every minting path (POST /files, a presigned upload, and a
+	// multipart upload through a model) prefixes the key with a hash of the token;
+	// handleFileKeyReference and the FileKeys list verifier recompute the token
+	// from the referencing request and refuse a key whose prefix does not match.
+	//
+	// When nil, the framework uses ctx.Auth.TenantID when set (so a tenant's
+	// members share one scope), else ctx.Auth.UserID. An empty token — the return
+	// for an anonymous request, and what you return to opt a request out — leaves
+	// the key unscoped and referenceable by anyone, so the guarantee holds only
+	// for keys minted while a principal was present. A key minted before this
+	// release carries no scope prefix and is likewise left to the existence check,
+	// so upgrading does not break references to already-stored keys.
+	//
+	// The token must resolve consistently across the mint request and the later
+	// reference request; if your /files auth and your model auth populate ctx.Auth
+	// differently, override KeyScope to read whatever both share.
+	KeyScope func(ctx *ServerContext) string
+
 	// BeforeMiddlewares run before the standalone /files endpoints (POST /files,
 	// GET /files/*, DELETE /files/*) with the supplied pipeline middleware
 	// chain. Middlewares run in slice order; any that sets ctx.Response

@@ -154,7 +154,10 @@ func (h *handlers) uploadKey(ctx *ServerContext, req presignUploadRequest) strin
 		Size:     req.Size,
 		Header:   textproto.MIMEHeader{"Content-Type": []string{req.ContentType}},
 	}
-	return gen(ctx, hdr)
+	// Bind the minted key to the caller (P1-20): a presigned upload is the normal
+	// path for the largest files, and the key it returns is what the completing
+	// create/update names — so it must be refused for anyone but its minter.
+	return applyKeyScope(resolveKeyScope(h.cfg.FilesConfig.KeyScope, ctx), gen(ctx, hdr))
 }
 
 // presignTTL is how long a minted authorisation lasts. It reuses

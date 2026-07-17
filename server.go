@@ -78,6 +78,7 @@ func New(cfg Config) *Server {
 	steps := newDefaultSteps(cfg.DB, reg)
 	steps.storage = cfg.FilesConfig.Storage
 	steps.keyProvider = cfg.KeyProvider
+	steps.keyScope = cfg.FilesConfig.KeyScope
 	steps.signedURLTTL = cfg.FilesConfig.SignedURLTTL
 	steps.maxUpload = cfg.FilesConfig.MaxUploadBytes
 	steps.maxUploadMem = cfg.FilesConfig.MaxUploadMemory

@@ -216,6 +216,12 @@ type FileStorage interface {
 	// Store writes the contents of r to the given key with the supplied metadata.
 	// The key is framework-generated; implementations must create any intermediate
 	// directories or object prefixes as needed.
+	//
+	// meta.Size is the object's length in bytes when known, and 0 when it is not:
+	// a streamed upload (mfx:"file,upload:stream" or POST /files) is piped through
+	// before its length is known, so the backend must store an unsized reader —
+	// read r to EOF rather than trusting meta.Size. On S3 this means a multipart
+	// upload; the AWS SDK's manager.Uploader does it transparently.
 	Store(ctx context.Context, key string, r io.Reader, meta FileMeta) error
 
 	// Retrieve returns a ReadCloser for the file at key, along with its metadata.

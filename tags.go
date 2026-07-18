@@ -17,10 +17,18 @@ const (
 	OnDeleteRestrict OnDeleteAction = "restrict" // DELETE parent → ERROR if children exist
 )
 
-// uploadPresigned is the only value mfx:"upload:" takes. It is a value-carrying
-// option rather than a bare "presigned" so the tag says what it configures, and
-// so a second upload strategy has somewhere to go.
-const uploadPresigned = "presigned"
+// uploadPresigned and uploadStream are the values mfx:"upload:" takes. It is a
+// value-carrying option rather than a bare "presigned" so the tag says what it
+// configures, and so each upload strategy has its own spelling.
+//
+//   - presigned: mint a one-shot URL; bytes go client→storage, never touching
+//     the app process.
+//   - stream: multipart through the app, but piped straight to storage as it
+//     arrives rather than buffered to disk first.
+const (
+	uploadPresigned = "presigned"
+	uploadStream    = "stream"
+)
 
 // FieldTags holds every directive that can appear in a `mfx:"..."` struct tag,
 // plus the derived JSON and DB column names.
@@ -107,6 +115,21 @@ type FieldTags struct {
 	// where the backend can, and re-checked against the stored object when the
 	// record references the key.
 	PresignedUpload bool
+	// StreamUpload pipes a multipart upload straight to storage as it arrives off
+	// the socket, instead of buffering the whole body to the app server's disk
+	// first. Parsed from mfx:"upload:stream". Requires File, and is mutually
+	// exclusive with PresignedUpload (a field has one upload strategy).
+	//
+	// The default multipart path materialises the whole request before the
+	// handler runs — a 5 GB upload lands on the app server's disk in full, then is
+	// copied to storage. Streaming removes that landing: bytes are written to the
+	// backend as they are read. The trade-off is that the object is stored before
+	// the record's own validation runs (accept is still checked from the sniffed
+	// head first, and max_size mid-stream), so a request that later fails leaves
+	// an object that the same non-2xx cleanup as every other stored file removes.
+	// For the very largest uploads prefer PresignedUpload, which never routes the
+	// bytes through the app at all.
+	StreamUpload bool
 	// FileACL controls how the field value is presented in API responses.
 	// Parsed from mfx:"file_acl:private|signed|public". Default: FileACLPrivate.
 	// FileACLSigned replaces the storage key with a pre-signed URL.
@@ -308,9 +331,12 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 				t.FileACL = FileACLPrivate
 			}
 		case strings.HasPrefix(part, "upload:"):
-			if mode := strings.TrimPrefix(part, "upload:"); mode == uploadPresigned {
+			switch strings.TrimPrefix(part, "upload:") {
+			case uploadPresigned:
 				t.PresignedUpload = true
-			} else {
+			case uploadStream:
+				t.StreamUpload = true
+			default:
 				t.UnknownOpts = append(t.UnknownOpts, part)
 			}
 		// relation:RelationName;onDelete:cascade

@@ -35,6 +35,13 @@ func newFileHandlers(config FilesConfig) *fileHandlers {
 // Upload handles POST /files — standalone file upload not tied to a model.
 // Accepts multipart/form-data with a single "file" field.
 // Returns 201 with {"data": {"key":"...","content_type":"...","size":123,"filename":"..."}}.
+//
+// It streams the "file" part straight to storage as it arrives off the socket,
+// via the multipart reader, so a large upload never lands on the app server's
+// disk. Because the size is not known until the part is fully read, meta.Size
+// reaches the backend as 0 (the backend must accept an unsized reader), and a
+// custom KeyGen sees a *multipart.FileHeader whose Size is 0 — the filename and
+// headers it usually keys on are populated as before.
 func (fh *fileHandlers) Upload(ctx *ServerContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if fh.config.Storage == nil {
@@ -43,62 +50,93 @@ func (fh *fileHandlers) Upload(ctx *ServerContext) http.HandlerFunc {
 			return
 		}
 
-		// Bound the body before parsing: ParseMultipartForm's argument caps only the
-		// in-memory buffer, and the overflow spools to temp files (BUG-5).
+		// Bound the body before reading it. The one file part is the whole request,
+		// so this cap is the file's ceiling; anything past it errors as it streams
+		// rather than landing on disk (BUG-5).
 		limit := fh.config.uploadLimit()
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 
-		if err := r.ParseMultipartForm(fh.config.uploadMemory()); err != nil {
-			if isBodyTooLarge(err) {
-				writeJSONError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE",
-					fmt.Sprintf("request body exceeds %s limit", formatByteSize(limit)))
+		mr, err := r.MultipartReader()
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "MULTIPART_ERROR",
+				fmt.Sprintf("failed to read multipart form: %s", err.Error()))
+			return
+		}
+
+		for {
+			part, err := mr.NextPart()
+			if errors.Is(err, io.EOF) {
+				writeJSONError(w, http.StatusBadRequest, "NO_FILE",
+					"missing 'file' field in multipart form")
 				return
 			}
-			writeJSONError(w, http.StatusBadRequest, "MULTIPART_ERROR",
-				fmt.Sprintf("failed to parse multipart form: %s", err.Error()))
+			if err != nil {
+				if isBodyTooLarge(err) {
+					writeJSONError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE",
+						fmt.Sprintf("request body exceeds %s limit", formatByteSize(limit)))
+					return
+				}
+				writeJSONError(w, http.StatusBadRequest, "MULTIPART_ERROR",
+					fmt.Sprintf("failed to parse multipart form: %s", err.Error()))
+				return
+			}
+			if part.FormName() != "file" {
+				part.Close()
+				continue
+			}
+			fh.streamUpload(w, r, ctx, part, limit)
+			part.Close()
 			return
 		}
-		defer r.MultipartForm.RemoveAll()
-
-		file, header, err := r.FormFile("file")
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "NO_FILE",
-				"missing 'file' field in multipart form")
-			return
-		}
-		defer file.Close()
-
-		// Bind the minted key to the caller (P1-20). ctx.Auth is populated by any
-		// BeforeMiddlewares that ran; an unauthenticated POST /files yields no scope
-		// and an unscoped, freely-referenceable key — as before this release.
-		key := applyKeyScope(resolveKeyScope(fh.config.KeyScope, ctx), fh.config.KeyGen(ctx, header))
-
-		contentType, err := resolveContentType(header.Header.Get("Content-Type"), file)
-		if err != nil {
-			writeJSONError(w, http.StatusBadRequest, "FILE_READ_ERROR",
-				fmt.Sprintf("failed to read uploaded file: %s", err.Error()))
-			return
-		}
-
-		meta := FileMeta{
-			Key:         key,
-			ContentType: contentType,
-			Size:        header.Size,
-			Filename:    header.Filename,
-		}
-
-		if err := fh.config.Storage.Store(r.Context(), key, file, meta); err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "STORE_ERROR",
-				fmt.Sprintf("failed to store file: %s", err.Error()))
-			return
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{
-			"data": meta,
-		})
 	}
+}
+
+// streamUpload pipes a single found "file" part directly into storage and writes
+// the 201 response. Split out of Upload so the part-finding loop stays readable.
+func (fh *fileHandlers) streamUpload(w http.ResponseWriter, r *http.Request, ctx *ServerContext, part *multipart.Part, limit int64) {
+	contentType, body, err := resolveContentTypeStreaming(part.Header.Get("Content-Type"), part)
+	if err != nil {
+		if isBodyTooLarge(err) {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE",
+				fmt.Sprintf("request body exceeds %s limit", formatByteSize(limit)))
+			return
+		}
+		writeJSONError(w, http.StatusBadRequest, "FILE_READ_ERROR",
+			fmt.Sprintf("failed to read uploaded file: %s", err.Error()))
+		return
+	}
+
+	// Bind the minted key to the caller (P1-20). ctx.Auth is populated by any
+	// BeforeMiddlewares that ran; an unauthenticated POST /files yields no scope
+	// and an unscoped, freely-referenceable key — as before this release. The
+	// header carries the filename/headers a custom KeyGen keys on; Size is 0
+	// because a streamed part's length is not known until it is read.
+	header := &multipart.FileHeader{Filename: part.FileName(), Header: part.Header}
+	key := applyKeyScope(resolveKeyScope(fh.config.KeyScope, ctx), fh.config.KeyGen(ctx, header))
+
+	counter := &measuredReader{r: body}
+	meta := FileMeta{
+		Key:         key,
+		ContentType: contentType,
+		Filename:    part.FileName(),
+	}
+	if err := fh.config.Storage.Store(r.Context(), key, counter, meta); err != nil {
+		if isBodyTooLarge(err) || counter.n >= limit {
+			writeJSONError(w, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE",
+				fmt.Sprintf("request body exceeds %s limit", formatByteSize(limit)))
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "STORE_ERROR",
+			fmt.Sprintf("failed to store file: %s", err.Error()))
+		return
+	}
+	meta.Size = counter.n
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]any{
+		"data": meta,
+	})
 }
 
 // Serve handles GET /files/* — streams a file from storage to the client.

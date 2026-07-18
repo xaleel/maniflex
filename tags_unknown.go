@@ -48,6 +48,7 @@ var knownBareOpts = []string{
 	"split",
 	"unique",
 	"upload:presigned",
+	"upload:stream",
 	"writeonly",
 }
 

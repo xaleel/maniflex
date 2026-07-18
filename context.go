@@ -354,6 +354,12 @@ type ServerContext struct {
 	// orphans the row by deleting a blob it still references (BUG-1). Populated
 	// via trackReplacedFile; drained by deleteReplacedFiles.
 	replacedFiles []storedFile
+
+	// streamedFileFields records the JSON names of mfx:"file,upload:stream" fields
+	// already stored during Deserialize, so the Service step's processFileFields
+	// leaves them alone instead of re-processing the key it wrote as a reference
+	// (which would cost a redundant Stat). Populated via markStreamedFile.
+	streamedFileFields map[string]struct{}
 }
 
 // storedFile pairs an object key with the storage backend it was written to, so
@@ -1098,6 +1104,22 @@ func (c *ServerContext) TrackStoredFile(key string, storage FileStorage) {
 		return
 	}
 	c.storedFiles = append(c.storedFiles, storedFile{key: key, storage: storage})
+}
+
+// markStreamedFile records that the file field jsonName was stored during
+// Deserialize by the upload:stream path, so the Service step skips it.
+func (c *ServerContext) markStreamedFile(jsonName string) {
+	if c.streamedFileFields == nil {
+		c.streamedFileFields = make(map[string]struct{})
+	}
+	c.streamedFileFields[jsonName] = struct{}{}
+}
+
+// isStreamedFile reports whether jsonName was already stored during Deserialize
+// by the upload:stream path.
+func (c *ServerContext) isStreamedFile(jsonName string) bool {
+	_, ok := c.streamedFileFields[jsonName]
+	return ok
 }
 
 // cleanupOrphanedFiles deletes every object recorded by TrackStoredFile. The

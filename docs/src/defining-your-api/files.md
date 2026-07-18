@@ -51,6 +51,7 @@ Tag sub-options:
 | `accept:p1\|p2` | allowed MIME-type patterns, e.g. `image/*\|application/pdf` |
 | `auto_delete:false` | keep the stored file when the row is hard-deleted or the field is replaced (default: delete) |
 | `upload:presigned` | mount `POST /{model}/{field}/upload-url` so the client uploads straight to storage instead of through the app — see [Direct-to-storage uploads](#direct-to-storage-uploads-uploadpresigned). Requires a backend that can presign (`storage/s3`; not `LocalStorage`) |
+| `upload:stream` | multipart upload, but piped straight to storage as it arrives instead of buffered to the app server's disk first — see [Streaming uploads](#streaming-uploads-uploadstream). Mutually exclusive with `upload:presigned` |
 | `file_acl:private` | (default) response carries the raw storage key; downloads go via `/files/<key>` or the per-model attachment route |
 | `file_acl:signed` | response replaces the key with a pre-signed URL valid for `Config.FilesConfig.SignedURLTTL` (default 1h). Requires `FileStorage.URL()` |
 | `file_acl:public` | response replaces the key with a permanent / long-lived URL (e.g. S3 7-day max). Pair with public-read ACL on the bucket for true permanence |
@@ -455,6 +456,56 @@ if you need it there.
 > unsigned URL, which would be an open write endpoint rather than a degraded
 > presigned one. Use the ordinary multipart upload with `LocalStorage`.
 
+## Streaming uploads (`upload:stream`)
+
+`upload:presigned` takes the bytes off the app entirely, which is ideal when the
+client can do the two-phase dance and the backend can presign. When it cannot —
+`LocalStorage`, or a client that only knows how to POST one multipart form — the
+bytes still have to pass through the app, and by default the whole request is
+buffered first (in memory up to `MaxUploadMemory`, the rest to temp files) before
+a single byte reaches storage. `upload:stream` removes that landing: the field's
+part is piped straight into `FileStorage.Store` as it arrives off the socket.
+
+```go
+type Post struct {
+    maniflex.BaseModel
+    Title string `json:"title"`
+    Video string `json:"video" mfx:"file,upload:stream,accept:video/mp4,max_size:60MB"`
+}
+```
+
+Nothing about the request shape changes — it is the same multipart `POST /posts`
+as an unflagged file field. Only where the bytes go changes: to the backend
+directly, not to the app's disk first.
+
+Two rules bind differently when the length is not known until the stream ends:
+
+- **`accept` is checked first**, from the part's declared type (or a sniff of the
+  first 512 bytes when it declares none), so a disallowed type is refused with
+  `415` before anything is stored.
+- **`max_size` is enforced mid-stream**: the upload is cut off and answered `413`
+  the moment it runs past the limit. By then a partial object exists in
+  storage — the request ends non-2xx, so the same orphan cleanup that protects
+  every failed upload deletes it (see [Automatic cleanup](#automatic-cleanup)). A
+  backend that can reject early (S3 rejects an oversize multipart part) still
+  saves the bandwidth; the framework catches the rest.
+
+Because the length is unknown while streaming, `FileStorage.Store` receives a
+`FileMeta.Size` of `0` and must store an unsized reader — read it to EOF rather
+than trusting `Size`. `storage/s3` does this transparently (the AWS SDK uploader
+switches to a multipart upload); `LocalStorage` copies the reader as-is. A custom
+backend that assumed a known length needs to handle the unsized case before
+enabling `upload:stream` against it.
+
+> **Which one?** `upload:presigned` when the bytes should never touch the app and
+> the backend can presign — the best choice for the very largest files.
+> `upload:stream` when they must pass through (to scan, transform, or because the
+> backend cannot presign) but should not land on disk on the way. Plain `file`
+> (buffered) for everything else — it is the default for a reason, and streaming
+> trades a pre-storage validation gate for a stored-then-cleaned one. The two
+> `upload:` strategies are mutually exclusive on one field; setting both is a
+> registration error.
+
 ## Standalone file endpoints
 
 When `MountEndpoints` is `true`, three routes are mounted under `PathPrefix`:
@@ -467,7 +518,13 @@ When `MountEndpoints` is `true`, three routes are mounted under `PathPrefix`:
 
 `POST /files` returns `201` with
 `{"data": {"key": "...", "content_type": "...", "size": ..., "filename": "..."}}`.
-The returned `key` is the value to store in a `file`-tagged column.
+The returned `key` is the value to store in a `file`-tagged column. It **streams**
+the `file` part straight to storage as it arrives (see
+[Streaming uploads](#streaming-uploads-uploadstream)), so a large standalone
+upload never lands on the app server's disk; `size` in the response is the length
+measured while streaming. A custom `FilesConfig.KeyGen` here sees a
+`*multipart.FileHeader` whose `Size` is `0`, since the length is not yet known —
+key off `Filename`/`Header` instead.
 
 `GET /files/{key...}` streams the body with `Content-Type` and `Content-Length`
 from the stored metadata. For safety it always sends `X-Content-Type-Options:

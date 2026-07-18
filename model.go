@@ -362,6 +362,53 @@ func (m *ModelMeta) rejectPresignedWithoutFile() error {
 	return nil
 }
 
+// rejectStreamUploadMisuse refuses mfx:"upload:stream" where it cannot mean what
+// it says: on a non-file field (nothing to stream), alongside upload:presigned
+// (two upload strategies for one field), or on a FileKeys list (streaming is a
+// single multipart file; a list is populated by key reference). Each parses
+// cleanly, so — like rejectPresignedWithoutFile — it is caught here rather than
+// by the unknown-option check, so a directive that would silently do nothing is
+// a registration error instead.
+func (m *ModelMeta) rejectStreamUploadMisuse() error {
+	for _, f := range m.Fields {
+		if !f.Tags.StreamUpload {
+			continue
+		}
+		switch {
+		case !f.Tags.File:
+			return fmt.Errorf(
+				"maniflex: model %q field %q is mfx:\"upload:stream\" but not mfx:\"file\" — "+
+					"upload:stream chooses how a file field's bytes reach storage, so on a "+
+					"field that stores no file it does nothing. Add file, or drop upload:stream",
+				m.Name, f.Name)
+		case f.Tags.PresignedUpload:
+			return fmt.Errorf(
+				"maniflex: model %q field %q sets both mfx:\"upload:presigned\" and "+
+					"mfx:\"upload:stream\" — a file field has one upload strategy. Pick one",
+				m.Name, f.Name)
+		case f.Type == fileKeysType:
+			return fmt.Errorf(
+				"maniflex: model %q field %q is a maniflex.FileKeys list with mfx:\"upload:stream\" — "+
+					"streaming applies to a single multipart file, while a key list is populated by "+
+					"reference (POST /files or a presigned upload), not multipart. Drop upload:stream",
+				m.Name, f.Name)
+		}
+	}
+	return nil
+}
+
+// hasStreamingFileField reports whether the model has a single-key file field
+// tagged mfx:"upload:stream". It selects the streaming multipart parser, so
+// models without one keep the unchanged ParseMultipartForm path.
+func (m *ModelMeta) hasStreamingFileField() bool {
+	for _, f := range m.Fields {
+		if f.Tags.File && f.Tags.StreamUpload && !f.IsFileList() {
+			return true
+		}
+	}
+	return false
+}
+
 // fileKeysType is the reflect.Type of FileKeys, the multi-key file column.
 var fileKeysType = reflect.TypeOf(FileKeys(nil))
 
@@ -651,6 +698,12 @@ func ScanModel(v any, cfg ModelConfig) (*ModelMeta, error) {
 	// that stores no file it configures nothing — and would do so in silence,
 	// which is the failure mode the unknown-option error exists to end.
 	if err := meta.rejectPresignedWithoutFile(); err != nil {
+		return nil, err
+	}
+
+	// upload:stream is likewise a strategy for a file field's bytes; on a non-file
+	// field, doubled with upload:presigned, or on a key list it cannot apply.
+	if err := meta.rejectStreamUploadMisuse(); err != nil {
 		return nil, err
 	}
 

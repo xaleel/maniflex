@@ -301,7 +301,22 @@ func isBodyTooLarge(err error) bool {
 // parseMultipart handles multipart/form-data requests. Form values go into
 // ctx.ParsedBody, file parts go into ctx.Files. File readers remain open
 // until dispatch() cleans them up after the pipeline completes.
+//
+// A model with an mfx:"file,upload:stream" field takes the streaming parser,
+// which pipes that field's bytes straight to storage as they arrive rather than
+// spooling the whole request to disk first. Every other model — the common case
+// — takes the unchanged buffered path below, so existing uploads are untouched.
 func (s *defaultSteps) parseMultipart(ctx *ServerContext) error {
+	if ctx.Model != nil && ctx.Model.hasStreamingFileField() {
+		return s.parseMultipartStreaming(ctx)
+	}
+	return s.parseMultipartBuffered(ctx)
+}
+
+// parseMultipartBuffered is the default multipart parser: it reads the whole
+// request via ParseMultipartForm (in-memory up to MaxUploadMemory, the rest to
+// temp files) before the pipeline continues.
+func (s *defaultSteps) parseMultipartBuffered(ctx *ServerContext) error {
 	// Bound the request before parsing it. ParseMultipartForm's argument caps only
 	// the in-memory buffer — everything beyond it spools to temp files, so without
 	// a ceiling on the body itself a client can stream until the disk fills
@@ -519,6 +534,13 @@ func (s *defaultSteps) service(ctx *ServerContext, next func() error) error {
 func (s *defaultSteps) processFileFields(ctx *ServerContext) error {
 	for _, field := range ctx.Model.FileFields() {
 		jn := field.Tags.JSONName
+
+		// An upload:stream field was already stored during Deserialize; its key is
+		// in the body and its object is tracked for cleanup. Re-processing it here
+		// would Stat the key back as if it were a client-supplied reference.
+		if ctx.isStreamedFile(jn) {
+			continue
+		}
 
 		if uf, ok := ctx.Files[jn]; ok {
 			// Case A: file uploaded. A key list cannot be populated this way —

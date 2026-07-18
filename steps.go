@@ -2347,19 +2347,10 @@ func (s *defaultSteps) streamAttachment(ctx *ServerContext) {
 		return
 	}
 
-	rc, meta, err := s.storage.Retrieve(ctx.Ctx, key)
-	if err != nil {
-		if errors.Is(err, ErrFileNotFound) {
-			ctx.Abort(http.StatusNotFound, "FILE_NOT_FOUND",
-				fmt.Sprintf("file %q not found in storage", key))
-			return
-		}
-		ctx.Abort(http.StatusInternalServerError, "RETRIEVE_ERROR", err.Error())
+	if ferr := serveStoredFile(ctx.Ctx, ctx.Writer, ctx.Request, s.storage, key); ferr != nil {
+		ctx.Abort(ferr.Status, ferr.Code, ferr.Message)
 		return
 	}
-	defer rc.Close()
-
-	writeFileResponse(ctx.Writer, meta, rc)
 	// ctx.Response intentionally left nil — the body is already on the wire.
 }
 

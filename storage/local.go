@@ -84,6 +84,29 @@ func (s *LocalStorage) Store(ctx context.Context, key string, r io.Reader, meta 
 // Keys that end with `.meta.json` are rejected so the sidecar metadata file
 // cannot be served as if it were stored content.
 func (s *LocalStorage) Retrieve(_ context.Context, key string) (io.ReadCloser, maniflex.FileMeta, error) {
+	return s.open(key)
+}
+
+// RetrieveRange implements maniflex.RangeRetriever: it serves a byte window of
+// a stored file without reading past it, so a client seeking into a large
+// video does not drag the whole file through the process.
+//
+// The framework has already resolved offset and length against the size Stat
+// reported, so the window is known to be in range.
+func (s *LocalStorage) RetrieveRange(_ context.Context, key string, offset, length int64) (io.ReadCloser, maniflex.FileMeta, error) {
+	f, meta, err := s.open(key)
+	if err != nil {
+		return nil, maniflex.FileMeta{}, err
+	}
+	return sectionReadCloser{
+		Reader: io.NewSectionReader(f, offset, length),
+		closer: f,
+	}, meta, nil
+}
+
+// open resolves a key to an open file plus its sidecar metadata. Shared by
+// Retrieve and RetrieveRange, which differ only in what they read from it.
+func (s *LocalStorage) open(key string) (*os.File, maniflex.FileMeta, error) {
 	if isMetaKey(key) {
 		return nil, maniflex.FileMeta{}, maniflex.ErrFileNotFound
 	}
@@ -108,6 +131,15 @@ func (s *LocalStorage) Retrieve(_ context.Context, key string) (io.ReadCloser, m
 
 	return f, meta, nil
 }
+
+// sectionReadCloser adapts a window over an open file into the ReadCloser the
+// storage interface returns, so closing the window closes the file behind it.
+type sectionReadCloser struct {
+	io.Reader
+	closer io.Closer
+}
+
+func (s sectionReadCloser) Close() error { return s.closer.Close() }
 
 // Delete removes the file and its metadata from storage. Returns
 // maniflex.ErrFileNotFound when the key does not exist so the standalone

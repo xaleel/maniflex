@@ -140,6 +140,8 @@ func (fh *fileHandlers) streamUpload(w http.ResponseWriter, r *http.Request, ctx
 }
 
 // Serve handles GET /files/* — streams a file from storage to the client.
+// A Range request is answered with 206 Partial Content when the backend or the
+// reader can satisfy one; see serveStoredFile for how that is resolved.
 func (fh *fileHandlers) Serve(ctx *ServerContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if fh.config.Storage == nil {
@@ -161,20 +163,9 @@ func (fh *fileHandlers) Serve(ctx *ServerContext) http.HandlerFunc {
 			return
 		}
 
-		rc, meta, err := fh.config.Storage.Retrieve(r.Context(), uriDecoded)
-		if err != nil {
-			if errors.Is(err, ErrFileNotFound) {
-				writeJSONError(w, http.StatusNotFound, "FILE_NOT_FOUND",
-					fmt.Sprintf("file %q not found", key))
-				return
-			}
-			writeJSONError(w, http.StatusInternalServerError, "RETRIEVE_ERROR",
-				fmt.Sprintf("failed to retrieve file: %s", err.Error()))
-			return
+		if ferr := serveStoredFile(r.Context(), w, r, fh.config.Storage, uriDecoded); ferr != nil {
+			writeJSONError(w, ferr.Status, ferr.Code, ferr.Message)
 		}
-		defer rc.Close()
-
-		writeFileResponse(w, meta, rc)
 	}
 }
 
@@ -203,15 +194,11 @@ func inlineSafeContentType(ct string) bool {
 	return inlineSafeContentTypes[strings.ToLower(strings.TrimSpace(ct))]
 }
 
-// writeFileResponse sets content headers from FileMeta and streams the body.
-// Shared by /files/* and the per-model attachment route (OpReadAttachment) so
-// the two paths emit identical headers.
-//
-// Security (SEC-4): the browser is told never to MIME-sniff the stored bytes
-// (X-Content-Type-Options: nosniff), and only known-safe content types are
-// served inline — everything else is forced to download (Content-Disposition:
-// attachment) so a stored HTML/SVG file cannot execute script on the API origin.
-func writeFileResponse(w http.ResponseWriter, meta FileMeta, rc io.Reader) {
+// setFileHeaders writes the content and security headers a stored file is
+// served with, without touching the status line or body. Split out of
+// writeFileResponse so the 206 Partial Content path (3B.3b) emits exactly the
+// same headers before adding its own Content-Range.
+func setFileHeaders(w http.ResponseWriter, meta FileMeta) {
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if meta.ContentType != "" {
 		w.Header().Set("Content-Type", meta.ContentType)
@@ -225,6 +212,23 @@ func writeFileResponse(w http.ResponseWriter, meta FileMeta, rc io.Reader) {
 			fmt.Sprintf(`%s; filename="%s"`, disposition, meta.Filename))
 	} else {
 		w.Header().Set("Content-Disposition", disposition)
+	}
+}
+
+// writeFileResponse sets content headers from FileMeta and streams the body.
+// Shared by /files/* and the per-model attachment route (OpReadAttachment) so
+// the two paths emit identical headers.
+//
+// Security (SEC-4): the browser is told never to MIME-sniff the stored bytes
+// (X-Content-Type-Options: nosniff), and only known-safe content types are
+// served inline — everything else is forced to download (Content-Disposition:
+// attachment) so a stored HTML/SVG file cannot execute script on the API origin.
+func writeFileResponse(w http.ResponseWriter, meta FileMeta, rc io.Reader) {
+	setFileHeaders(w, meta)
+	// A seekable reader can serve a range even from a backend that has not
+	// adopted RangeRetriever, because ServeContent can seek it (3B.3b).
+	if _, ok := rc.(io.Seeker); ok {
+		w.Header().Set("Accept-Ranges", "bytes")
 	}
 	if meta.Size > 0 {
 		w.Header().Set("Content-Length", fmt.Sprintf("%d", meta.Size))

@@ -608,6 +608,7 @@ Response codes:
 | Status | Meaning |
 |---|---|
 | `200` | file streamed with `Content-Type`, `Content-Disposition`, `Content-Length` |
+| `206` | a `Range` request was satisfied — see [Resumable downloads](#resumable-downloads-http-range) |
 | `404 NOT_FOUND` | the record does not exist (or is soft-deleted) |
 | `404 FILE_NOT_SET` | the record exists but the field is null/empty |
 | `404 FILE_NOT_FOUND` | the field references a key that is missing from storage |
@@ -622,6 +623,74 @@ Internally this is dispatched as a new operation, `maniflex.OpReadAttachment`.
 Middleware filtered by `ForOperation(OpRead)` does **not** apply to
 attachment requests; use `ForOperation(OpRead, OpReadAttachment)` to cover
 both.
+
+## Resumable downloads (HTTP `Range`)
+
+Both download routes — `GET /files/{key...}` and the per-model attachment
+route — honour the `Range` request header, so a client can resume an
+interrupted download or seek into a large media file instead of refetching it
+from the start.
+
+```bash
+# the last 500 bytes
+curl -H 'Range: bytes=-500' localhost:8080/api/files/uploads/<uuid>/clip.mp4
+
+# resume from where a failed download stopped
+curl -H 'Range: bytes=1048576-' localhost:8080/api/patients/123/scan
+```
+
+A satisfiable range answers `206 Partial Content`:
+
+| Header | Value |
+|---|---|
+| `Content-Range` | `bytes 1048576-2097151/8388608` — the window, and the object's full length |
+| `Content-Length` | the window's length, not the object's |
+| `Accept-Ranges` | `bytes` (also sent on full `200` responses, so clients know they *may* resume) |
+
+The security headers a full download sends — `X-Content-Type-Options: nosniff`
+and the `Content-Disposition` inline/attachment decision — are identical on a
+`206`.
+
+Response codes:
+
+| Status | When |
+|---|---|
+| `206` | the range resolved to a window of the object |
+| `200` | no `Range` header, or one the server declined (see below) |
+| `416 RANGE_NOT_SATISFIABLE` | the range is well-formed but starts past the end of the object; `Content-Range: bytes */<size>` tells the client the real length |
+
+**Ranges the server declines.** A malformed header, an unrecognised unit, and a
+*multi-range* request (`bytes=0-99,200-299`) are all answered with the whole
+object and `200` rather than an error — the spec permits ignoring any `Range`,
+and serving several windows would require a `multipart/byteranges` body.
+A client that asks for several windows gets the object and slices it itself.
+
+### Backend support
+
+How much a range actually saves depends on the storage backend:
+
+| Backend | Behaviour |
+|---|---|
+| `LocalStorage` | seeks the file; only the window is read |
+| `storage/s3` (S3, R2, MinIO, Spaces) | pushes the range into `GetObject`, so only the window leaves the bucket — you are not billed egress for bytes the client did not ask for |
+| A custom backend implementing `RangeRetriever` | same as above |
+| A custom backend that does not | still works: the `Range` header is ignored and the whole object is served with `200`, and `Accept-Ranges` is not advertised |
+
+To support ranges in your own backend, implement the optional
+`maniflex.RangeRetriever` alongside `FileStorage`:
+
+```go
+func (s *MyStorage) RetrieveRange(
+    ctx context.Context, key string, offset, length int64,
+) (io.ReadCloser, maniflex.FileMeta, error) {
+    // Return exactly the bytes [offset, offset+length).
+}
+```
+
+The framework resolves the `Range` header against the size your `Stat` reports
+*before* calling, so `offset` and `length` are always absolute and in bounds —
+you never have to parse a header or clamp a window. Adding the method is all
+that is needed; there is nothing to register.
 
 ## Automatic cleanup
 
@@ -676,6 +745,23 @@ the standalone `DELETE /files/*` handler can surface a 404 without an extra
 treated as "delete succeeded". `Store` is given a framework-generated key of
 the form `uploads/<uuid>/<sanitised-filename>`; create any intermediate
 directories or object prefixes as needed.
+
+### Optional: `RangeRetriever`
+
+Beyond `FileStorage`, a backend may implement `maniflex.RangeRetriever` to serve
+byte windows for [resumable downloads](#resumable-downloads-http-range):
+
+```go
+type RangeRetriever interface {
+    RetrieveRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, FileMeta, error)
+}
+```
+
+It is optional and additive — a backend that omits it keeps working, serving the
+whole object with `200` for a `Range` request. Implement it if your backend can
+fetch a window natively (S3's `GetObject` `Range`, a file `Seek`), since that is
+where the saving is; the bounds are pre-resolved against your `Stat` size, so
+they are always absolute and in range.
 
 Storage backends are also expected to:
 

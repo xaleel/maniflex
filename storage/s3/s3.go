@@ -226,6 +226,25 @@ func (s *S3Storage) Store(ctx context.Context, key string, r io.Reader, meta man
 // Retrieve implements maniflex.FileStorage. Returns the underlying response body
 // directly — callers stream from it.
 func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, maniflex.FileMeta, error) {
+	return s.getObject(ctx, key, nil)
+}
+
+// RetrieveRange implements maniflex.RangeRetriever by pushing the window down
+// into GetObject's own Range parameter, so S3 sends only the requested bytes.
+// That is the point of the interface on a remote backend: the alternative is
+// fetching the whole object and discarding most of it, paying full egress to
+// serve a seek.
+//
+// The framework has already resolved offset and length against the size
+// HeadObject reported, so the window is known to be in range.
+func (s *S3Storage) RetrieveRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, maniflex.FileMeta, error) {
+	// S3 range bounds are inclusive on both ends.
+	return s.getObject(ctx, key, awsv2.String(
+		fmt.Sprintf("bytes=%d-%d", offset, offset+length-1)))
+}
+
+// getObject fetches an object, or a byte window of it when rng is non-nil.
+func (s *S3Storage) getObject(ctx context.Context, key string, rng *string) (io.ReadCloser, maniflex.FileMeta, error) {
 	full, err := s.fullKey(key)
 	if err != nil {
 		return nil, maniflex.FileMeta{}, err
@@ -234,6 +253,7 @@ func (s *S3Storage) Retrieve(ctx context.Context, key string) (io.ReadCloser, ma
 	out, err := s.client.GetObject(ctx, &awss3.GetObjectInput{
 		Bucket: awsv2.String(s.cfg.Bucket),
 		Key:    awsv2.String(full),
+		Range:  rng,
 	})
 	if err != nil {
 		if isNoSuchKey(err) {

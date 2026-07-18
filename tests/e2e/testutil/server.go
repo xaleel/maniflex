@@ -490,7 +490,22 @@ func (s *Server) doMultipart(method, path string, fields map[string]string, file
 // without JSON parsing. Useful for file-serving tests.
 func (s *Server) GETRaw(path string) *Response {
 	s.t.Helper()
-	resp, err := s.Server.Client().Get(s.APIPath(path))
+	return s.GETRawWithHeaders(path, nil)
+}
+
+// GETRawWithHeaders is GETRaw with caller-supplied request headers — for the
+// headers that change the response shape rather than just authorise it, such
+// as Range.
+func (s *Server) GETRawWithHeaders(path string, headers map[string]string) *Response {
+	s.t.Helper()
+	req, err := http.NewRequest(http.MethodGet, s.APIPath(path), nil)
+	if err != nil {
+		s.t.Fatalf("testutil: build request: %v", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := s.Server.Client().Do(req)
 	if err != nil {
 		s.t.Fatalf("testutil: get: %v", err)
 	}
@@ -547,6 +562,22 @@ func (m *MemoryStorage) Retrieve(_ context.Context, key string) (io.ReadCloser, 
 		return nil, maniflex.FileMeta{}, maniflex.ErrFileNotFound
 	}
 	return io.NopCloser(bytes.NewReader(f.data)), f.meta, nil
+}
+
+// RetrieveRange implements maniflex.RangeRetriever so the 206 path (3B.3b) is
+// exercised end-to-end. The framework resolves the window before calling, so
+// the slice bounds are known good.
+func (m *MemoryStorage) RetrieveRange(_ context.Context, key string, offset, length int64) (io.ReadCloser, maniflex.FileMeta, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	f, ok := m.files[key]
+	if !ok {
+		return nil, maniflex.FileMeta{}, maniflex.ErrFileNotFound
+	}
+	window := f.data[offset : offset+length]
+	meta := f.meta
+	meta.Size = int64(len(window))
+	return io.NopCloser(bytes.NewReader(window)), meta, nil
 }
 
 func (m *MemoryStorage) Delete(_ context.Context, key string) error {

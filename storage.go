@@ -277,6 +277,36 @@ type FileStorage interface {
 	URL(ctx context.Context, key string, ttl time.Duration) (string, error)
 }
 
+// RangeRetriever is an optional extension a FileStorage backend may implement
+// to serve a byte window of an object without transferring the whole thing.
+//
+// When a backend implements it, GET /files/* and the per-model attachment route
+// answer a Range request with 206 Partial Content, fetching only the requested
+// bytes from storage — on a remote backend that is the difference between
+// paying egress for a 2 GB video and paying it for the 1 MB the client seeked
+// to. A backend that does not implement it still works: the framework falls
+// back to net/http's ServeContent when the reader is seekable, and otherwise
+// ignores the Range header and serves the whole object with 200.
+//
+// It is deliberately separate from FileStorage so that adding it is not a
+// breaking change for third-party backends. LocalStorage and S3Storage both
+// implement it.
+type RangeRetriever interface {
+	// RetrieveRange returns a reader over exactly the bytes
+	// [offset, offset+length) of the object at key, along with its metadata.
+	//
+	// The framework resolves the window against the size reported by Stat
+	// before calling, so offset and length are always absolute, in range, and
+	// length is always positive — implementations do not need to clamp or to
+	// interpret the relative forms of a Range header. The returned FileMeta may
+	// describe the window rather than the object (its Size in particular); the
+	// framework takes the object's content type and filename from Stat when the
+	// window does not carry them.
+	//
+	// Returns ErrFileNotFound when the key does not exist.
+	RetrieveRange(ctx context.Context, key string, offset, length int64) (io.ReadCloser, FileMeta, error)
+}
+
 // ErrFileNotFound is returned by FileStorage.Retrieve when the requested key
 // does not exist.
 var ErrFileNotFound = errors.New("file not found")

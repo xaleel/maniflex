@@ -124,6 +124,20 @@ half-migrated schema behind.
 because it has no error return; if you mount maniflex inside another router,
 that is the form you will see.
 
+## Migration failures
+
+Startup validation checks configuration. `AutoMigrate` separately refuses to
+proceed when it cannot build a **unique** index — the model declares a
+constraint and the database would not be enforcing it, so every write that
+should have been refused would be accepted silently. This is not gated by
+`Config.Strict`: a constraint that does not exist is wrong in every environment.
+
+The usual cause is data that already violates it, and the error says so, naming
+the table, the index and the columns. De-duplicate and start again.
+
+A failed **plain** index stays a warning: it costs a table scan, not a
+guarantee.
+
 ## What stays a warning
 
 Some warnings describe a legitimate operational state and are not promoted even

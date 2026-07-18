@@ -176,6 +176,25 @@ When the unique check fires, the adapter returns `*maniflex.ErrConstraint` and
 the DB step converts it to `409 CONFLICT` — same path as any other unique
 violation.
 
+### If the index cannot be created
+
+The `UNIQUE` index over the HMAC column is what actually enforces the
+constraint. If `AutoMigrate` cannot create it, **the migration fails** rather
+than starting a server whose `mfx:"unique"` is claiming a guarantee the database
+is not enforcing:
+
+```
+AutoMigrate: could not create unique index uidx_users_email_hmac on
+users(email_hmac): UNIQUE constraint failed — the model declares these
+column(s) unique, so the server will not start without the constraint. The
+usual cause is rows that already violate it; de-duplicate them and start again
+```
+
+The usual cause is exactly that: rows already holding duplicate values in the
+field. De-duplicate them and start again. A plain (non-unique) index that fails
+to build is only warned about — a missing one costs a table scan, not a
+constraint.
+
 ## Per-domain keys
 
 The `key:NAME` sub-option routes a field to a specific key identifier:

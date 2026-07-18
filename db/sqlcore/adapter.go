@@ -355,40 +355,41 @@ func (a *Adapter) migrateModelTx(ctx context.Context, exec sqlExec, m *maniflex.
 			continue
 		}
 		hmacCol := f.Tags.DBName + "_hmac"
-		if _, exists := existingCols[hmacCol]; exists {
-			continue
+		if _, exists := existingCols[hmacCol]; !exists {
+			var query string
+			if a.driver == maniflex.Postgres {
+				query = fmt.Sprintf(
+					"ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s TEXT NOT NULL DEFAULT ''",
+					q(m.TableName), q(hmacCol))
+			} else {
+				query = fmt.Sprintf(
+					"ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT ''",
+					q(m.TableName), q(hmacCol))
+			}
+			if _, err := exec.ExecContext(ctx, query); err != nil && !isDuplicateColumnError(err) {
+				return fmt.Errorf("add hmac column %s.%s: %w", m.TableName, hmacCol, err)
+			}
+			a.getLogger().Info("AutoMigrate: added HMAC column",
+				slog.String("table", m.TableName),
+				slog.String("column", hmacCol),
+				slog.String("model", m.Name),
+			)
 		}
-		var query string
-		if a.driver == maniflex.Postgres {
-			query = fmt.Sprintf(
-				"ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s TEXT NOT NULL DEFAULT ''",
-				q(m.TableName), q(hmacCol))
-		} else {
-			query = fmt.Sprintf(
-				"ALTER TABLE %s ADD COLUMN %s TEXT NOT NULL DEFAULT ''",
-				q(m.TableName), q(hmacCol))
-		}
-		if _, err := exec.ExecContext(ctx, query); err != nil && !isDuplicateColumnError(err) {
-			return fmt.Errorf("add hmac column %s.%s: %w", m.TableName, hmacCol, err)
-		}
-		// Add UNIQUE index separately (inline UNIQUE in ALTER ADD COLUMN is
-		// not portable across all SQLite versions).
+
+		// The UNIQUE index is created separately (inline UNIQUE in ALTER ADD
+		// COLUMN is not portable across all SQLite versions), and outside the
+		// "column is missing" branch above deliberately: it used to sit inside,
+		// so a boot that added the column but failed to build the index never
+		// retried — every later boot saw the column, skipped the block, and left
+		// the constraint permanently absent. CREATE ... IF NOT EXISTS makes the
+		// retry free.
 		idxName := "uidx_" + m.TableName + "_" + hmacCol
 		idxQuery := fmt.Sprintf(
 			"CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s(%s)",
 			idxName, q(m.TableName), q(hmacCol))
 		if _, err := exec.ExecContext(ctx, idxQuery); err != nil {
-			a.getLogger().Warn("AutoMigrate: could not create unique index for HMAC column",
-				slog.String("table", m.TableName),
-				slog.String("column", hmacCol),
-				slog.String("error", err.Error()),
-			)
+			return uniqueIndexFailure(m.TableName, idxName, []string{hmacCol}, err)
 		}
-		a.getLogger().Info("AutoMigrate: added HMAC column",
-			slog.String("table", m.TableName),
-			slog.String("column", hmacCol),
-			slog.String("model", m.Name),
-		)
 	}
 
 	// ── Step 5: create extra indexes declared in meta.Indices ─────────────────
@@ -413,6 +414,14 @@ func (a *Adapter) migrateModelTx(ctx context.Context, exec sqlExec, m *maniflex.
 			keyword, idx.Name, q(m.TableName), strings.Join(cols, ", "),
 		)
 		if _, err := exec.ExecContext(ctx, idxSQL); err != nil {
+			// A failed UNIQUE index is a broken invariant, not a slow query: the
+			// model declares the constraint and the database is not enforcing it,
+			// so duplicates would be accepted silently from here on. A plain
+			// index costs a table scan, which is a performance problem the
+			// application still survives — so only the unique case is fatal.
+			if idx.Unique {
+				return uniqueIndexFailure(m.TableName, idx.Name, idx.Columns, err)
+			}
 			a.getLogger().Warn("AutoMigrate: could not create index",
 				slog.String("index", idx.Name),
 				slog.String("table", m.TableName),
@@ -1641,6 +1650,27 @@ func restoreScopeCond(model *maniflex.ModelMeta, qp *maniflex.QueryParams,
 	joinSQL := buildJoins(model, qp.Filters, nil)
 	return fmt.Sprintf("%s IN (SELECT %s.%s FROM %s%s WHERE %s)",
 		q("id"), q(model.TableName), q("id"), q(model.TableName), joinSQL, conds)
+}
+
+// uniqueIndexFailure builds the migration error for a UNIQUE index that could
+// not be created (roadmap 10.3).
+//
+// This is fatal where a plain index's failure is only warned about, and the
+// difference is not severity but kind: a missing plain index costs a table scan,
+// which the application survives, while a missing unique index means the model
+// declares a constraint the database is not enforcing. Every subsequent write
+// that should have been refused is accepted, silently, and nothing surfaces it
+// until something downstream trips over the duplicates. `mfx:"unique"` promising
+// a guarantee the schema does not have is the bug this refuses to ship with.
+//
+// By far the most common cause is data that already violates the constraint, so
+// the message says so outright: the remedy is to de-duplicate, not to retry.
+func uniqueIndexFailure(table, index string, cols []string, err error) error {
+	return fmt.Errorf(
+		"AutoMigrate: could not create unique index %s on %s(%s): %w — the model declares "+
+			"these column(s) unique, so the server will not start without the constraint. "+
+			"The usual cause is rows that already violate it; de-duplicate them and start again",
+		index, table, strings.Join(cols, ", "), err)
 }
 
 // ── Query builders ────────────────────────────────────────────────────────────

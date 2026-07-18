@@ -508,7 +508,10 @@ func (t *txAdapter) Delete(ctx context.Context, model *maniflex.ModelMeta, id st
 	query := fmt.Sprintf("DELETE FROM %s WHERE %s = %s", q(model.TableName), q("id"), p.add(id))
 	res, err := t.tx.ExecContext(ctx, query, p.args...)
 	if err != nil {
-		return fmt.Errorf("tx delete: %w", err)
+		// Normalize so a database-enforced onDelete:restrict FK violation becomes a
+		// clean 409 (5.16), the way create/update already normalize their constraint
+		// errors — otherwise it surfaces as an opaque 500.
+		return fmt.Errorf("tx delete: %w", normalizeErr(t.errNormalizer, err, model.TableName))
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return maniflex.ErrNotFound

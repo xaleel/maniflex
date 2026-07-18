@@ -657,6 +657,10 @@ func (c *Server) Handler() http.Handler {
 		if err := validateLockScopes(c.registry); err != nil {
 			panic(err.Error())
 		}
+		// Validate onDelete actions: target registered, setNull FK nullable (5.16).
+		if err := validateOnDeleteActions(c.registry); err != nil {
+			panic(err.Error())
+		}
 		// Warn about convention "<Name>ID" relations whose target model was never
 		// registered (commonly a foreign id that should be mfx:"norelation").
 		warnDanglingRelations(c.registry, c.cfg.logger())

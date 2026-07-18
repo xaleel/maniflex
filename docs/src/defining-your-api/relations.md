@@ -143,19 +143,47 @@ directly; the junction rows are hidden from the response.
 
 ## Cascading deletes
 
-A BelongsTo relation may declare what happens when the parent row is deleted,
-using the `onDelete` sub-option:
+A BelongsTo relation may declare what happens to this row when the parent it
+points at is deleted, using the `onDelete` sub-option:
 
 ```go
-UserID string `json:"user_id" mfx:"required,relation:Author;onDelete:cascade"`
+AuthorID string `json:"author_id" mfx:"relation:Author;onDelete:cascade"`
 ```
 
 | Action | Effect on this row when the referenced row is deleted |
 |---|---|
 | `cascade` | this row is deleted too |
-| `setNull` | the FK column is set to `NULL` (the field must be nullable) |
-| `restrict` | the delete is refused while this row exists |
-| omitted | no referential constraint is emitted |
+| `setNull` | the FK column is set to `NULL` (the field must be a pointer, so it is nullable — otherwise a registration error) |
+| `restrict` | the parent delete is refused with `409 DELETE_RESTRICTED` while this row exists |
+| omitted | nothing — the delete leaves this row untouched (its FK dangles) |
+
+The action is validated at startup: it must target a **registered** model, and
+`setNull` needs a nullable FK. `cascade` recurses — deleting a row deletes its
+children, then their children — and reference cycles are handled.
+
+### How it is enforced (and soft delete)
+
+The action is enforced one of two ways, chosen automatically per relation:
+
+- **Neither side soft-deletes** → a real database `FOREIGN KEY … ON DELETE …`
+  constraint carries it, and the database enforces it natively (and enforces
+  referential integrity on insert: a row naming a non-existent parent is refused
+  with `409`).
+- **Either side soft-deletes** → the database cannot help (a soft delete is an
+  `UPDATE`, so `ON DELETE` never fires, and a DB cascade can only hard-delete),
+  so maniflex enforces it in the delete request's own transaction instead. A
+  soft-delete child of a cascaded parent is **soft-deleted identically** — its
+  `deleted_at` is set, the row is not removed.
+
+Either way the whole deletion is atomic: a `restrict` that fires rolls back any
+`cascade` that ran alongside it.
+
+> **Existing SQLite tables.** New FK constraints are declared when a table is
+> **created**. SQLite cannot add a foreign key to a table that already exists, so
+> adding `onDelete` to a model with a pre-existing SQLite table does not
+> retroactively add the constraint — recreate the table, or rely on the
+> soft-delete path, which is enforced in the application layer regardless.
+> Postgres adds the constraint on the next migration.
 
 ## Soft delete and relations
 

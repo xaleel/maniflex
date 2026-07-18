@@ -136,7 +136,74 @@ func (a *Adapter) AutoMigrate(ctx context.Context, reg maniflex.RegistryAccessor
 			return fmt.Errorf("migrate %s: %w", m.Name, err)
 		}
 	}
+	// Postgres foreign keys are added after every table exists — a parent may be
+	// registered after its child, and Postgres (unlike SQLite) requires the
+	// referenced table to already exist. SQLite declared its FKs inline above.
+	if err := a.migratePostgresForeignKeys(ctx, reg); err != nil {
+		return err
+	}
 	return nil
+}
+
+// migratePostgresForeignKeys adds a FOREIGN KEY constraint for each
+// database-enforced onDelete edge, once all tables exist. It is idempotent: a
+// constraint already present is left alone, so re-running AutoMigrate does not
+// fail. No-op on SQLite, which declared its FKs inline in CREATE TABLE.
+func (a *Adapter) migratePostgresForeignKeys(ctx context.Context, reg maniflex.RegistryAccessor) error {
+	if a.driver != maniflex.Postgres {
+		return nil
+	}
+	for _, m := range reg.All() {
+		for _, fk := range maniflex.ForeignKeysFor(reg, m) {
+			exists, err := a.constraintExists(ctx, m.TableName, fk.Name)
+			if err != nil {
+				return fmt.Errorf("check fk %s on %s: %w", fk.Name, m.TableName, err)
+			}
+			if exists {
+				continue
+			}
+			stmt := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s %s",
+				q(m.TableName), q(fk.Name), fkConstraintClause(fk))
+			if _, err := a.writeDb.ExecContext(ctx, stmt); err != nil {
+				return fmt.Errorf("add fk %s on %s: %w", fk.Name, m.TableName, err)
+			}
+		}
+	}
+	return nil
+}
+
+// constraintExists reports whether a named constraint is already defined on a
+// table (Postgres information_schema).
+func (a *Adapter) constraintExists(ctx context.Context, table, name string) (bool, error) {
+	var n int
+	err := a.writeDb.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_name = $1 AND constraint_name = $2`,
+		table, name).Scan(&n)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// fkConstraintClause renders a ForeignKeySpec as a table-level FOREIGN KEY clause,
+// for use inside CREATE TABLE (SQLite) or after ADD CONSTRAINT (Postgres).
+func fkConstraintClause(fk maniflex.ForeignKeySpec) string {
+	return fmt.Sprintf("FOREIGN KEY (%s) REFERENCES %s (%s)%s",
+		q(fk.Column), q(fk.RefTable), q(fk.RefColumn), onDeleteClause(fk.OnDelete))
+}
+
+// onDeleteClause renders the ON DELETE action, or "" for none.
+func onDeleteClause(action maniflex.OnDeleteAction) string {
+	switch action {
+	case maniflex.OnDeleteCascade:
+		return " ON DELETE CASCADE"
+	case maniflex.OnDeleteSetNull:
+		return " ON DELETE SET NULL"
+	case maniflex.OnDeleteRestrict:
+		return " ON DELETE RESTRICT"
+	default:
+		return ""
+	}
 }
 
 // validateMappableColumns rejects model fields whose Go type has no SQL column
@@ -204,6 +271,18 @@ func (a *Adapter) migrateModelTx(ctx context.Context, exec sqlExec, m *maniflex.
 		if f.Tags.Encrypted && f.Tags.Unique {
 			cols = append(cols, fmt.Sprintf("  %s TEXT NOT NULL DEFAULT '' UNIQUE",
 				q(f.Tags.DBName+"_hmac")))
+		}
+	}
+
+	// Foreign-key constraints for database-enforced onDelete edges (5.16). SQLite
+	// declares them inline in CREATE TABLE — it can only add a FK at create time,
+	// but it also permits forward references, so registration order does not
+	// matter and foreign_keys(ON) (set on every connection) enforces them. Postgres
+	// requires the parent table to exist, so its FKs are added by a second pass in
+	// AutoMigrate after every table is created.
+	if a.driver == maniflex.SQLite {
+		for _, fk := range maniflex.ForeignKeysFor(a.reg, m) {
+			cols = append(cols, "  "+fkConstraintClause(fk))
 		}
 	}
 

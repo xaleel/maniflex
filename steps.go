@@ -1647,6 +1647,23 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 		return nil // 404/422 was set — the parent is out of scope, or absent
 	}
 
+	// Cascading deletes: on OpDelete, apply each onDelete action to this row's
+	// children (cascade/setNull/restrict) before the row itself is deleted, in the
+	// same transaction so the whole deletion is atomic (5.16). Same tx fold as
+	// above — exactly one of these guards opens ownTx and the rest join it.
+	var cascadeTx Tx
+	var cascadeErr error
+	exec, cascadeTx, cascadeErr = s.enforceCascadeDelete(ctx, exec, model)
+	if cascadeTx != nil {
+		ownTx = cascadeTx
+	}
+	if cascadeErr != nil {
+		return cascadeErr
+	}
+	if ctx.Response != nil {
+		return nil // 409 was set — a restrict edge refused the delete
+	}
+
 	// Build the DB-column-keyed write map. With the body-mutating middleware
 	// migrated to SetField/DeleteField (W1/W2), the bound typed record carries
 	// the authoritative write set in the common case, so we source columns from
@@ -1855,6 +1872,31 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 		// Unwrap wrapped constraint errors (e.g. fmt.Errorf("create: %w", *ErrConstraint))
 		var constraintErr *ErrConstraint
 		if errors.As(dbErr, &constraintErr) {
+			// A foreign-key violation from a database-enforced onDelete constraint
+			// (5.16). On a delete it is a restrict edge refusing the parent — the
+			// same 409 the maniflex-layer restrict returns, so the two enforcement
+			// paths answer alike. On a create/update it is a child naming a parent
+			// that does not exist.
+			if constraintErr.Kind == ConstraintForeignKey {
+				if ctx.Operation == OpDelete {
+					ctx.Response = &APIResponse{
+						StatusCode: http.StatusConflict,
+						Error: &APIError{
+							Code:    "DELETE_RESTRICTED",
+							Message: "cannot delete: the record is still referenced by related records",
+						},
+					}
+				} else {
+					ctx.Response = &APIResponse{
+						StatusCode: http.StatusConflict,
+						Error: &APIError{
+							Code:    "FOREIGN_KEY_VIOLATION",
+							Message: "references a related record that does not exist",
+						},
+					}
+				}
+				return nil
+			}
 			// A NOT NULL violation is a missing-required-value problem, not a
 			// conflict — surface it as a 422 validation error (matching the
 			// validate middleware) instead of an opaque 500 or a misleading 409.

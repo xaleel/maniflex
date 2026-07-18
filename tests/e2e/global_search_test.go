@@ -12,8 +12,6 @@ package e2e
 // OpSearch auth-middleware hook, and the ineffective-registration warning.
 
 import (
-	"bytes"
-	"log/slog"
 	"net/http"
 	"slices"
 	"strconv"
@@ -363,17 +361,14 @@ func TestGlobalSearch(t *testing.T) {
 	})
 }
 
-// TestGlobalSearchWarnsIneffectiveMiddleware verifies the startup scan that warns
-// when a middleware is registered on a pipeline step its operation can never
-// reach. It builds a server directly so it can capture the framework logger.
-func TestGlobalSearchWarnsIneffectiveMiddleware(t *testing.T) {
+// TestGlobalSearchRejectsIneffectiveMiddleware verifies the startup check that
+// fails when a middleware is registered on a pipeline step its operation can
+// never reach (10.1). It used to be a warning; the middleware was frozen into
+// the chain and silently never ran, which for an authorisation check is a hole.
+func TestGlobalSearchRejectsIneffectiveMiddleware(t *testing.T) {
 	t.Parallel()
 
-	var buf bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
-
 	server := maniflex.New(maniflex.Config{
-		Logger:             logger,
 		PathPrefix:         "/api",
 		DisableAutoMigrate: true,
 	})
@@ -396,17 +391,29 @@ func TestGlobalSearchWarnsIneffectiveMiddleware(t *testing.T) {
 	server.Pipeline.Auth.Register(noop, maniflex.ForOperation(maniflex.OpSearch), maniflex.WithName("auth-search"))
 
 	server.EnableGlobalSearch()
-	_ = server.Handler() // triggers warnIneffectiveMiddleware
 
-	out := buf.String()
+	var msg string
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				msg, _ = r.(string)
+			}
+		}()
+		_ = server.Handler()
+	}()
+
+	if msg == "" {
+		t.Fatal("Handler must fail when a middleware is registered on a step it can never reach")
+	}
+	// Both ineffective registrations are named, in one report.
 	for _, want := range []string{"svc-search", "db-action"} {
-		if !strings.Contains(out, want) {
-			t.Errorf("expected ineffective-middleware warning for %q; logs:\n%s", want, out)
+		if !strings.Contains(msg, want) {
+			t.Errorf("expected %q to be reported; got: %s", want, msg)
 		}
 	}
 	for _, notWant := range []string{"svc-mixed", "auth-search"} {
-		if strings.Contains(out, notWant) {
-			t.Errorf("did not expect a warning for %q (it is effective); logs:\n%s", notWant, out)
+		if strings.Contains(msg, notWant) {
+			t.Errorf("%q is effective and must not be reported; got: %s", notWant, msg)
 		}
 	}
 }

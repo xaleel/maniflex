@@ -2,7 +2,6 @@ package maniflex
 
 import (
 	"fmt"
-	"log/slog"
 	"strings"
 )
 
@@ -52,36 +51,50 @@ func validateLockScopes(reg *Registry) error {
 	return nil
 }
 
-// warnDanglingRelations logs a warning for every convention-inferred BelongsTo
-// relation — a field tagged mfx:"relation" whose target model was never
-// registered (remove the tag if it's a plain foreign id). It also warns when an
-// inferred relation is declared on a field whose name does not end in "ID", since
-// the target can't be derived by stripping the suffix — a planned strict mode
-// will reject this; use mfx:"relation:Target" instead. Warnings only: neither is
-// fatal, the FK column is still created and usable.
-func warnDanglingRelations(reg *Registry, logger *slog.Logger) {
+// collectRelationIssues reports the two problems a convention-inferred BelongsTo
+// relation can have. Both used to be warnings; they differ in how certain the
+// mistake is, so 10.1 treats them differently.
+//
+// A relation on a field whose name does not end in "ID" is always an error. The
+// target model is derived by stripping that suffix, so without one the framework
+// infers the target from the whole field name — which is almost never a real
+// model, leaving a relation that resolves against nothing. There is no reading of
+// that configuration under which the author got what they asked for, and the
+// warning had promised to reject it for several releases.
+//
+// A relation whose target is simply not registered is reported only under
+// Config.Strict, because it has a legitimate reading: the field may be a plain
+// foreign id that wants no relation tag at all, and the FK column is created and
+// usable either way.
+func collectRelationIssues(reg *Registry, strict bool, issues *issueList) {
 	for _, model := range reg.All() {
 		for i := range model.Relations {
-			rel := &model.Relations[i]
-			if !rel.Convention || rel.Kind != BelongsTo {
-				continue
-			}
-			if !strings.HasSuffix(rel.FieldName, "ID") {
-				logger.Warn("[maniflex] mfx:\"relation\" on a field whose name does not end in "+
-					"\"ID\" — the target model was inferred from the whole field name; a future "+
-					"strict mode will reject this, use mfx:\"relation:Target\" to be explicit",
-					slog.String("model", model.Name),
-					slog.String("field", rel.FieldName),
-					slog.String("inferred_target", rel.RelatedModel))
-			}
-			if _, ok := reg.Get(rel.RelatedModel); ok {
-				continue
-			}
-			logger.Warn("[maniflex] mfx:\"relation\" targets an unregistered model — "+
-				"remove the tag if it is a plain foreign id, not a relation",
-				slog.String("model", model.Name),
-				slog.String("field", rel.FieldName),
-				slog.String("target_model", rel.RelatedModel))
+			checkInferredRelation(reg, model, &model.Relations[i], strict, issues)
 		}
+	}
+}
+
+// checkInferredRelation applies collectRelationIssues' two rules to one relation.
+func checkInferredRelation(reg *Registry, model *ModelMeta, rel *RelationMeta,
+	strict bool, issues *issueList,
+) {
+	if !rel.Convention || rel.Kind != BelongsTo {
+		return
+	}
+	if !strings.HasSuffix(rel.FieldName, "ID") {
+		issues.add("relation",
+			"%s.%s is tagged mfx:\"relation\" but its name does not end in \"ID\", so the "+
+				"target model was inferred from the whole field name as %q — write "+
+				"mfx:\"relation:Target\" to name the target explicitly",
+			model.Name, rel.FieldName, rel.RelatedModel)
+	}
+	if _, ok := reg.Get(rel.RelatedModel); ok {
+		return
+	}
+	if strict {
+		issues.addStrict("relation",
+			"%s.%s is tagged mfx:\"relation\" but its target model %q is not registered — "+
+				"register it, or remove the tag if this is a plain foreign id",
+			model.Name, rel.FieldName, rel.RelatedModel)
 	}
 }

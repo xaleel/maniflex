@@ -16,6 +16,7 @@ use (
 	./events/redis
 	./examples
 	./jobs/redis
+	./middleware/auth/redis
 	./middleware/db/redis
 	./middleware/service/bcrypt
 	./pkg/otel

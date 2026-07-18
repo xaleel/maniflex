@@ -336,6 +336,18 @@ type ServerContext struct {
 	aggregate bool
 	aggQuery  *AggregateQuery
 
+	// restore marks a request as the POST /:model/:id/restore endpoint
+	// (Config.RestoreEnabled, soft-delete models only). Like aggregate, the
+	// handler dispatches it as an existing operation — OpUpdate — so that every
+	// middleware an app already registered for "who may modify this row" covers
+	// un-deleting it too, without anyone having to discover a new operation
+	// constant. This flag then routes the steps that would otherwise assume a
+	// body and a visible row: Deserialize skips body parsing (a restore carries
+	// none), the row-reading write guards are skipped because a soft-deleted row
+	// is invisible to every read path, and the DB step calls Restore instead of
+	// Update. Read it from middleware with IsRestore.
+	restore bool
+
 	// maxBody overrides the default JSON body size limit for this request; zero
 	// means maxBodyBytes. Set through SetMaxBodySize (body.MaxBodySize).
 	maxBody int64

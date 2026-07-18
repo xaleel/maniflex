@@ -81,10 +81,56 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 	return r
 }
 
+// collectRouterIssues reports the two router-level configuration problems that
+// Config.Strict promotes to startup failures (10.1).
+//
+// Both stay warnings by default because each has a legitimate reading. An
+// unauthenticated /files mount may be a deliberately public upload endpoint,
+// unwise as that usually is. And a missing static directory currently degrades
+// to 404s on /static/*, so failing the boot would let an absent frontend asset
+// bundle take down a working API — an operational failure mode, not a typo.
+//
+// Under Strict, both become errors: in an environment where a boot failure costs
+// a CI re-run rather than an outage, "probably wrong" is worth stopping for.
+// staticPrefix resolves the URL prefix static files are served under,
+// guaranteeing a leading slash so a bare prefix ("assets") does not panic chi.
+// Shared by the mount and its validation so the two cannot disagree about what
+// the configuration means.
+func staticPrefix(cfg *Config) string {
+	prefix := cfg.StaticPrefix
+	if prefix == "" {
+		prefix = "/static"
+	}
+	if !strings.HasPrefix(prefix, "/") {
+		prefix = "/" + prefix
+	}
+	return prefix
+}
+
+func collectRouterIssues(cfg *Config, issues *issueList) {
+	if !cfg.Strict {
+		return
+	}
+	if cfg.FilesConfig.MountEndpoints && len(cfg.FilesConfig.BeforeMiddlewares) == 0 {
+		issues.addStrict("files",
+			"the standalone /files endpoints are mounted with no auth middleware, so anyone "+
+				"who can reach the API can upload, download, or delete files — set "+
+				"FilesConfig.BeforeMiddlewares (e.g. auth.JWTAuth)")
+	}
+	if !cfg.StaticDisabled && cfg.StaticDir != "" {
+		if _, err := os.Stat(cfg.StaticDir); err != nil {
+			issues.addStrict("static",
+				"Config.StaticDir %q does not exist, so nothing would be served under %s",
+				cfg.StaticDir, staticPrefix(cfg))
+		}
+	}
+}
+
 // mountFileEndpoints registers the standalone /files upload/download/delete
 // routes. They bypass the model pipeline, so auth has to come from
 // FilesConfig.BeforeMiddlewares; an empty chain is warned about because it
-// leaves /files open to anyone who can reach the API (SEC-4).
+// leaves /files open to anyone who can reach the API (SEC-4). Config.Strict
+// makes that warning fatal — see collectRouterIssues.
 func mountFileEndpoints(r chi.Router, cfg *Config, l *slog.Logger) {
 	if len(cfg.FilesConfig.BeforeMiddlewares) == 0 {
 		l.Warn("standalone /files endpoints mounted without auth middleware; "+
@@ -112,14 +158,7 @@ func mountStatic(r chi.Router, cfg *Config, l *slog.Logger) {
 		return
 	}
 
-	// Guarantee a leading slash so a bare prefix ("assets") doesn't panic chi.
-	prefix := cfg.StaticPrefix
-	if prefix == "" {
-		prefix = "/static"
-	}
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
+	prefix := staticPrefix(cfg)
 
 	if _, err := os.Stat(cfg.StaticDir); err == nil {
 		fileServer(r, prefix, http.Dir(cfg.StaticDir))
@@ -209,6 +248,14 @@ func mountModel(r chi.Router, meta *ModelMeta, h *handlers, storageConfigured bo
 			r.Delete("/", h.Delete(meta))
 			r.Head("/", h.Head(meta))
 			r.Options("/", h.Options(meta))
+
+			// Soft-delete restore route (5.19). Opt-in via
+			// ModelConfig.RestoreEnabled, and only for models that soft-delete —
+			// a hard delete leaves nothing to restore. Dispatches as OpUpdate so
+			// existing update middleware governs it; see ServerContext.IsRestore.
+			if meta.Config.RestoreEnabled && meta.SoftDelete.Enabled {
+				r.Post("/restore", h.Restore(meta))
+			}
 
 			// Per-model attachment route (3B.3a). One GET per file field on
 			// the model, using the field's JSON name as the URL segment. Only

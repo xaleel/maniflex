@@ -139,7 +139,10 @@ func (s *defaultSteps) deserialize(ctx *ServerContext, next func() error) error 
 		return next()
 	}
 
-	if ctx.Operation == OpCreate || ctx.Operation == OpUpdate {
+	// A restore (5.19) dispatches as OpUpdate but carries no body — it names the
+	// row in the URL and says only "undo the delete". Reading a body here would
+	// reject every restore with EMPTY_BODY.
+	if (ctx.Operation == OpCreate || ctx.Operation == OpUpdate) && !ctx.restore {
 		contentType := ctx.Request.Header.Get("Content-Type")
 
 		if strings.HasPrefix(contentType, "multipart/form-data") {
@@ -1000,6 +1003,12 @@ func (s *defaultSteps) enforceOptimisticLock(ctx *ServerContext, exec dbExec, mo
 		(ctx.Operation != OpUpdate && ctx.Operation != OpDelete) {
 		return exec, nil, nil
 	}
+	// A restore has no If-Match semantics to enforce: the row it targets is
+	// soft-deleted and so invisible to the version read below, and there is no
+	// submitted state that could be stale — the request carries no fields.
+	if ctx.restore {
+		return exec, nil, nil
+	}
 	ifMatch := ctx.Request.Header.Get("If-Match")
 	if ifMatch == "" {
 		return exec, nil, nil
@@ -1071,6 +1080,14 @@ func (s *defaultSteps) ensureScopeTx(ctx *ServerContext, exec dbExec) (dbExec, T
 // neither commit nor roll it back.
 func (s *defaultSteps) enforceWriteScope(ctx *ServerContext, exec dbExec, model *ModelMeta) (dbExec, Tx, error) {
 	if ctx.Operation != OpUpdate && ctx.Operation != OpDelete {
+		return exec, nil, nil
+	}
+	// A restore's target is soft-deleted, so the read-back below cannot see it —
+	// every read path applies the soft-delete condition — and would turn every
+	// in-scope restore into a 404. The scope is not skipped: it is pushed into
+	// the restore statement itself, which applies the same forced filters in its
+	// WHERE. See Restorer.
+	if ctx.restore {
 		return exec, nil, nil
 	}
 	if ctx.Query == nil {
@@ -1830,7 +1847,17 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 
 	case OpUpdate:
 		var result map[string]any
-		result, dbErr = exec.Update(ctx.Ctx, model, ctx.ResourceID, dbData)
+		if ctx.restore {
+			// A restore (5.19) rides OpUpdate for its middleware, but writes
+			// through its own statement: the row is soft-deleted, so Update
+			// cannot see it.
+			result, dbErr = s.restoreRow(ctx, exec, model)
+			if dbErr == nil && ctx.Response != nil {
+				return nil // 501: the adapter cannot restore
+			}
+		} else {
+			result, dbErr = exec.Update(ctx.Ctx, model, ctx.ResourceID, dbData)
+		}
 		if dbErr == nil {
 			if model.HasEncryptedFields() {
 				if s.keyProvider != nil {
@@ -1960,6 +1987,50 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 type dbExec struct {
 	adapter DBAdapter
 	tx      Tx
+}
+
+// restoreRow clears a soft-delete marker for the restore route (5.19).
+//
+// The scope the request carries is pushed into the statement rather than
+// checked with a read first, because the target is soft-deleted and therefore
+// invisible to every read path — see the note in enforceWriteScope. Only forced
+// filters travel, matching how writes are scoped elsewhere: a client's own
+// ?filter= has never constrained a write.
+//
+// It aborts with 501 when the adapter cannot restore, and returns ErrNotFound
+// (which the caller renders as 404) when no row matches — including a row that
+// exists but is not deleted.
+func (s *defaultSteps) restoreRow(ctx *ServerContext, exec dbExec, model *ModelMeta) (map[string]any, error) {
+	restorer, ok := exec.restorer()
+	if !ok {
+		ctx.Abort(http.StatusNotImplemented, "RESTORE_UNSUPPORTED",
+			"the configured database adapter does not support restoring soft-deleted records")
+		return nil, nil
+	}
+
+	var scoped *QueryParams
+	if ctx.Query != nil {
+		if forced := forcedFilters(ctx.Query.Filters); len(forced) > 0 {
+			scoped = &QueryParams{Filters: forced}
+		}
+	}
+	v, err := restorer.Restore(ctx.Ctx, model, ctx.ResourceID, scoped)
+	if err != nil || v == nil {
+		return nil, err
+	}
+	return recordToMap(model, v), nil
+}
+
+// restorer reports the Restorer behind this exec — the transaction when the
+// request runs in one, else the adapter — and whether it supports restoring at
+// all.
+func (e dbExec) restorer() (Restorer, bool) {
+	if e.tx != nil {
+		r, ok := e.tx.(Restorer)
+		return r, ok
+	}
+	r, ok := e.adapter.(Restorer)
+	return r, ok
 }
 
 // dbExec presents a map-based facade over the now-typed DBAdapter/Tx interface

@@ -177,6 +177,112 @@ server.Pipeline.Auth.Register(
 
 The model's routes remain mounted but always return `405 METHOD_NOT_ALLOWED`.
 
+## Token revocation and logout
+
+A JWT is valid until its `exp` and nothing the server does can take it back.
+That is fine until a user logs out, changes their password, or has their account
+compromised — at which point "valid until it expires" is exactly wrong. Set
+`JWTOptions.Revoker` to give the server its say back, at the cost of a lookup
+per request.
+
+```go
+rev := auth.NewMemoryRevoker()
+
+server.Pipeline.Auth.Register(auth.JWTAuth(secret, auth.JWTOptions{Revoker: rev}))
+server.Action(auth.Logout(rev, ""))                    // POST /logout
+server.Action(auth.LogoutAll(rev, "", 24*time.Hour))   // POST /logout-all
+```
+
+`Logout` revokes the token the caller authenticated with — logout on this device.
+`LogoutAll` revokes every token belonging to the caller, including sessions whose
+`jti` the server has never seen; it is the one to call after a password change.
+Both respond `204`, and both must be mounted behind the same auth middleware as
+everything else (they read `ctx.Auth`).
+
+### The two granularities
+
+| Call | Effect |
+|---|---|
+| `RevokeToken(ctx, jti, exp)` | blocks one token; the entry may be dropped once `exp` passes, since the token is refused for being expired anyway |
+| `RevokeUser(ctx, userID, cutoff, retainUntil)` | blocks every token for the user **issued before `cutoff`**; keep the record until `retainUntil`, which must be past the exp of the longest-lived token you mint |
+
+The per-user cutoff is what makes "log out everywhere" possible: the outstanding
+`jti` values are unknown and usually unknowable, so a per-token blocklist alone
+cannot express it. Logging in again works immediately — the cutoff kills tokens
+issued *before* it, not the account.
+
+### What changes when it is on
+
+- **A `jti` becomes mandatory.** A token without one cannot be revoked, so it is
+  refused with `401 TOKEN_NOT_REVOCABLE` rather than handed a permanent
+  exemption from the blocklist. Mint a unique `jti` per token.
+- **An `iat` becomes required for users who have a cutoff.** A token that cannot
+  be placed relative to the cutoff is refused. Tokens without `iat` keep working
+  for every user who has never called `LogoutAll`.
+- **A store outage refuses requests** — see below.
+
+Error codes:
+
+| Code | Status | Meaning |
+|---|---|---|
+| `TOKEN_REVOKED` | `401` | explicitly revoked; the client should discard it and log in again |
+| `TOKEN_NOT_REVOCABLE` | `401` | no `jti`, so it cannot be revoked — a minting bug, not a client error |
+| `REVOCATION_UNAVAILABLE` | `503` | the blocklist could not be consulted |
+
+### Failing closed
+
+Every `Revoker` method returns an error, and the middleware refuses the request
+when a lookup fails rather than reading "I could not check" as "not revoked". A
+blocklist that fails open silently un-revokes every logged-out token for the
+duration of an outage — precisely when it matters most. This is why `Revoker` is
+its own interface rather than a reuse of `maniflex.CacheStore`, whose `Get`
+reports a miss and an outage identically.
+
+The refusal is `503`, not `401`: the credential is fine, the server is not, and
+answering `401` would push every healthy client into a re-login storm during an
+incident.
+
+### Backends
+
+`NewMemoryRevoker()` keeps the blocklist in-process. Its limitation is
+structural: a second replica does not see a logout performed by the first, and a
+restart loses every entry — which un-revokes every still-unexpired token. It
+suits single-replica deployments, development, and tests.
+
+Behind more than one replica, use the Redis backend:
+
+```go
+import authredis "github.com/xaleel/maniflex/middleware/auth/redis"
+
+rev := authredis.NewRevoker(redisClient, "myapp:revoked")
+```
+
+Or implement `auth.Revoker` yourself over any store — four methods, and the
+interface is in terms of `context.Context` and `time.Time` only.
+
+## `VerifyToken` hook
+
+`JWTOptions.VerifyToken` is the final say on a token that has passed every other
+check — signature, registered claims, and revocation. Return an error to refuse
+the request with `401 INVALID_TOKEN` carrying that message.
+
+```go
+auth.JWTAuth(secret, auth.JWTOptions{
+    VerifyToken: func(ctx *maniflex.ServerContext, claims map[string]any, info *maniflex.AuthInfo) error {
+        if claims["tier"] != "paid" {
+            return errors.New("subscription required")
+        }
+        info.Roles = append(info.Roles, "subscriber") // may enrich the principal
+        return nil
+    },
+})
+```
+
+Use it for issuer-specific rules the framework does not model: a required custom
+claim, a tenant allowlist, a per-user check against your own store. For
+revocation specifically, prefer `Revoker` — it is the same hook point with the
+blocklist and its failure semantics already written.
+
 ## `CSRF`
 
 Protects unsafe HTTP methods (`POST`/`PUT`/`PATCH`/`DELETE`) against cross-site

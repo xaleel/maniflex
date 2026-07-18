@@ -23,7 +23,7 @@ $modules = @(
     '.',
     'db/postgres', 'db/sqlite',
     'events/kafka', 'events/nats', 'events/rabbitmq', 'events/redis',
-    'jobs/redis', 'middleware/db/redis', 'middleware/service/bcrypt',
+    'jobs/redis', 'middleware/auth/redis', 'middleware/db/redis', 'middleware/service/bcrypt',
     'pkg/otel',
     'examples', 'tests'
 )

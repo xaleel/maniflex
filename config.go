@@ -116,6 +116,32 @@ type ModelConfig struct {
 	// JSON array of group rows under the usual {"data": ...} envelope.
 	AggregateEnabled bool
 
+	// RestoreEnabled mounts POST /:model/{id}/restore when true, clearing the
+	// delete marker so the row is live again. It requires the model to soft-delete;
+	// on a model that hard-deletes there is nothing to restore and the route is
+	// not mounted.
+	//
+	// It is off by default: un-deleting is a privileged operation, and an endpoint
+	// that appeared merely because a version was upgraded would not be covered by
+	// the authorisation an app already wrote.
+	//
+	// It dispatches as the update operation, so middleware registered for
+	// OpUpdate — auth, tenancy, force filters, audit — applies unchanged and an
+	// app's existing "who may modify this row" rule governs restoring it too.
+	// Use ctx.IsRestore() where the two must be told apart.
+	//
+	// The request carries no body. Restoring a row that is not deleted is a 404,
+	// mirroring the re-delete guard. Only the delete marker is written:
+	// updated_at is left alone, so a restore does not masquerade as an edit.
+	//
+	// Requires a database adapter implementing Restorer; one that does not
+	// answers 501. The bundled SQLite and Postgres adapters do.
+	//
+	// Cascade is not undone. A restore brings back the row it names and nothing
+	// else, because nothing records which children an onDelete:cascade removed —
+	// restore each explicitly, or model the relationship so the children survive.
+	RestoreEnabled bool
+
 	// SearchLanguage names the text-search configuration used for full-text
 	// search (?q=) on mfx:"searchable" fields. On Postgres it is the
 	// to_tsvector / websearch_to_tsquery configuration name (default "english");
@@ -384,6 +410,32 @@ type Config struct {
 	// All trace output is emitted at DEBUG level through Config.Logger, so it
 	// is invisible unless the logger's handler accepts DEBUG records.
 	Trace PipelineTrace
+
+	// Strict promotes startup warnings that describe a defensible-but-suspect
+	// configuration into hard startup failures.
+	//
+	// It does NOT gate configuration that is unambiguously a mistake: a
+	// misplaced ModelConfig, an invalid mfx:"scheduled" tag, a relation on a
+	// field with no "ID" suffix, and a middleware registered on a step its
+	// operations never reach all fail without it. Those silently dropped what
+	// the author asked for, and a fix nobody opts into is not a fix.
+	//
+	// What it does gate is the handful of warnings that describe something a
+	// reasonable application might mean:
+	//
+	//   - a mfx:"relation" whose target model is not registered (it may simply
+	//     be a plain foreign id that wants no relation tag),
+	//   - the standalone /files endpoints mounted with no auth middleware (a
+	//     deliberately public upload endpoint is conceivable),
+	//   - a Config.StaticDir that does not exist (a missing asset directory
+	//     should not take down a working API, and by default it does not).
+	//
+	// Turn it on in CI and staging, where a boot failure costs a re-run rather
+	// than an outage. Every problem found is reported in one message, so one
+	// pass finds all of them.
+	//
+	// Default: false.
+	Strict bool
 
 	// QueryTimeout is the maximum duration allowed for a single request's
 	// database operations. When non-zero a context.WithTimeout deadline is

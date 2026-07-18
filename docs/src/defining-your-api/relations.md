@@ -41,8 +41,12 @@ query by it, exactly like any scalar.
 
 When the field name doesn't match the target model, name it explicitly with
 `mfx:"relation:Target"`. A bare `mfx:"relation"` on a field that doesn't end in
-`ID` warns at startup (there's no suffix to strip); a future strict mode will
-reject it.
+`ID` **fails at startup**: there's no suffix to strip, so the target would be
+inferred from the whole field name — a guess that is almost never a real model.
+
+A relation whose target model is simply never registered is allowed by default
+(it may be a plain foreign id that wants no relation tag) and rejected under
+[strict mode](../reference/strict-mode.md).
 
 ### Including the related row
 

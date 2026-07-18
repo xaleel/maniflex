@@ -1,7 +1,6 @@
 package maniflex
 
 import (
-	"log/slog"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -116,7 +115,7 @@ func (p *Pipeline) executeAction(ctx *ServerContext, cfg ActionConfig) error {
 // Deserialize, Validate, Service, and DB are intentionally skipped — the handler
 // performs the search via ctx.Search. Mirrors executeAction; middleware
 // registered on the skipped steps with ForOperation(OpSearch) is inert (and
-// warned about at startup by warnIneffectiveMiddleware).
+// a startup error — see collectIneffectiveMiddleware).
 func (p *Pipeline) executeSearch(ctx *ServerContext, handler func(*ServerContext) error) error {
 	return p.executeTrimmed(ctx, handler)
 }
@@ -204,27 +203,32 @@ func opSkipsStep(op Operation, stepName string) bool {
 	return slices.Contains(stepsSkippedByOp[op], stepName)
 }
 
-// warnIneffectiveMiddleware logs a warning for every middleware registered on a
-// step its operation filter can never reach — e.g. ForOperation(OpSearch) on the
-// Service step, which only runs for full-pipeline operations. It warns only when
-// EVERY operation in the filter skips the step (so a mixed filter like
+// collectIneffectiveMiddleware reports every middleware registered on a step its
+// operation filter can never reach — e.g. ForOperation(OpSearch) on the Service
+// step, which only runs for full-pipeline operations. It reports only when EVERY
+// operation in the filter skips the step (so a mixed filter like
 // ForOperation(OpCreate, OpAction) on Service, still effective for OpCreate, is
 // not flagged) and never for an unfiltered middleware (which applies to all ops).
 //
-// This mirrors the warn-and-drop convention in flattenArgs; a future Config.Strict
-// mode (roadmap §10.1) will promote these warnings to panics.
-func warnIneffectiveMiddleware(p *Pipeline, logger *slog.Logger) {
-	if logger == nil {
-		logger = slog.Default()
-	}
+// This is a startup error rather than a warning (10.1) because the middleware is
+// registered and frozen into the chain, and then never runs. There is no reading
+// of it under which the author got what they wrote, and when the middleware is
+// an authorisation check the result is a silent hole.
+func (p *Pipeline) collectIneffectiveMiddleware(issues *issueList) {
 	for _, sr := range p.steps() {
 		for _, m := range sr.middlewares {
-			if middlewareNeverRunsOnStep(m.cfg.Operations, sr.name) {
-				logger.Warn("[maniflex] middleware registered for an operation whose pipeline skips this step — it will never run",
-					slog.String("step", sr.displayName),
-					slog.String("middleware", m.cfg.Name),
-					slog.Any("operations", m.cfg.Operations))
+			if !middlewareNeverRunsOnStep(m.cfg.Operations, sr.name) {
+				continue
 			}
+			name := m.cfg.Name
+			if name == "" {
+				name = "<unnamed>"
+			}
+			issues.add("middleware",
+				"middleware %q is registered on the %s step for operation(s) %v, all of which "+
+					"skip that step — it will never run; register it on a step those "+
+					"operations run, or widen ForOperation",
+				name, sr.displayName, m.cfg.Operations)
 		}
 	}
 }

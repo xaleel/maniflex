@@ -760,9 +760,12 @@ func ScanModel(v any, cfg ModelConfig) (*ModelMeta, error) {
 	meta.buildIndices()
 
 	// Resolve mfx:"scheduled" fields once at scan time so the runner does no
-	// reflection per tick. Invalid config is warned-and-dropped (non-strict
-	// mode; §10.1 will make it panic instead).
-	meta.buildScheduled()
+	// reflection per tick. Invalid config is a registration error (10.1): a
+	// scheduled tag that does not parse used to be dropped, so the sweep it
+	// described silently never ran.
+	if err := meta.buildScheduled(); err != nil {
+		return nil, err
+	}
 
 	return meta, nil
 }
@@ -772,18 +775,17 @@ var timePtrType = reflect.TypeOf((*time.Time)(nil))
 // buildScheduled resolves and validates every mfx:"scheduled" field on the
 // model, populating meta.scheduled and appending one auto-IndexSpec per
 // surviving scheduled column. See "No implicit action" in the 8.6 plan.
-func (m *ModelMeta) buildScheduled() {
-	// Strict mode (§10.1) is not yet wired; 8.6 always warns-and-ignores.
-	const strict = false
-
+func (m *ModelMeta) buildScheduled() error {
 	var specs []ScheduledSpec
 	for _, f := range m.Fields {
 		if !f.Tags.Scheduled {
 			continue
 		}
-		if spec, ok := resolveSchedSpec(m, f, strict); ok {
-			specs = append(specs, spec)
+		spec, err := resolveSchedSpec(m, f)
+		if err != nil {
+			return err
 		}
+		specs = append(specs, spec)
 	}
 	m.scheduled = specs
 
@@ -813,6 +815,7 @@ func (m *ModelMeta) buildScheduled() {
 			Columns: []string{s.Column},
 		})
 	}
+	return nil
 }
 
 // buildIndices appends one IndexSpec per mfx:"index" field, so AutoMigrate
@@ -856,36 +859,27 @@ func (m *ModelMeta) hasIndexOn(col string) bool {
 	return false
 }
 
-// reportSchedIssue records an invalid-scheduled-config problem. In strict mode
-// (§10.1) it panics like every other fatal invalid-tag case; in the non-strict
-// mode 8.6 ships it logs a warning and the caller drops the field.
-func reportSchedIssue(strict bool, model, field, msg string) {
-	full := fmt.Sprintf("maniflex: model %q field %q: %s", model, field, msg)
-	if strict {
-		panic(full)
-	}
-	slog.Default().Warn("maniflex: invalid scheduled tag — field ignored",
-		slog.String("model", model),
-		slog.String("field", field),
-		slog.String("problem", msg))
+// schedErr builds the registration error for an invalid mfx:"scheduled"
+// configuration. It used to warn and drop the field, which meant a misspelt
+// scheduled tag produced a model whose sweep silently never fired — the same
+// failure mode an unknown mfx: option has been a hard error for since 0.2.x.
+func schedErr(model, field, msg string) error {
+	return fmt.Errorf("maniflex: model %q field %q: %s", model, field, msg)
 }
 
-// resolveSchedSpec validates one scheduled field and returns its resolved spec.
-// On any invalid-config problem it reports the issue and returns ok=false so
-// the caller drops the field from meta.scheduled.
-func resolveSchedSpec(m *ModelMeta, f FieldMeta, strict bool) (ScheduledSpec, bool) {
+// resolveSchedSpec validates one scheduled field and returns its resolved spec,
+// or the registration error explaining why the tag cannot be honoured.
+func resolveSchedSpec(m *ModelMeta, f FieldMeta) (ScheduledSpec, error) {
 	t := f.Tags
-	report := func(msg string) { reportSchedIssue(strict, m.Name, f.Name, msg) }
+	report := func(msg string) error { return schedErr(m.Name, f.Name, msg) }
 
 	// 1. The driving field must be *time.Time so "unset" is distinguishable.
 	if f.Type != timePtrType {
-		report("mfx:\"scheduled\" requires a *time.Time field")
-		return ScheduledSpec{}, false
+		return ScheduledSpec{}, report("mfx:\"scheduled\" requires a *time.Time field")
 	}
 	// 2. Unrecognised option.
 	if t.SchedBadOpt != "" {
-		report(fmt.Sprintf("unrecognised scheduled option %q", t.SchedBadOpt))
-		return ScheduledSpec{}, false
+		return ScheduledSpec{}, report(fmt.Sprintf("unrecognised scheduled option %q", t.SchedBadOpt))
 	}
 	// 3. Action count — soft-delete / hard-delete / field= are exclusive.
 	n := 0
@@ -899,52 +893,44 @@ func resolveSchedSpec(m *ModelMeta, f FieldMeta, strict bool) (ScheduledSpec, bo
 		n++
 	}
 	if n == 0 {
-		report("mfx:\"scheduled\" declares no action; expected one of soft-delete, hard-delete, field=...")
-		return ScheduledSpec{}, false
+		return ScheduledSpec{}, report("mfx:\"scheduled\" declares no action; expected one of soft-delete, hard-delete, field=...")
 	}
 	if n > 1 {
-		report("mfx:\"scheduled\" declares conflicting actions; exactly one of soft-delete, hard-delete, field= is allowed")
-		return ScheduledSpec{}, false
+		return ScheduledSpec{}, report("mfx:\"scheduled\" declares conflicting actions; exactly one of soft-delete, hard-delete, field= is allowed")
 	}
 	// 5. from=/to= without field=.
 	if t.SchedField == "" && (t.SchedHasFrom || t.SchedHasTo) {
-		report("scheduled from=/to= options require field=")
-		return ScheduledSpec{}, false
+		return ScheduledSpec{}, report("scheduled from=/to= options require field=")
 	}
 
 	switch {
 	case t.SchedSoft:
 		// 6. Model must be soft-deletable.
 		if !m.SoftDelete.Enabled {
-			report("scheduled;soft-delete requires a soft-deletable model (embed maniflex.WithDeletedAt or use ;hard-delete)")
-			return ScheduledSpec{}, false
+			return ScheduledSpec{}, report("scheduled;soft-delete requires a soft-deletable model (embed maniflex.WithDeletedAt or use ;hard-delete)")
 		}
-		return ScheduledSpec{Column: t.DBName, Action: SchedSoftDelete}, true
+		return ScheduledSpec{Column: t.DBName, Action: SchedSoftDelete}, nil
 
 	case t.SchedHard:
-		return ScheduledSpec{Column: t.DBName, Action: SchedHardDelete}, true
+		return ScheduledSpec{Column: t.DBName, Action: SchedHardDelete}, nil
 
 	default: // set-field
 		// 4. field= requires to=.
 		if !t.SchedHasTo {
-			report(fmt.Sprintf("scheduled;field=%s requires to=", t.SchedField))
-			return ScheduledSpec{}, false
+			return ScheduledSpec{}, report(fmt.Sprintf("scheduled;field=%s requires to=", t.SchedField))
 		}
 		// 7. Target column must exist as a scalar field on the model.
 		target := m.FieldByDBName(t.SchedField)
 		if target == nil {
-			report(fmt.Sprintf("scheduled;field=%s names a column that does not exist on the model", t.SchedField))
-			return ScheduledSpec{}, false
+			return ScheduledSpec{}, report(fmt.Sprintf("scheduled;field=%s names a column that does not exist on the model", t.SchedField))
 		}
 		// 8. enum membership — catches typos at boot.
 		if len(target.Tags.Enum) > 0 {
 			if !schedInEnum(target.Tags.Enum, t.SchedTo) {
-				report(fmt.Sprintf("scheduled to=%q is not a member of %s's enum", t.SchedTo, t.SchedField))
-				return ScheduledSpec{}, false
+				return ScheduledSpec{}, report(fmt.Sprintf("scheduled to=%q is not a member of %s's enum", t.SchedTo, t.SchedField))
 			}
 			if t.SchedHasFrom && !schedInEnum(target.Tags.Enum, t.SchedFrom) {
-				report(fmt.Sprintf("scheduled from=%q is not a member of %s's enum", t.SchedFrom, t.SchedField))
-				return ScheduledSpec{}, false
+				return ScheduledSpec{}, report(fmt.Sprintf("scheduled from=%q is not a member of %s's enum", t.SchedFrom, t.SchedField))
 			}
 		}
 		return ScheduledSpec{
@@ -954,7 +940,7 @@ func resolveSchedSpec(m *ModelMeta, f FieldMeta, strict bool) (ScheduledSpec, bo
 			From:    t.SchedFrom,
 			HasFrom: t.SchedHasFrom,
 			To:      t.SchedTo,
-		}, true
+		}, nil
 	}
 }
 

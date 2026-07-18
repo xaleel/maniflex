@@ -285,12 +285,14 @@ server.MustRegister(
 
 Here `User` and `Comment` use defaults; only `Article` is versioned.
 
-Two argument shapes are detected and logged as a warning (they're foot-guns,
-not errors yet — strict mode will promote them to a panic):
+Two argument shapes are **registration errors**, because there is no valid
+reading of either and both used to silently discard the config you wrote:
 
 - A `ModelConfig` at position 0 (no preceding model to attach to).
-- Two `ModelConfig`s in a row (only the first applies to the model; the
-  second has no fresh model to bind to and is dropped).
+- Two `ModelConfig`s in a row (the second has no fresh model to bind to).
+
+See [Strict mode](../reference/strict-mode.md) for the full set of
+configuration problems caught at startup.
 
 ## Optional embeds
 

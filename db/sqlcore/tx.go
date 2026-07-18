@@ -563,6 +563,33 @@ func (t *txAdapter) softDelete(ctx context.Context, model *maniflex.ModelMeta, i
 	return nil
 }
 
+// Restore implements maniflex.Restorer for the transaction connection (5.19),
+// sharing restoreStmt with (*Adapter).Restore so the two cannot drift — the
+// hazard softDelete/HardDelete have to guard against by hand.
+//
+// Being in the transaction matters: the restore and whatever else the request
+// does commit or roll back together, so a restore whose response fails to build
+// does not leave the row half-resurrected.
+func (t *txAdapter) Restore(ctx context.Context, model *maniflex.ModelMeta, id string,
+	qp *maniflex.QueryParams,
+) (any, error) {
+	query, args, err := restoreStmt(model, id, qp, t.driver)
+	if err != nil {
+		return nil, err
+	}
+	res, err := t.tx.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("tx restore: %w", normalizeErr(t.errNormalizer, err, model.TableName))
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, maniflex.ErrNotFound
+	}
+	// The scope was enforced by the UPDATE, so the read-back needs no filters of
+	// its own — but it does need a non-nil QueryParams, which FindByID
+	// dereferences.
+	return t.FindByID(ctx, model, id, &maniflex.QueryParams{})
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 func normaliseTx(v any) any {

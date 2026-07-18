@@ -28,10 +28,13 @@ func modelTypeNames(models []any) []string {
 // "model must embed BaseModel" when using the MustRegister(domain.Models()...)
 // layout where each Models() slice carries its own inline ModelConfigs.
 func TestFlattenArgs_ModelConfigInsideSlice(t *testing.T) {
-	models, configs := flattenArgs([]any{
+	models, configs, err := flattenArgs([]any{
 		[]any{flatA{}, ModelConfig{TableName: "a_tbl"}},
 		[]any{flatB{}, ModelConfig{TableName: "b_tbl"}},
 	})
+	if err != nil {
+		t.Fatalf("flattenArgs: unexpected error: %v", err)
+	}
 
 	if got := modelTypeNames(models); len(got) != 2 || got[0] != "flatA" || got[1] != "flatB" {
 		t.Fatalf("expected models [flatA flatB], got %v", got)
@@ -47,10 +50,13 @@ func TestFlattenArgs_ModelConfigInsideSlice(t *testing.T) {
 // A ModelConfig at the start of a slice binds to a model passed as a preceding
 // top-level argument (the pairing rule crosses the slice boundary).
 func TestFlattenArgs_ModelConfigFirstInSliceBindsToPriorModel(t *testing.T) {
-	models, configs := flattenArgs([]any{
+	models, configs, err := flattenArgs([]any{
 		flatA{},
 		[]any{ModelConfig{TableName: "a_tbl"}},
 	})
+	if err != nil {
+		t.Fatalf("flattenArgs: unexpected error: %v", err)
+	}
 	if len(models) != 1 {
 		t.Fatalf("expected 1 model, got %d (%v)", len(models), modelTypeNames(models))
 	}
@@ -61,10 +67,13 @@ func TestFlattenArgs_ModelConfigFirstInSliceBindsToPriorModel(t *testing.T) {
 
 // Top-level pairing (the pre-existing behaviour) must keep working.
 func TestFlattenArgs_TopLevelPairingUnchanged(t *testing.T) {
-	models, configs := flattenArgs([]any{
+	models, configs, err := flattenArgs([]any{
 		flatA{}, ModelConfig{TableName: "a_tbl"},
 		flatB{}, ModelConfig{TableName: "b_tbl"},
 	})
+	if err != nil {
+		t.Fatalf("flattenArgs: unexpected error: %v", err)
+	}
 	if got := modelTypeNames(models); len(got) != 2 || got[0] != "flatA" || got[1] != "flatB" {
 		t.Fatalf("expected models [flatA flatB], got %v", got)
 	}

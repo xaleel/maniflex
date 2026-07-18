@@ -138,6 +138,17 @@ func (e *ExecuteError) Error() string {
 // it likes, and cannot reach this at all.
 func (c *ServerContext) InProcess() bool { return c.inProcess }
 
+// IsRestore reports whether this request is a soft-delete restore
+// (POST /:model/:id/restore), which dispatches as OpUpdate so that existing
+// update middleware applies to it.
+//
+// Middleware registered with ForOperation(OpUpdate) runs for restores too, and
+// usually should. Read this when the two need telling apart — an audit sink
+// recording "restored" rather than "updated", an event emitter choosing a
+// different type, or a validation rule that only makes sense against a body,
+// since a restore carries none (ctx.ParsedBody is empty).
+func (c *ServerContext) IsRestore() bool { return c.restore }
+
 // executableOps lists the operations Execute can run: the five that go through
 // the full six-step pipeline and produce a value rather than a byte stream.
 var executableOps = map[Operation]string{

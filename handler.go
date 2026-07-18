@@ -308,6 +308,23 @@ func (h *handlers) Delete(meta *ModelMeta) http.HandlerFunc {
 	}
 }
 
+// Restore returns a handler for POST /resource/{id}/restore, mounted when the
+// model opts in with ModelConfig.RestoreEnabled and soft-deletes (5.19).
+//
+// It dispatches as OpUpdate rather than as an operation of its own, so every
+// middleware an app registered for "who may modify this row" — auth, tenancy,
+// force filters, audit — governs un-deleting it without anyone having to learn
+// a new constant. The ctx.restore flag then diverts the steps that assume an
+// update has a body and a visible row. Middleware that must tell the two apart
+// reads ctx.IsRestore().
+func (h *handlers) Restore(meta *ModelMeta) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		h.dispatchWith(w, r, meta, OpUpdate, func(ctx *ServerContext) {
+			ctx.restore = true
+		})
+	}
+}
+
 // SingletonRead returns a handler for GET /resource on a ModelConfig.Singleton
 // model. There is no {id} in the URL, so it pins ResourceID to SingletonID; the
 // DB step provisions that row on first access (see ensureSingletonRow).

@@ -109,7 +109,10 @@ func New(cfg Config) *Server {
 //	server.Register(User{}, Post{}, Comment{})
 //	server.Register([]any{User{}, Post{}})
 func (c *Server) Register(args ...any) error {
-	models, configs := flattenArgs(args)
+	models, configs, err := flattenArgs(args)
+	if err != nil {
+		return err
+	}
 	for i, v := range models {
 		cfg := ModelConfig{}
 		if i < len(configs) {
@@ -377,6 +380,22 @@ func (c *Server) StartWithContext(ctx context.Context) error {
 	c.markStarted()
 	defer c.markExited()
 
+	// Validate and assemble the router FIRST, before anything with a side effect
+	// (10.1). This used to happen at the Handler call below, after migrating and
+	// after starting services — so a misconfigured application discovered it only
+	// once the schema had already been altered. A configuration error should cost
+	// nothing to find. It is cached, so the Handler call below is a lookup.
+	// Validate and assemble the router FIRST, before anything with a side effect
+	// (10.1). This used to happen at the Handler call below, after migrating and
+	// after starting services — so a misconfigured application discovered it only
+	// once the schema had already been altered. A configuration error should cost
+	// nothing to find. It is cached, so the Handler call below is a lookup.
+	handler, err := c.handler()
+	if err != nil {
+		c.abortGoroutines()
+		return err
+	}
+
 	if err := c.migrate(ctx); err != nil {
 		c.abortGoroutines()
 		return err
@@ -390,9 +409,8 @@ func (c *Server) StartWithContext(ctx context.Context) error {
 		return err
 	}
 
-	// Build the router before taking the lock — Handler takes it too.
 	addr := fmt.Sprintf(":%d", c.cfg.Port)
-	srv, ok := c.publishListener(addr, c.Handler())
+	srv, ok := c.publishListener(addr, handler)
 	if !ok {
 		// A Shutdown landed while we were migrating or starting services. It has
 		// countermanded the boot rather than racing it, so open no listener; the
@@ -645,32 +663,36 @@ func (c *Server) Shutdown(ctx context.Context) error {
 // resolves many-to-many relations by writing back to the registry, so two of them
 // at once raced over shared model metadata.
 func (c *Server) Handler() http.Handler {
+	h, err := c.handler()
+	if err != nil {
+		// Handler has no error return, so a misconfiguration can only be raised
+		// this way. StartWithContext calls the error-returning form instead, and
+		// does so before migrating — see there.
+		panic(err.Error())
+	}
+	return h
+}
+
+// handler is Handler's error-returning form: it validates the assembled registry
+// and builds the router once.
+//
+// The split exists because the two callers want different things from the same
+// failure. Handler has no error channel and must panic; Start does have one and
+// should use it, and needs to fail before it migrates.
+func (c *Server) handler() (http.Handler, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if c.router == nil {
-		// Resolve many-to-many relations now that all models are registered.
-		if err := resolveManyToMany(c.registry); err != nil {
-			panic(fmt.Sprintf("maniflex: resolveManyToMany: %v", err))
-		}
-		// Validate lock_scope model references.
-		if err := validateLockScopes(c.registry); err != nil {
-			panic(err.Error())
-		}
-		// Validate onDelete actions: target registered, setNull FK nullable (5.16).
-		if err := validateOnDeleteActions(c.registry); err != nil {
-			panic(err.Error())
-		}
-		// Warn about convention "<Name>ID" relations whose target model was never
-		// registered (commonly a foreign id that should be mfx:"norelation").
-		warnDanglingRelations(c.registry, c.cfg.logger())
-		// Auto-register file cleanup middleware for models with file fields
+		// Auto-register file cleanup middleware for models with file fields.
+		// Before validation so the middleware it adds is validated too.
 		if c.cfg.FilesConfig.Storage != nil {
 			c.registerFileCleanup()
 		}
-		// Warn about middleware registered on a pipeline step its operation can
-		// never reach (e.g. ForOperation(OpSearch) on the Service step).
-		warnIneffectiveMiddleware(c.Pipeline, c.cfg.logger())
+		// Every whole-registry check, reported together (10.1).
+		if err := c.validateRegistry(); err != nil {
+			return nil, err
+		}
 		// Close the registration window — after this the composed chains are cached
 		// per (model, operation) instead of rebuilt six times per request, so the
 		// middleware set must stop changing. Last, because the file-cleanup hooks
@@ -680,7 +702,7 @@ func (c *Server) Handler() http.Handler {
 		h.globalSearch = c.globalSearch
 		c.router = buildRouter(&c.cfg, c.registry, h, c.Pipeline, c.cfg.logger(), c.actions, c.asyncCfg)
 	}
-	return c.router
+	return c.router, nil
 }
 
 // registerFileCleanup auto-registers Before-DB and After-DB middleware for
@@ -1064,14 +1086,17 @@ func (c *Server) checkActionConflict(cfg ActionConfig) {
 // Register(User{}, Post{}, ModelConfig{B}) silently applied B to User (the
 // first config matched the first model) instead of Post.
 //
-// flattenArgs logs warnings via slog.Default for two foot-gun shapes that
-// indicate the caller misunderstood the pairing rule:
+// flattenArgs rejects two argument shapes that indicate the caller
+// misunderstood the pairing rule:
 //   - a ModelConfig at position 0 (no preceding model to attach to)
 //   - two ModelConfigs in a row (the second one has no fresh model to bind to)
 //
-// In both cases the offending config is dropped. A future Config.Strict mode
-// (roadmap §10.1) will promote these warnings to panics.
-func flattenArgs(args []any) (models []any, configs []ModelConfig) {
+// Both used to be warnings, and the offending config was dropped — so a
+// ModelConfig{Headless: true} silently did not apply and the model mounted the
+// routes its author thought were suppressed. There is no valid reason to write
+// either shape, so both are now registration errors (roadmap 10.1), the same
+// answer an unknown mfx: option already gets.
+func flattenArgs(args []any) (models []any, configs []ModelConfig, err error) {
 	prevWasConfig := false
 
 	// add handles a single, already-unsliced argument: it binds a ModelConfig to
@@ -1091,11 +1116,13 @@ func flattenArgs(args []any) (models []any, configs []ModelConfig) {
 		if cfg, ok := arg.(ModelConfig); ok {
 			switch {
 			case len(models) == 0:
-				slog.Default().Warn("[maniflex] ignoring ModelConfig at argument position 0 — ModelConfig must follow a model",
-					slog.Int("position", pos))
+				err = errors.Join(err, fmt.Errorf(
+					"ModelConfig at argument position %d has no model to attach to — "+
+						"a ModelConfig must follow the model it configures", pos))
 			case prevWasConfig:
-				slog.Default().Warn("[maniflex] ignoring ModelConfig immediately after another ModelConfig — only one ModelConfig per model is honoured",
-					slog.Int("position", pos))
+				err = errors.Join(err, fmt.Errorf(
+					"ModelConfig at argument position %d follows another ModelConfig — "+
+						"only one ModelConfig per model is honoured, so this one would be dropped", pos))
 			default:
 				configs[len(models)-1] = cfg
 			}

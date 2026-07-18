@@ -1552,6 +1552,97 @@ func (a *Adapter) softDelete(ctx context.Context, model *maniflex.ModelMeta, id 
 	return nil
 }
 
+// Restore implements maniflex.Restorer: it clears the soft-delete marker on one
+// row and returns the restored record (5.19).
+//
+// It has to be its own statement rather than an Update, because every read and
+// update path applies softDeleteCond — the row it targets is invisible to all of
+// them. It is the mirror image of softDelete, down to the guard: softDelete
+// requires the row to be live, this requires it to be deleted, so restoring a
+// row that was never deleted is a 404 rather than a silent success.
+//
+// Only the marker is written. updated_at is deliberately left alone so a restore
+// does not read as an edit to anything watching that column.
+func (a *Adapter) Restore(ctx context.Context, model *maniflex.ModelMeta, id string,
+	qp *maniflex.QueryParams,
+) (any, error) {
+	query, args, err := restoreStmt(model, id, qp, a.driver)
+	if err != nil {
+		return nil, err
+	}
+	res, err := a.writeDb.ExecContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("restore: %w", normalizeErr(a.errNormalizer, err, model.TableName))
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, maniflex.ErrNotFound
+	}
+	// The marker is cleared, so the row is visible to the ordinary read path
+	// now. The read carries no filters of its own: the scope was already
+	// enforced by the UPDATE above, which would have matched no row otherwise.
+	// (FindByID dereferences its QueryParams, so it gets an empty one, not nil.)
+	return a.FindByID(ctx, model, id, &maniflex.QueryParams{})
+}
+
+// restoreStmt builds the UPDATE that clears a soft-delete marker, together with
+// its arguments. Shared by the adapter and the transaction so the two cannot
+// drift — the divergence that let a soft delete behave differently inside a
+// transaction is exactly the bug this avoids repeating.
+func restoreStmt(model *maniflex.ModelMeta, id string, qp *maniflex.QueryParams,
+	driver maniflex.DriverType,
+) (string, []any, error) {
+	if !model.SoftDelete.Enabled {
+		// A hard-delete model has no marker to clear and no deleted rows to find.
+		return "", nil, maniflex.ErrNotFound
+	}
+	p := &ph{driver: driver}
+	col := model.SoftDelete.Field
+
+	var setExpr, whereDeletedExpr string
+	if model.SoftDelete.FieldType == maniflex.SoftDeleteBool {
+		setExpr = fmt.Sprintf("%s = %s", q(col), p.add(false))
+		whereDeletedExpr = q(col) // the marker is set
+	} else {
+		setExpr = fmt.Sprintf("%s = NULL", q(col))
+		whereDeletedExpr = fmt.Sprintf("%s IS NOT NULL", q(col))
+	}
+
+	conds := []string{
+		fmt.Sprintf("%s = %s", q("id"), p.add(id)),
+		whereDeletedExpr,
+	}
+	if scope := restoreScopeCond(model, qp, driver, p); scope != "" {
+		conds = append(conds, scope)
+	}
+
+	return fmt.Sprintf("UPDATE %s SET %s WHERE %s",
+		q(model.TableName), setExpr, strings.Join(conds, " AND ")), p.args, nil
+}
+
+// restoreScopeCond renders the request's forced filters as a subquery the UPDATE
+// can require membership of, so a caller cannot restore a row outside their
+// tenancy or force-filter scope by knowing its id.
+//
+// A subquery rather than an inline predicate because filterConds qualifies every
+// column with the table name and may emit joins for a relation-based scope
+// (db.ForceFilterVia); neither belongs in an UPDATE's own WHERE, and both are
+// perfectly at home in a SELECT. Note the subquery deliberately omits
+// softDeleteCond — the row it must find is the deleted one.
+func restoreScopeCond(model *maniflex.ModelMeta, qp *maniflex.QueryParams,
+	driver maniflex.DriverType, p *ph,
+) string {
+	if qp == nil || len(qp.Filters) == 0 {
+		return ""
+	}
+	conds := filterConds(model, qp.Filters, driver, p)
+	if conds == "" {
+		return ""
+	}
+	joinSQL := buildJoins(model, qp.Filters, nil)
+	return fmt.Sprintf("%s IN (SELECT %s.%s FROM %s%s WHERE %s)",
+		q("id"), q(model.TableName), q("id"), q(model.TableName), joinSQL, conds)
+}
+
 // ── Query builders ────────────────────────────────────────────────────────────
 
 // queryRunner is satisfied by both *sql.DB and *sql.Tx. Shared query

@@ -38,17 +38,19 @@ type schedTagModel struct {
 	maniflex.WithDeletedAt
 	Status     string     `json:"status"      mfx:"enum:draft|published,filterable"`
 	Color      string     `json:"color"`
-	Bare       *time.Time `json:"bare"        mfx:"scheduled"`
 	Soft       *time.Time `json:"soft"        mfx:"scheduled;soft-delete"`
 	Hard       *time.Time `json:"hard"        mfx:"scheduled;hard-delete"`
 	Publish    *time.Time `json:"publish"     mfx:"scheduled;field=status;from=draft;to=published"`
 	Recolor    *time.Time `json:"recolor"     mfx:"scheduled;field=color;to=red"`
-	Bogus      *time.Time `json:"bogus"       mfx:"scheduled;bogus"`
 	WithFilter *time.Time `json:"with_filter" mfx:"scheduled;soft-delete,filterable"`
 }
 
+// Tags that parse but cannot be resolved — a bare mfx:"scheduled" with no
+// action, or an unrecognised option — are no longer observable through a
+// scanned model: since 10.1 they fail registration outright. Their coverage
+// lives in the TestScheduled_Invalid_* cases below. This fixture therefore
+// carries only tags that resolve.
 func TestScheduledTag_Parsing(t *testing.T) {
-	captureWarnings(t)
 	meta := scan(t, schedTagModel{})
 
 	tag := func(db string) maniflex.FieldTags {
@@ -58,16 +60,6 @@ func TestScheduledTag_Parsing(t *testing.T) {
 		}
 		return f.Tags
 	}
-
-	t.Run("bare scheduled records only the switch", func(t *testing.T) {
-		tg := tag("bare")
-		if !tg.Scheduled {
-			t.Error("Scheduled should be true")
-		}
-		if tg.SchedSoft || tg.SchedHard || tg.SchedField != "" || tg.SchedHasTo || tg.SchedHasFrom {
-			t.Errorf("bare tag should record no action: %+v", tg)
-		}
-	})
 
 	t.Run("soft-delete", func(t *testing.T) {
 		if tg := tag("soft"); !tg.Scheduled || !tg.SchedSoft {
@@ -104,12 +96,6 @@ func TestScheduledTag_Parsing(t *testing.T) {
 		}
 	})
 
-	t.Run("unrecognised option recorded in SchedBadOpt", func(t *testing.T) {
-		if tg := tag("bogus"); tg.SchedBadOpt != "bogus" {
-			t.Errorf("SchedBadOpt = %q, want \"bogus\"", tg.SchedBadOpt)
-		}
-	})
-
 	t.Run("trailing comma-part still parsed", func(t *testing.T) {
 		tg := tag("with_filter")
 		if !tg.SchedSoft {
@@ -121,7 +107,7 @@ func TestScheduledTag_Parsing(t *testing.T) {
 	})
 }
 
-// ── Registration-validation tests (non-strict mode) ───────────────────────────
+// ── Registration-validation tests ─────────────────────────────────────────────
 
 // scheduledColumns returns the set of driving columns in meta.Scheduled().
 func scheduledColumns(meta *maniflex.ModelMeta) map[string]bool {
@@ -191,22 +177,26 @@ func TestScheduled_TwoFieldsBothPresent(t *testing.T) {
 	}
 }
 
-// invalidCase asserts that scanning v drops the field with driving column
-// `dropped`, logs a warning, and leaves the rest of the model intact.
-func assertDropped(t *testing.T, v any, dropped string, warnSubstr string) {
+// assertDropped asserts that scanning v is a registration error naming the
+// specific problem with the scheduled tag.
+//
+// It used to assert the opposite: that the offending field was silently dropped
+// and a warning logged. Roadmap 10.1 made an invalid mfx:"scheduled" tag fatal,
+// because dropping the field means the sweep its author configured simply never
+// runs, with nothing at runtime to say so — the same reasoning that made an
+// unknown mfx: option a registration error.
+func assertDropped(t *testing.T, v any, field string, problemSubstr string) {
 	t.Helper()
-	buf := captureWarnings(t)
-	meta := scan(t, v)
-	if scheduledColumns(meta)[dropped] {
-		t.Errorf("column %q should have been dropped from Scheduled(); got %v",
-			dropped, scheduledColumns(meta))
+	_, err := maniflex.ScanModel(v, maniflex.ModelConfig{})
+	if err == nil {
+		t.Fatalf("ScanModel(%T): want a registration error for the invalid scheduled tag on %q, got nil", v, field)
 	}
-	logs := buf.String()
-	if !strings.Contains(logs, "invalid scheduled tag") {
-		t.Errorf("expected an invalid-scheduled-tag warning, logs:\n%s", logs)
+	msg := err.Error()
+	if problemSubstr != "" && !strings.Contains(msg, problemSubstr) {
+		t.Errorf("error should name the problem (%q), got: %s", problemSubstr, msg)
 	}
-	if warnSubstr != "" && !strings.Contains(logs, warnSubstr) {
-		t.Errorf("warning should mention %q, logs:\n%s", warnSubstr, logs)
+	if !strings.Contains(msg, "scheduled") {
+		t.Errorf("error should identify the tag as the cause, got: %s", msg)
 	}
 }
 
@@ -345,22 +335,21 @@ type mixedValidInvalidModel struct {
 	maniflex.BaseModel
 	maniflex.WithDeletedAt
 	Status  string     `json:"status"`
-	Expires *time.Time `json:"expires" mfx:"scheduled;soft-delete"`        // valid
-	Broken  *time.Time `json:"broken"  mfx:"scheduled;field=nope;to=v"`    // invalid
+	Expires *time.Time `json:"expires" mfx:"scheduled;soft-delete"`     // valid
+	Broken  *time.Time `json:"broken"  mfx:"scheduled;field=nope;to=v"` // invalid
 }
 
+// One bad scheduled field now rejects the whole model rather than being dropped
+// beside its valid siblings (10.1). Partial acceptance was the problem: the
+// model registered, looked healthy, and silently never ran the sweep the broken
+// field described.
 func TestScheduled_MixedValidAndInvalid(t *testing.T) {
-	captureWarnings(t)
-	meta := scan(t, mixedValidInvalidModel{})
-	cols := scheduledColumns(meta)
-	if !cols["expires"] {
-		t.Error("valid field 'expires' should survive")
+	_, err := maniflex.ScanModel(mixedValidInvalidModel{}, maniflex.ModelConfig{})
+	if err == nil {
+		t.Fatal("a model with one invalid scheduled field must fail registration")
 	}
-	if cols["broken"] {
-		t.Error("invalid field 'broken' should be dropped")
-	}
-	if len(meta.Scheduled()) != 1 {
-		t.Fatalf("want 1 surviving spec, got %d", len(meta.Scheduled()))
+	if !strings.Contains(err.Error(), "nope") {
+		t.Errorf("error should name the broken field's target column, got: %s", err)
 	}
 }
 

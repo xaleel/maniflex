@@ -93,6 +93,7 @@
 
 # Reference
 
+- [Startup Validation & Strict Mode](reference/strict-mode.md)
 - [Glossary](reference/glossary.md)
 - [FAQ & Troubleshooting](reference/faq.md)
 - [AI Agents](reference/ai-agents.md)

@@ -80,6 +80,36 @@ type JWTOptions struct {
 	//
 	// When nil, HMAC-SHA256 (HS256) is used with the secret.
 	PublicKey crypto.PublicKey
+
+	// Revoker, when set, is consulted on every request after the signature and
+	// registered claims check out: a correctly-signed, unexpired token is still
+	// refused when it has been revoked. This is what makes logout, password
+	// changes, and account compromise actionable against a token format that is
+	// otherwise valid until it expires. See Revoker for the two granularities
+	// and the failure semantics.
+	//
+	// Switching it on makes a jti claim mandatory: a token without one cannot be
+	// revoked, so it is refused with 401 TOKEN_NOT_REVOCABLE rather than handed
+	// a permanent exemption from the blocklist. Mint one per token.
+	//
+	// Default: nil (no revocation check, and no per-request lookup).
+	Revoker Revoker
+
+	// VerifyToken, when set, is a final say on a token that has passed every
+	// other check — signature, registered claims, and revocation. Return an
+	// error to refuse the request with 401 INVALID_TOKEN carrying the error's
+	// message; return nil to accept it.
+	//
+	// It receives the raw claims and the principal about to be installed, and
+	// may mutate the latter (to derive a field from a custom claim, say). Use it
+	// for issuer-specific rules the framework does not model — a required custom
+	// claim, a tenant allowlist, a per-user check against your own store.
+	//
+	// Prefer Revoker for revocation: it is the same hook point with the
+	// blocklist and its failure semantics already written.
+	//
+	// Default: nil.
+	VerifyToken func(ctx *maniflex.ServerContext, claims map[string]any, info *maniflex.AuthInfo) error
 }
 
 func (o *JWTOptions) applyDefaults() {
@@ -214,27 +244,58 @@ func jwtMiddleware(secret string, opt JWTOptions, resolve keyResolver) maniflex.
 			return nil
 		}
 
-		userID, _ := claims[opt.UserIDClaim].(string)
-		roles := extractRoles(claims[opt.RolesClaim])
-		scopes := extractRoles(claims[opt.ScopesClaim]) // same extraction logic
-		sessionID, _ := claims["jti"].(string)
-
-		var tenantID string
-		if opt.TenantClaim != "" {
-			tenantID, _ = claims[opt.TenantClaim].(string)
+		info, ok := principalFrom(ctx, opt, claims)
+		if !ok {
+			return nil
 		}
-
-		ctx.Auth = &maniflex.AuthInfo{
-			UserID:     userID,
-			Roles:      roles,
-			Claims:     claims,
-			TenantID:   tenantID,
-			Scopes:     scopes,
-			SessionID:  sessionID,
-			AuthMethod: "jwt",
-		}
+		ctx.Auth = info
 		return next()
 	}
+}
+
+// principalFrom builds the principal a verified token stands for, applying the
+// two checks that can still refuse it on the way: the revocation blocklist and
+// the VerifyToken hook. It aborts the request and returns false when either
+// does.
+//
+// Both run before the principal is installed on the context, so a refused token
+// never becomes a ctx.Auth that later middleware could act on.
+func principalFrom(ctx *maniflex.ServerContext, opt JWTOptions, claims map[string]any) (*maniflex.AuthInfo, bool) {
+	userID, _ := claims[opt.UserIDClaim].(string)
+	sessionID, _ := claims["jti"].(string)
+
+	// Revocation: the token is authentic and unexpired, but the server may
+	// since have taken it back. Checked after the cheap local checks, so a
+	// token that was going to be refused anyway costs no lookup.
+	if opt.Revoker != nil {
+		if status, code, msg := checkRevocation(ctx.Ctx, opt.Revoker, claims, sessionID, userID); code != "" {
+			ctx.Abort(status, code, msg)
+			return nil, false
+		}
+	}
+
+	var tenantID string
+	if opt.TenantClaim != "" {
+		tenantID, _ = claims[opt.TenantClaim].(string)
+	}
+
+	info := &maniflex.AuthInfo{
+		UserID:     userID,
+		Roles:      extractRoles(claims[opt.RolesClaim]),
+		Claims:     claims,
+		TenantID:   tenantID,
+		Scopes:     extractRoles(claims[opt.ScopesClaim]), // same extraction logic
+		SessionID:  sessionID,
+		AuthMethod: "jwt",
+	}
+
+	if opt.VerifyToken != nil {
+		if err := opt.VerifyToken(ctx, claims, info); err != nil {
+			ctx.Abort(http.StatusUnauthorized, "INVALID_TOKEN", err.Error())
+			return nil, false
+		}
+	}
+	return info, true
 }
 
 // readToken pulls the raw token from the configured header. For the default

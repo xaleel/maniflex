@@ -167,6 +167,37 @@ type rawableT interface {
 	RawExecContext(ctx context.Context, query string, args ...any) (int64, error)
 }
 
+// Restorer is an optional extension a DBAdapter (and its Tx) may implement to
+// clear a soft-delete marker, powering Config.RestoreEnabled's
+// POST /:model/{id}/restore.
+//
+// It is separate from DBAdapter so that adding it is not a breaking change for
+// third-party adapters: one that does not implement it simply answers 501 on
+// the restore route, and everything else is unaffected. The bundled SQLite and
+// Postgres adapters implement it via db/sqlcore.
+//
+// It cannot be expressed through Update. Every read and update path applies the
+// adapter's soft-delete condition unconditionally, so a soft-deleted row is
+// invisible to FindByID and unreachable by Update — the restore has to be its
+// own statement, exactly as the delete already is.
+type Restorer interface {
+	// Restore clears the soft-delete marker on the row with the given id and
+	// returns the restored record.
+	//
+	// q carries the request's forced filters — the server-imposed scope from
+	// db.Tenancy or db.ForceFilter — which must be applied to the statement, so
+	// a caller cannot restore a row outside their scope by knowing its id. It is
+	// nil when nothing is scoped. A client's own ?filter= is not included, in
+	// keeping with how writes are scoped elsewhere.
+	//
+	// Return ErrNotFound when no row matches, including when the row exists but
+	// is not deleted: restoring a live row is a no-op the caller should hear
+	// about, mirroring the re-delete guard.
+	//
+	// The returned record is a typed *T, as FindByID returns.
+	Restore(ctx context.Context, model *ModelMeta, id string, q *QueryParams) (any, error)
+}
+
 // DBAdapter is the interface all database backends must implement.
 // Methods receive a *ModelMeta describing the target model and a *QueryParams
 // carrying pagination, filters, sorts, and relation includes.

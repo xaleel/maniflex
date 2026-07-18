@@ -1,6 +1,7 @@
 package maniflex
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -464,6 +465,42 @@ func (c *ServerContext) TryBindJSON(v any) (ok bool, err error) {
 		return false, err
 	}
 	return true, nil
+}
+
+// EnsureRawBody returns the raw request body, reading and buffering it if no
+// earlier step already has. The Deserialize step sets ctx.RawBody for create and
+// update requests, but the trimmed action/search/presign pipelines skip
+// Deserialize entirely and Deserialize never reads a body for GET/DELETE — so a
+// middleware that must see the raw bytes before the handler binds them (an
+// idempotency body hash, a signature check) calls this instead of reading
+// ctx.RawBody directly, which would otherwise be nil in those contexts.
+//
+// The body is read once, under the same size limit as Deserialize (respecting
+// SetMaxBodySize), cached on ctx.RawBody, and the request body is restored so a
+// later ctx.BindJSON in the handler still sees it. Subsequent calls return the
+// cached bytes without re-reading. A request with no body yields an empty,
+// non-nil slice. On a size-limit or read failure it calls ctx.Abort and returns a
+// non-nil error, so the caller can return nil immediately.
+func (c *ServerContext) EnsureRawBody() ([]byte, error) {
+	if c.RawBody != nil {
+		return c.RawBody, nil
+	}
+	if c.Request == nil || c.Request.Body == nil {
+		c.RawBody = []byte{}
+		return c.RawBody, nil
+	}
+	body, err := c.readLimitedBody()
+	if err != nil {
+		return nil, err // ctx.Abort already called
+	}
+	if body == nil {
+		body = []byte{}
+	}
+	c.RawBody = body
+	// readLimitedBody drained the stream; restore it so a later reader — an action
+	// handler's ctx.BindJSON — still sees the same bytes.
+	c.Request.Body = io.NopCloser(bytes.NewReader(body))
+	return body, nil
 }
 
 // URLParam returns the value of a named URL parameter from the current request.

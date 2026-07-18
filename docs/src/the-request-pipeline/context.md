@@ -125,6 +125,7 @@ Three helpers wrap common request reads:
 | Method | Purpose |
 |---|---|
 | `BindJSON(v any) error` | decode the body into `v`, enforcing the 4 MB limit |
+| `EnsureRawBody() ([]byte, error)` | return `RawBody`, reading/buffering/restoring the body if an earlier step hasn't (for middleware that needs the raw bytes in a trimmed action/search pipeline) |
 | `URLParam(name string) string` | read a chi URL parameter |
 | `QueryParam(name string) string` | read a URL query parameter |
 

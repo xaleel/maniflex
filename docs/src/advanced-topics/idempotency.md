@@ -252,9 +252,13 @@ server.Action(maniflex.ActionConfig{
 })
 ```
 
-The middleware reads `ctx.RawBody`, so the action handler must call
-`ctx.BindJSON` *after* the middleware runs — or read the body bytes
-from `ctx.RawBody` directly.
+An action skips the Deserialize step that populates `ctx.RawBody`, so here the
+middleware reads the body itself (via `ctx.EnsureRawBody`) and restores it — the
+action handler's `ctx.BindJSON` then works exactly as it would without
+idempotency, in whatever order. Before this was fixed (v0.2.3), the middleware
+hashed an empty body in an action, so the *same key, different body* check
+silently never fired and a reused key replayed the first response regardless of
+the payload.
 
 ## Edge cases
 

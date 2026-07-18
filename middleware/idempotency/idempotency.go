@@ -114,9 +114,12 @@ type Config struct {
 
 // Middleware returns the idempotency MiddlewareFunc.
 //
-// It is intended to be registered at AtPosition(After) on the Deserialize
-// step, scoped to OpCreate, so that ctx.RawBody is populated by the default
-// deserializer before this middleware computes the body hash.
+// Typically registered at AtPosition(After) on the Deserialize step, scoped to
+// OpCreate. It also works inside an ActionConfig.Middleware list: an action's
+// pipeline skips Deserialize, so this middleware reads the body itself via
+// ctx.EnsureRawBody (restoring it for the handler) rather than relying on
+// ctx.RawBody being pre-populated — without which the body hash would be computed
+// over an empty body and the "same key, different body" guard would never fire.
 func Middleware(cfg Config) maniflex.MiddlewareFunc {
 	if cfg.Store == nil {
 		panic("idempotency: Config.Store is required")
@@ -179,7 +182,15 @@ func Middleware(cfg Config) maniflex.MiddlewareFunc {
 			return next()
 		}
 
-		bodyHash := hashBody(ctx.RawBody)
+		// Read the body if an earlier step has not. On the Deserialize step
+		// ctx.RawBody is already set; in an action middleware list Deserialize is
+		// skipped, so without this the hash would be over an empty body and the
+		// "same key, different body" guard below would never fire (P1-8).
+		body, err := ctx.EnsureRawBody()
+		if err != nil {
+			return nil // ctx.Abort already called (body too large / unreadable)
+		}
+		bodyHash := hashBody(body)
 		scope := "_:_"
 		if ctx.Model != nil {
 			scope = ctx.Model.Name + ":" + string(ctx.Operation)

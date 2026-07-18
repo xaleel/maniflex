@@ -216,6 +216,30 @@ server.Pipeline.Validate.Register(
 predicate (OR-semantics). With **no roles passed it rejects every write** of the
 field, so an accidentally empty list fails closed — matching `auth.RequireRole`.
 
+### Declare the field so a typo can't fail open
+
+Misspell the field name and the gate is inert: it watches for a body key nothing
+sends, the real field keeps its name, and **nothing gates it**. Add
+`maniflex.RequiresField` and that becomes a startup failure:
+
+```go
+server.Pipeline.Validate.Register(
+    validate.FieldRole("subscription_expires_at", "superuser"),
+    maniflex.ForModel("User"),
+    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate),
+    maniflex.RequiresField("subscription_expires_at"), // ← checked at startup
+)
+```
+
+The declared name is checked against the **model**, so writing it twice catches
+a misspelling rather than duplicating one. Do this on every gate that protects a
+field you care about.
+
+Without it, a mismatch is only a warning on the first request that reaches the
+model — no help for an endpoint nobody exercises, and indistinguishable from a
+gate deliberately registered across models where only some carry the field. See
+[Startup Validation](../reference/strict-mode.md#declaring-the-fields-a-middleware-gates).
+
 ### Why this isn't `readonly`
 
 The `mfx:` write controls are static: `readonly`, `immutable`, `hidden` apply to

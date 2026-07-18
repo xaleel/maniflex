@@ -178,3 +178,129 @@ func TestCollectIneffectiveMiddleware_EffectiveRegistrationsAreSilent(t *testing
 		t.Errorf("effective registrations must be silent, got: %v", err)
 	}
 }
+
+// ── collectFieldRequirementIssues (10.2) ─────────────────────────────────────
+
+// fieldReqRegistry has one model with a "quota" field and one without.
+func fieldReqRegistry(t *testing.T) *Registry {
+	t.Helper()
+	reg := NewRegistry()
+	if err := reg.AddForTest(&ModelMeta{
+		Name:   "User",
+		Fields: []FieldMeta{{Name: "Quota", Tags: FieldTags{JSONName: "quota", DBName: "quota"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.AddForTest(&ModelMeta{
+		Name:   "Post",
+		Fields: []FieldMeta{{Name: "Title", Tags: FieldTags{JSONName: "title", DBName: "title"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
+func fieldReqPipeline(opts ...MiddlewareOption) *Pipeline {
+	p := newPipeline(&defaultSteps{}, &oasDefaultSteps{})
+	p.Validate.Register(func(ctx *ServerContext, next func() error) error { return next() }, opts...)
+	return p
+}
+
+// The case 10.2 exists for: a gate aimed at a specific model, naming a field
+// that model does not have. Unambiguously a typo, and the real field is ungated.
+func TestFieldRequirement_ScopedModelMissingFieldIsAnError(t *testing.T) {
+	p := fieldReqPipeline(ForModel("User"), RequiresField("quotaa"), WithName("quota-gate"))
+
+	var issues issueList
+	p.collectFieldRequirementIssues(fieldReqRegistry(t), &issues)
+
+	err := issues.err()
+	if err == nil {
+		t.Fatal("a gate scoped to User declaring a field User lacks must be an error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"quota-gate", "quotaa", "User", "spelling"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error missing %q: %q", want, msg)
+		}
+	}
+}
+
+// Every model named in ForModel must carry the field — the gate was aimed at
+// them specifically.
+func TestFieldRequirement_ReportsEachScopedModelSeparately(t *testing.T) {
+	p := fieldReqPipeline(ForModel("User", "Post"), RequiresField("quota"))
+
+	var issues issueList
+	p.collectFieldRequirementIssues(fieldReqRegistry(t), &issues)
+
+	if len(issues) != 1 {
+		t.Fatalf("want 1 issue (Post lacks quota, User has it), got %d", len(issues))
+	}
+	if !strings.Contains(issues[0].Detail, "Post") {
+		t.Errorf("the issue should name Post, not User: %q", issues[0].Detail)
+	}
+}
+
+// A satisfied declaration is silent.
+func TestFieldRequirement_SatisfiedDeclarationIsSilent(t *testing.T) {
+	p := fieldReqPipeline(ForModel("User"), RequiresField("quota"))
+
+	var issues issueList
+	p.collectFieldRequirementIssues(fieldReqRegistry(t), &issues)
+	if err := issues.err(); err != nil {
+		t.Errorf("a declaration every named model satisfies must be silent, got: %v", err)
+	}
+}
+
+// Unscoped, one model carries the field: legitimate, and exactly the case the
+// runtime warning could never distinguish from a typo.
+func TestFieldRequirement_UnscopedIsFineIfAnyModelHasTheField(t *testing.T) {
+	p := fieldReqPipeline(RequiresField("quota"))
+
+	var issues issueList
+	p.collectFieldRequirementIssues(fieldReqRegistry(t), &issues)
+	if err := issues.err(); err != nil {
+		t.Errorf("an unscoped gate that can fire on User must be silent, got: %v", err)
+	}
+}
+
+// Unscoped and no model has it: the gate cannot fire anywhere, so it is a typo
+// however it was registered.
+func TestFieldRequirement_UnscopedWithNoMatchingModelIsAnError(t *testing.T) {
+	p := fieldReqPipeline(RequiresField("nonexistent"))
+
+	var issues issueList
+	p.collectFieldRequirementIssues(fieldReqRegistry(t), &issues)
+
+	err := issues.err()
+	if err == nil {
+		t.Fatal("a gate no registered model can trigger must be an error")
+	}
+	if !strings.Contains(err.Error(), "never fire") {
+		t.Errorf("error should say the gate can never fire: %q", err.Error())
+	}
+}
+
+// ForModel naming a model that is not registered is a different problem, and
+// reporting "the model lacks the field" would only mislead.
+func TestFieldRequirement_UnregisteredModelIsNotThisChecksProblem(t *testing.T) {
+	p := fieldReqPipeline(ForModel("Ghost"), RequiresField("quota"))
+
+	var issues issueList
+	p.collectFieldRequirementIssues(fieldReqRegistry(t), &issues)
+	if err := issues.err(); err != nil {
+		t.Errorf("an unregistered model must not be reported as missing a field, got: %v", err)
+	}
+}
+
+// A middleware that declares nothing is not checked — the option is opt-in.
+func TestFieldRequirement_NoDeclarationIsNotChecked(t *testing.T) {
+	p := fieldReqPipeline(ForModel("Post"))
+
+	var issues issueList
+	p.collectFieldRequirementIssues(fieldReqRegistry(t), &issues)
+	if err := issues.err(); err != nil {
+		t.Errorf("a middleware declaring nothing must not be checked, got: %v", err)
+	}
+}

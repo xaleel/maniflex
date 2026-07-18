@@ -181,7 +181,7 @@ func (p *Pipeline) chainFor(model string, op Operation) MiddlewareFunc {
 }
 
 // steps returns the six core step registries in execution order. Used by
-// warnIneffectiveMiddleware to scan every registered middleware. The OpenAPI
+// collectIneffectiveMiddleware to scan every registered middleware. The OpenAPI
 // sub-pipeline is intentionally excluded — it has its own steps and operations.
 func (p *Pipeline) steps() []*StepRegistry {
 	return []*StepRegistry{p.Auth, p.Deserialize, p.Validate, p.Service, p.DB, p.Response}
@@ -231,6 +231,71 @@ func (p *Pipeline) collectIneffectiveMiddleware(issues *issueList) {
 				name, sr.displayName, m.cfg.Operations)
 		}
 	}
+}
+
+// collectFieldRequirementIssues reports every RequiresField declaration that no
+// model can satisfy (roadmap 10.2).
+//
+// A field-gating middleware whose field name is misspelt is a silent hole: the
+// gate watches for a body key nothing sends, the real field keeps its name, and
+// nothing gates it. The middleware itself cannot detect this — at request time
+// "this model has no such field" is equally consistent with a gate deliberately
+// registered across models where only some carry it. The model scope is known
+// only at the registration, which is why the declaration lives there.
+//
+// That scope is also what makes the check exact rather than a guess.
+func (p *Pipeline) collectFieldRequirementIssues(reg *Registry, issues *issueList) {
+	for _, sr := range p.steps() {
+		for i := range sr.middlewares {
+			m := &sr.middlewares[i]
+			for _, field := range m.cfg.RequiredFields {
+				checkFieldRequirement(reg, sr.displayName, m, field, issues)
+			}
+		}
+	}
+}
+
+// checkFieldRequirement validates one declared field against the registration's
+// model scope.
+func checkFieldRequirement(reg *Registry, step string, m *registeredMiddleware,
+	field string, issues *issueList,
+) {
+	name := m.cfg.Name
+	if name == "" || name == "[unnamed]" {
+		name = "<unnamed>"
+	}
+
+	// Scoped with ForModel: the gate was aimed at these models specifically, so
+	// every one of them must carry the field.
+	if len(m.cfg.Models) > 0 {
+		for _, modelName := range m.cfg.Models {
+			model, ok := reg.Get(modelName)
+			if !ok {
+				// ForModel naming an unregistered model is its own problem and
+				// not this check's to report; saying the model lacks a field
+				// when the model does not exist would only mislead.
+				continue
+			}
+			if model.FieldByJSONName(field) == nil {
+				issues.add("middleware",
+					"middleware %q on the %s step declares RequiresField(%q), but model %q has "+
+						"no field of that name — check the spelling, or drop the model from "+
+						"ForModel", name, step, field, modelName)
+			}
+		}
+		return
+	}
+
+	// Unscoped: it applies to every model, so it is enough that one of them can
+	// trigger it. If none can, the gate cannot be doing anything anywhere.
+	for _, model := range reg.All() {
+		if model.FieldByJSONName(field) != nil {
+			return
+		}
+	}
+	issues.add("middleware",
+		"middleware %q on the %s step declares RequiresField(%q), but no registered model has a "+
+			"field of that name, so it can never fire — check the spelling", name, step, field)
 }
 
 // middlewareNeverRunsOnStep reports whether a middleware filtered to ops can

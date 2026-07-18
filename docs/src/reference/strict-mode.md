@@ -20,11 +20,53 @@ discard what you asked for.
 | An invalid `mfx:"scheduled"` tag | The field was dropped from the sweep, so the scheduled transition you configured simply never ran. |
 | `mfx:"relation"` on a field not ending in `ID` | The target model is derived by stripping that suffix. Without one it is inferred from the whole field name — almost never a real model. Write `mfx:"relation:Target"`. |
 | A middleware registered on a step its operations never reach | It is frozen into the chain and never runs. When it is an authorisation check, that is a silent hole. |
+| A `RequiresField` declaration no model can satisfy | The gate watches for a field name nothing has — see below. |
 
 The first three are **registration errors**, returned from `Register` (so
 `MustRegister` panics). The last two need the complete registry — a relation's
 target may be registered after the model pointing at it — so they are raised
 when the router is built.
+
+## Declaring the fields a middleware gates
+
+A middleware that gates a field by name has a nasty failure mode: misspell the
+name and the gate watches for a body key nothing sends, while the real field
+keeps its name and **nothing gates it**. It fails open, silently.
+
+Nothing at runtime can detect this. From inside a request, "this model has no
+such field" looks identical to a gate deliberately registered across models
+where only some carry it. Only the registration knows which it is — so that is
+where you say so:
+
+```go
+server.Pipeline.Validate.Register(
+    validate.RestrictField("document_quota_bytes", isSuperuser),
+    maniflex.ForModel("User"),
+    maniflex.RequiresField("document_quota_bytes"), // ← checked at startup
+)
+```
+
+Writing the name twice is not the tautology it looks like: the declared name is
+checked against **the model**, not against the middleware's argument, so a
+misspelling is caught either way.
+
+The `ForModel` scope makes the check exact:
+
+- **With `ForModel`** — every named model must have every declared field. The
+  gate was aimed at those models specifically, so a model that lacks the field
+  is a mistake.
+- **Without it** — at least one registered model must have the field. A gate no
+  model can trigger cannot be doing anything.
+
+Use it for any middleware that gates or reads a field by name, not just
+`validate.RestrictField` — `response.RedactField` and hand-written gates have
+the same failure mode.
+
+It is opt-in: a registration that declares nothing is not checked, so existing
+code is unaffected. `validate.RestrictField` keeps its first-request warning as
+a fallback for undeclared registrations, but that warning cannot fire for an
+endpoint nobody exercises, and cannot tell a typo from a deliberate broad
+registration. Declare the field.
 
 ## Gated by `Config.Strict`
 

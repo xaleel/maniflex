@@ -11,6 +11,7 @@ import (
 
 	"github.com/xaleel/maniflex"
 	"github.com/xaleel/maniflex/db/sqlite"
+	"github.com/xaleel/maniflex/middleware/validate"
 	_ "modernc.org/sqlite"
 )
 
@@ -293,5 +294,74 @@ func TestStrict_StartReturnsErrorHandlerPanics(t *testing.T) {
 		!strings.Contains(panicMsg, "relation:Target") {
 		t.Errorf("both paths must report the same problem:\n start: %v\n handler: %s",
 			startErr, panicMsg)
+	}
+}
+
+// ── Field-gate declarations (10.2) ───────────────────────────────────────────
+
+// stGated has the field a gate is meant to protect.
+type stGated struct {
+	maniflex.BaseModel
+	Quota int `json:"quota" db:"quota"`
+}
+
+// A misspelt field gate is a silent hole: the gate watches for a body key
+// nothing sends, the real field keeps its name, and nothing gates it. Declaring
+// the field turns that into a startup failure.
+func TestStrict_MisspeltFieldGateFailsAtStartup(t *testing.T) {
+	t.Parallel()
+	srv := newStrictServer(t, false)
+	if err := srv.Register(stGated{}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	srv.Pipeline.Validate.Register(
+		validate.RestrictField("quotaa", func(*maniflex.ServerContext) bool { return false }),
+		maniflex.ForModel("stGated"),
+		maniflex.RequiresField("quotaa"),
+		maniflex.WithName("quota-gate"),
+	)
+
+	msg := recoverPanic(func() { srv.Handler() })
+	if msg == "" {
+		t.Fatal("a gate declaring a field its model lacks must fail at startup")
+	}
+	for _, want := range []string{"quota-gate", "quotaa", "stGated"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("failure should name %q: %s", want, msg)
+		}
+	}
+}
+
+// The correctly-spelt gate boots and still does its job.
+func TestStrict_CorrectFieldGateBootsAndGates(t *testing.T) {
+	t.Parallel()
+	srv := newStrictServer(t, false)
+	if err := srv.Register(stGated{}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	srv.Pipeline.Validate.Register(
+		validate.RestrictField("quota", func(*maniflex.ServerContext) bool { return false }),
+		maniflex.ForModel("stGated"),
+		maniflex.RequiresField("quota"),
+	)
+	if msg := recoverPanic(func() { srv.Handler() }); msg != "" {
+		t.Errorf("a correctly declared gate must boot: %s", msg)
+	}
+}
+
+// The declaration is opt-in: a registration that does not use it is not checked,
+// so existing code is unaffected.
+func TestStrict_UndeclaredGateIsNotChecked(t *testing.T) {
+	t.Parallel()
+	srv := newStrictServer(t, false)
+	if err := srv.Register(stGated{}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	srv.Pipeline.Validate.Register(
+		validate.RestrictField("quotaa", func(*maniflex.ServerContext) bool { return false }),
+		maniflex.ForModel("stGated"),
+	)
+	if msg := recoverPanic(func() { srv.Handler() }); msg != "" {
+		t.Errorf("an undeclared gate must not be checked: %s", msg)
 	}
 }

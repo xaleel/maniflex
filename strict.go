@@ -102,6 +102,7 @@ func (c *Server) validateRegistry() error {
 
 	collectRelationIssues(c.registry, c.cfg.Strict, &issues)
 	c.Pipeline.collectIneffectiveMiddleware(&issues)
+	c.Pipeline.collectFieldRequirementIssues(c.registry, &issues)
 	collectRouterIssues(&c.cfg, &issues)
 
 	return issues.err()

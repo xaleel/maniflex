@@ -40,9 +40,26 @@ import (
 // does not mention it is unaffected. `field` is the JSON name.
 //
 // Scope it with maniflex.ForModel: registered without one it applies to every
-// model, and a model that has no such field can never trigger it. RestrictField
-// warns once per model when the field is not on that model, since a typo would
-// otherwise leave the real field ungated in silence.
+// model, and a model that has no such field can never trigger it.
+//
+// # Catching a misspelt field
+//
+// A typo here is a silent hole rather than a visible failure: the gate watches
+// for a body key nothing sends, the real field keeps its name, and nothing gates
+// it. Declare the field with maniflex.RequiresField and a misspelling becomes a
+// startup error instead:
+//
+//	server.Pipeline.Validate.Register(
+//	    validate.RestrictField("document_quota_bytes", isSuperuser),
+//	    maniflex.ForModel("User"),
+//	    maniflex.RequiresField("document_quota_bytes"), // ← checked at startup
+//	)
+//
+// Do this for every gate on a field that matters. Without it, the mismatch is
+// only reported as a warning on the first request that reaches the model, which
+// is no help for an endpoint nobody exercises — and nothing at runtime can tell
+// a typo apart from a gate deliberately registered across models where only
+// some carry the field.
 func RestrictField(field string, allow func(ctx *maniflex.ServerContext) bool) maniflex.MiddlewareFunc {
 	var warned sync.Map // model name → struct{}
 
@@ -105,8 +122,14 @@ func FieldRole(field string, roles ...string) maniflex.MiddlewareFunc {
 // model's fields. Such a gate is inert: it watches for a body key that this
 // model's write path would ignore anyway. That is harmless when the middleware
 // is registered across models, and a silent hole when it is a typo — the real
-// field keeps its name and nothing gates it. Warning is the only way to tell
-// those apart, since the registration cannot see the model.
+// field keeps its name and nothing gates it.
+//
+// This is the fallback, not the mechanism. It cannot tell those two cases
+// apart, because from inside a request they look identical; and it only fires
+// once the model is actually reached, so a typo on an unexercised endpoint goes
+// unreported. Declaring the field with maniflex.RequiresField moves the check to
+// startup, where the registration's ForModel scope makes it exact. The warning
+// remains for registrations that do not declare.
 func warnFieldMissing(ctx *maniflex.ServerContext, warned *sync.Map, field string) {
 	if ctx.Model == nil || ctx.Model.FieldByJSONName(field) != nil {
 		return

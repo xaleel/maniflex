@@ -35,6 +35,10 @@ type MiddlewareConfig struct {
 	Operations []Operation // restrict to these operations (empty = all)
 	Position   Position
 	Name       string
+
+	// RequiredFields names the model fields this middleware acts on, declared
+	// with RequiresField. Checked at startup; empty means "declares nothing".
+	RequiredFields []string
 }
 
 // MiddlewareOption is a functional option applied to a MiddlewareConfig.
@@ -66,6 +70,41 @@ func AtPosition(p Position) MiddlewareOption {
 //	pipeline.Auth.Register(rateLimit, maniflex.WithName("rate-limiter"))
 func WithName(name string) MiddlewareOption {
 	return func(c *MiddlewareConfig) { c.Name = name }
+}
+
+// RequiresField declares that this middleware acts on the named model field(s),
+// so a startup check can refuse a registration that names a field no model has.
+//
+// It exists because a field-gating middleware that misspells its field is a
+// silent hole, not a visible failure: the gate watches for a body key nothing
+// sends, the real field keeps its name, and nothing gates it. Nothing at
+// runtime can distinguish that from a gate deliberately registered across
+// models where only some carry the field — which is why the middleware cannot
+// detect it for itself, and why the declaration has to come from the
+// registration, where the model scope is known.
+//
+//	server.Pipeline.Validate.Register(
+//	    validate.RestrictField("document_quota_bytes", isSuperuser),
+//	    maniflex.ForModel("User"),
+//	    maniflex.RequiresField("document_quota_bytes"),
+//	)
+//
+// The field name is checked against the model, not against the middleware's own
+// argument, so writing it twice is not the tautology it looks like: a
+// misspelling is caught either way.
+//
+// Names are JSON field names. The check is scoped by ForModel:
+//
+//   - With ForModel, every named model must have every declared field —
+//     the gate was aimed at those models specifically.
+//   - Without it, at least one registered model must have the field, since a
+//     gate no model can trigger cannot be doing anything.
+//
+// Use it for any middleware that reads or gates a field by name, not only
+// validate.RestrictField — response.RedactField and hand-written gates have the
+// same failure mode.
+func RequiresField(names ...string) MiddlewareOption {
+	return func(c *MiddlewareConfig) { c.RequiredFields = append(c.RequiredFields, names...) }
 }
 
 // ── Internal ──────────────────────────────────────────────────────────────────

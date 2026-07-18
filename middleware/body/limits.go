@@ -10,8 +10,11 @@ import (
 	"github.com/xaleel/maniflex"
 )
 
-// MaxBodySize overrides the default 4 MB body limit for the models this
-// middleware is registered on.
+// MaxBodySize sets the request-body ceiling for the models this middleware is
+// registered on. It overrides the default 4 MB limit for a JSON body — and it is
+// also the ceiling for a multipart upload, whose default is FilesConfig.MaxUploadBytes
+// (32 MB), so a value between the two RAISES the JSON limit while LOWERING the
+// multipart one for these models.
 //
 //	// Allow up to 16 MB on the Article model (large HTML body field)
 //	server.Pipeline.Deserialize.Register(

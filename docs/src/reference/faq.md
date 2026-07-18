@@ -193,7 +193,7 @@ See [Soft Delete](../defining-your-api/soft-delete.md).
 
 ### "My multipart upload returns 501 NO_STORAGE."
 
-`Config.FileStorage` is `nil`. Configure a backend:
+`Config.FilesConfig.Storage` is `nil`. Configure a backend:
 
 ```go
 fs, _ := storage.NewLocalStorage("./uploads")

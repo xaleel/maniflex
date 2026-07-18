@@ -1,7 +1,8 @@
 # Example 3: Order Processing System
 
 This example assembles every advanced topic into one application — actions,
-raw queries, query models, a transactional outbox, and a background worker.
+raw queries, a custom aggregate endpoint, a transactional outbox, and a
+background worker.
 The domain is small (orders and inventory) so the integration is visible.
 
 ## Domain
@@ -148,30 +149,36 @@ func placeOrder(ctx *maniflex.ServerContext) error {
 If any step fails, the deferred `Rollback` reverts the order, the lines, and
 the stock decrement together.
 
-## Query model: revenue report
+## Revenue report: a custom action
 
-The dashboard wants `GET /revenue` to return revenue per day. A
-[query model](raw-queries.md) makes this a regular API endpoint:
+The dashboard wants `GET /revenue` to return revenue per day. There is no
+SQL-backed "query model"; mount a [custom action](actions.md) whose handler runs
+the aggregate with `ctx.RawQuery`:
 
 ```go
-type Revenue struct {
-    maniflex.BaseModel
-    Day   string  `json:"day"   mfx:"filterable,sortable"`
-    Total float64 `json:"total" mfx:"sortable"`
-}
-
-server.MustRegister(Revenue{}, maniflex.ModelConfig{
-    QueryModel: &maniflex.QueryModelSpec{
-        SQL: `SELECT date(created_at) AS day, SUM(total) AS total
-                FROM orders
-               WHERE status IN ('paid', 'shipped')
-               GROUP BY day`,
+server.Action(maniflex.ActionConfig{
+    Method: "GET",
+    Path:   "/revenue",
+    Handler: func(ctx *maniflex.ServerContext) error {
+        rows, err := ctx.RawQuery(`
+            SELECT date(created_at) AS day, SUM(total) AS total
+              FROM orders
+             WHERE status IN ('paid', 'shipped')
+             GROUP BY day
+             ORDER BY day DESC
+             LIMIT 30`)
+        if err != nil {
+            return err
+        }
+        ctx.Response = &maniflex.APIResponse{StatusCode: http.StatusOK, Data: rows}
+        return nil
     },
 })
 ```
 
-Clients call `GET /revenues?sort=day:desc&limit=30` and get the last 30 days
-of revenue, paginated and filterable.
+Clients call `GET /revenue` and get the last 30 days of revenue. For plain
+counts/sums over a registered model, the built-in `GET /{model}/aggregate`
+endpoint avoids hand-written SQL — see [Raw Queries & Aggregates](raw-queries.md).
 
 ## Background worker: process the outbox
 
@@ -213,11 +220,11 @@ replaces the polling loop with a durable queue and at-least-once delivery.
 
 - **Actions** for endpoints that don't fit standard CRUD (`/orders/place`).
 - **`LockForUpdate`** to safely decrement stock under contention.
-- **`maniflex.BeginTx`** so the order, lines, and stock change commit atomically.
+- **`ctx.BeginTx`** so the order, lines, and stock change commit atomically.
 - **The transactional outbox pattern** for crossing the boundary between the
   request transaction and external side effects.
-- **A query model** for the revenue report — a stable, filterable read
-  endpoint built from raw SQL.
+- **A custom action** for the revenue report — a read endpoint built from raw
+  SQL (`ctx.RawQuery`).
 - **A background worker** consuming a registered model as its work queue.
 
 Each piece is documented on its own page in the Advanced section:

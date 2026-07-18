@@ -16,7 +16,7 @@ Auth → Deserialize → Validate → Service → DB → Response
 |---|---|
 | **Auth** | Pass-through. Populates nothing by default. User middleware sets `ctx.Auth` here. |
 | **Deserialize** | Parses URL query parameters (`page`, `limit`, `filter`, `sort`, `include`) into `ctx.Query`. On `POST`/`PATCH`, reads the JSON body into `ctx.ParsedBody` (limit: 4 MB), or parses `multipart/form-data` into `ctx.ParsedBody` and `ctx.Files`. |
-| **Validate** | For create and update, enforces the `mfx:` tag rules: strips `readonly` and `id`, rejects `immutable` on update, checks `required`, `enum`, `min`, `max`. |
+| **Validate** | For create and update, enforces the `mfx:` tag rules: strips `readonly` and `id`, strips `immutable` on update, checks `required`, `enum`, `min`, `max`. |
 | **Service** | Pass-through. Reserved for business logic supplied by user middleware. |
 | **DB** | Dispatches to the configured adapter for the current operation — `FindMany`, `FindByID`, `Create`, `Update`, or `Delete`. Routes through `ctx.Tx` when a transaction is active. |
 | **Response** | Builds the JSON envelope from `ctx.DBResult` and writes it to the `http.ResponseWriter`. |
@@ -67,7 +67,8 @@ The Deserialize step assembles request input from three sources:
   references are validated against the model's tag-derived field lists.
 - A JSON body becomes `ctx.ParsedBody` (a read-only `*RequestBody`, JSON-keyed)
   and is bound to the typed record `ctx.Record`. Bodies over 4 MB are rejected
-  as `BODY_READ_ERROR`.
+  as `413 BODY_TOO_LARGE`; a genuine I/O failure reading the body is
+  `400 BODY_READ_ERROR`.
 - A multipart body populates both `ctx.ParsedBody` (the form fields) and
   `ctx.Files` (the file parts). The form-field-to-file-field mapping is by
   name.
@@ -107,12 +108,14 @@ transaction; otherwise the bare adapter is used.
 Two error classes are normalised at this step:
 
 - `maniflex.ErrNotFound` becomes `404 NOT_FOUND`.
-- `*maniflex.ErrConstraint` becomes `409 CONFLICT`.
+- `*maniflex.ErrConstraint` is split by kind: a unique or foreign-key violation
+  becomes `409 CONFLICT`, while a NOT NULL violation becomes
+  `422 VALIDATION_ERROR` (a missing-required-value problem, not a conflict).
 
 A cancelled context becomes `504 TIMEOUT` — unless the cancellation came from the
 client hanging up, which is `499` with no body (see
 [Error Handling](errors.md)). All other adapter errors surface as
-`500 DATABASE_ERROR`.
+`500 DB_ERROR`.
 
 ### Response
 

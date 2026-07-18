@@ -89,8 +89,9 @@ server.Pipeline.Auth.Register(
 )
 ```
 
-Anonymous requests (`ctx.Auth == nil`) are rejected with `401`; authenticated
-requests without the role get `403`.
+Both failure cases return `403 FORBIDDEN`: an anonymous request (`ctx.Auth ==
+nil`) and an authenticated request lacking the role are treated alike. This
+differs from `RequireOwner`, which answers `401` to an anonymous caller.
 
 ## `RequireOwner`
 
@@ -174,7 +175,7 @@ server.Pipeline.Auth.Register(
 )
 ```
 
-The model's routes remain mounted but always return `405 METHOD_BLOCKED`.
+The model's routes remain mounted but always return `405 METHOD_NOT_ALLOWED`.
 
 ## `CSRF`
 

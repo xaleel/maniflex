@@ -133,9 +133,12 @@ transaction to scope it.
 
 `maniflex.WithTransaction(&maniflex.TxOptions{Isolation: sql.LevelSerializable})` opens
 the request in `SERIALIZABLE` isolation. Postgres serialisation failures
-produce `40001` errors, surfaced as `*maniflex.ErrConstraint` from the DB step —
-which the default DB step converts to `409 CONFLICT`. Clients are expected to
-retry on this code.
+produce `40001` errors. Note that `NormalizeError` maps only the constraint
+codes `23505` / `23502` / `23503` to `*maniflex.ErrConstraint`; a `40001`
+serialisation failure is **not** normalised — it propagates as a generic error
+and surfaces as a `500`. If you need transparent retry on serialisation
+failures, detect the `40001` SQLSTATE yourself (e.g. in an action handler or a
+custom middleware) and retry the transaction.
 
 Most APIs do fine with the default `READ COMMITTED` plus `LockForUpdate` on
 the contested rows; reach for `SERIALIZABLE` when the contention pattern is

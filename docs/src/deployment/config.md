@@ -84,8 +84,8 @@ See [Database Backends](databases.md) for adapter construction.
 
 | Field | Purpose |
 |---|---|
-| `FileStorage` | `maniflex.FileStorage` implementation for `mfx:"file"` fields and the `/files` endpoints. Required if any model uses file uploads. See [File Fields & Uploads](../defining-your-api/files.md). |
-| `FileMiddleware` | `[]maniflex.MiddlewareFunc` wrapping the standalone `/files` endpoints. Empty = no auth (backward-compatible default); production deployments should populate this with at least an auth middleware. See [File Fields & Uploads](../defining-your-api/files.md#standalone-file-endpoints). |
+| `FilesConfig.Storage` | `maniflex.FileStorage` implementation for `mfx:"file"` fields and the `/files` endpoints. Required if any model uses file uploads. See [File Fields & Uploads](../defining-your-api/files.md). |
+| `FilesConfig.BeforeMiddlewares` | `[]maniflex.MiddlewareFunc` wrapping the standalone `/files` endpoints. Empty = no auth (backward-compatible default); production deployments should populate this with at least an auth middleware. See [File Fields & Uploads](../defining-your-api/files.md#standalone-file-endpoints). |
 | `KeyProvider` | `maniflex.KeyProvider` for `mfx:"encrypted"` fields. Without one, encrypted fields refuse writes with `500 ENCRYPTION_NOT_CONFIGURED`. |
 
 ## Logging

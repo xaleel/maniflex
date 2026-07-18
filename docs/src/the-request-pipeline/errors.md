@@ -11,7 +11,7 @@ A failing request writes:
 ```json
 {
   "error": {
-    "code": "VALIDATION_FAILED",
+    "code": "VALIDATION_ERROR",
     "message": "field \"email\" is required",
     "details": { /* optional, per-error */ }
   }
@@ -33,13 +33,14 @@ The default pipeline produces the following errors without any user code:
 |---|---|---|
 | `400` | `INVALID_JSON` | malformed JSON body |
 | `400` | `EMPTY_BODY` | empty body on `POST` / `PATCH` |
-| `400` | `BODY_READ_ERROR` | body exceeded the 4 MB read limit |
+| `400` | `BODY_READ_ERROR` | an I/O failure while reading the request body |
 | `400` | `INVALID_QUERY` | unknown filter/sort field, malformed `?include`, etc. |
 | `400` | `MULTIPART_ERROR` | malformed `multipart/form-data` |
 | `404` | `NOT_FOUND` | record does not exist (or is soft-deleted) |
 | `409` | `CONFLICT` | unique or check constraint violated |
-| `422` | `VALIDATION_FAILED` | one or more `mfx:` tag rules failed |
-| `500` | `DATABASE_ERROR` | unclassified adapter error |
+| `413` | `BODY_TOO_LARGE` | request body exceeded the 4 MB read limit |
+| `422` | `VALIDATION_ERROR` | one or more `mfx:` tag rules failed |
+| `500` | `DB_ERROR` | unclassified adapter error |
 | `500` | `TX_BEGIN_ERROR` / `TX_COMMIT_ERROR` | transaction lifecycle failure |
 | `499` | _(no body)_ | the client disconnected before the response was written |
 | `501` | `NO_STORAGE` | file endpoint hit with no `FileStorage` configured |
@@ -89,7 +90,7 @@ For per-field errors and similar payloads, set `ctx.Response` directly:
 ctx.Response = &maniflex.APIResponse{
     StatusCode: http.StatusUnprocessableEntity,
     Error: &maniflex.APIError{
-        Code:    "VALIDATION_FAILED",
+        Code:    "VALIDATION_ERROR",
         Message: "one or more fields failed validation",
         Details: []map[string]string{
             {"field": "email",    "message": "must be a valid email"},
@@ -132,6 +133,7 @@ you are calling the adapter yourself from a Service middleware.
 
 ```go
 type ErrConstraint struct {
+    Kind    ConstraintKind  // unique, foreign_key, or not_null
     Table   string
     Column  string  // may be empty when the driver does not expose it
     Detail  string  // raw driver message

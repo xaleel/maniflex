@@ -169,13 +169,10 @@ server.Pipeline.OpenAPI.Generate.Register(func(ctx *maniflex.OpenAPIContext, nex
         return err
     }
     // ctx.Spec is the just-generated *OpenAPISpec — mutate freely.
-    ctx.Spec.Info.Contact = &maniflex.OASContact{
-        Name:  "API team",
-        Email: "api@example.com",
-    }
+    ctx.Spec.Info.Description = "Contact the API team at api@example.com."
     return nil
 }, maniflex.After)
 ```
 
-The full set of types (`OpenAPISpec`, `OASInfo`, `OASSecurityScheme`, …) is in
+The full set of types (`OpenAPISpec`, `OpenAPIInfo`, `OASSecurityScheme`, …) is in
 the `maniflex` package.

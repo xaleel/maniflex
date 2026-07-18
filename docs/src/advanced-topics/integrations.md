@@ -44,13 +44,19 @@ err := billing.Post(ctx, "/invoices", map[string]any{
 ## `Poller` — periodic background work
 
 ```go
+// Own a cancellable context and cancel it from your shutdown hook — there is
+// no ShutdownContext() on Server; the poller stops when the context you pass
+// is cancelled.
+pollCtx, stopPolling := context.WithCancel(context.Background())
+defer stopPolling() // or call it from your graceful-shutdown path
+
 p := &integration.Poller{
     Interval: 30 * time.Second,
     Fn: func(ctx context.Context) error {
         return terminal.SyncFingerprints(ctx)
     },
 }
-go p.Start(server.ShutdownContext()) // dies cleanly on shutdown
+go p.Start(pollCtx) // dies cleanly when stopPolling() is called
 ```
 
 A failed tick is logged and the schedule continues — Poller is for

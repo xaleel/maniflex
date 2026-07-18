@@ -23,9 +23,9 @@ db/
 └── sqlcore/                 # shared SQL adapter used by both
 
 events/
-├── kafka/                   # confluent-kafka-go
+├── kafka/                   # segmentio/kafka-go
 ├── nats/                    # nats.go
-├── rabbitmq/                # streadway/amqp
+├── rabbitmq/                # rabbitmq/amqp091-go
 └── redis/                   # go-redis
 
 jobs/
@@ -51,7 +51,7 @@ The split keeps the core dependency graph minimal:
 - A project that uses SQLite imports `maniflex/db/sqlite` and gets the pure-Go
   driver. PostgreSQL's `lib/pq` is **not** in its build.
 - A project that publishes events to Kafka imports `maniflex/events/kafka` and
-  pulls in `confluent-kafka-go`. NATS and RabbitMQ stay out of the build.
+  pulls in `segmentio/kafka-go`. NATS and RabbitMQ stay out of the build.
 - A project that does not authenticate doesn't import `middleware/auth` and
   pays nothing for the JWT library.
 

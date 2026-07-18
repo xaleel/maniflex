@@ -32,8 +32,9 @@ The `cover` field is a string in Go and a string in the database, but the
 *storage key* — a path under whichever backend you have configured.
 
 `max_size` and `accept` are enforced in the framework, before the upload
-reaches storage. A 5 MB JPEG or a `application/pdf` is rejected with
-`400 BAD_REQUEST` and never written.
+reaches storage. An oversize 5 MB JPEG is rejected with
+`413 FILE_TOO_LARGE`, and a disallowed `application/pdf` with
+`415 FILE_TYPE_NOT_ALLOWED` — neither is ever written.
 
 ## Configuring storage
 

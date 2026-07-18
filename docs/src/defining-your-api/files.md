@@ -52,7 +52,7 @@ Tag sub-options:
 | `auto_delete:false` | keep the stored file when the row is hard-deleted or the field is replaced (default: delete) |
 | `upload:presigned` | mount `POST /{model}/{field}/upload-url` so the client uploads straight to storage instead of through the app — see [Direct-to-storage uploads](#direct-to-storage-uploads-uploadpresigned). Requires a backend that can presign (`storage/s3`; not `LocalStorage`) |
 | `file_acl:private` | (default) response carries the raw storage key; downloads go via `/files/<key>` or the per-model attachment route |
-| `file_acl:signed` | response replaces the key with a pre-signed URL valid for `Config.FileSignedURLTTL` (default 1h). Requires `FileStorage.URL()` |
+| `file_acl:signed` | response replaces the key with a pre-signed URL valid for `Config.FilesConfig.SignedURLTTL` (default 1h). Requires `FileStorage.URL()` |
 | `file_acl:public` | response replaces the key with a permanent / long-lived URL (e.g. S3 7-day max). Pair with public-read ACL on the bucket for true permanence |
 
 `accept` matches the content type the client declared on the multipart part; when

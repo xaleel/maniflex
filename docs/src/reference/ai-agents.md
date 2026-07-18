@@ -19,7 +19,7 @@ No codegen.
 - `maniflex/db/postgres` — lib/pq.
 - `maniflex/middleware/{auth,body,validate,service,db,response,openapi,idempotency}` — catalogue.
 - `maniflex/middleware/service/bcrypt` — password hashing.
-- `maniflex/middleware/db/redis` — Redis cache backend.
+- `maniflex/middleware/db/redis` — Redis rate-limit backend (`db.RateLimitConfig.Backend`).
 - `maniflex/events/{kafka,nats,rabbitmq,redis}` — event publishers.
 - `maniflex/jobs/redis` — background job queue.
 - `maniflex/scheduled` — runner for `mfx:"scheduled"` fields.
@@ -168,7 +168,7 @@ Calling `next()` after `Abort` lets downstream steps run and possibly overwrite 
 
 **Default step behaviours:**
 - Auth: passthrough. Populate `ctx.Auth` here.
-- Deserialize: parses query params → `ctx.Query`; body → `ctx.ParsedBody`; multipart → `ctx.Files`. 4 MB body limit.
+- Deserialize: parses query params → `ctx.Query`; body → `ctx.ParsedBody`; multipart → `ctx.Files`. 4 MB JSON body limit (multipart is `FilesConfig.MaxUploadBytes`, default 32 MB).
 - Validate: enforces `mfx:` tag rules on create/update. Strips `readonly`/`id`; strips `immutable` on update.
 - Service: passthrough. Business logic goes here.
 - DB: dispatches to adapter. Routes through `ctx.Tx` when set. Maps `ErrNotFound`→404, `*ErrConstraint`→409, `context.DeadlineExceeded`→504, client disconnect→499 (`maniflex.StatusClientClosedRequest`, no body).
@@ -246,8 +246,8 @@ maniflex.ErrNotFound           // 404 NOT_FOUND
 
 Built-in error codes the framework emits:
 `INVALID_JSON`, `EMPTY_BODY`, `BODY_READ_ERROR`, `INVALID_QUERY`,
-`MULTIPART_ERROR`, `NOT_FOUND`, `CONFLICT`, `VALIDATION_FAILED`,
-`DATABASE_ERROR`, `TX_BEGIN_ERROR`, `TX_COMMIT_ERROR`, `NO_STORAGE`,
+`MULTIPART_ERROR`, `NOT_FOUND`, `CONFLICT`, `VALIDATION_ERROR`,
+`DB_ERROR`, `TX_BEGIN_ERROR`, `TX_COMMIT_ERROR`, `NO_STORAGE`,
 `TIMEOUT`, `PANIC`, `ENCRYPTION_NOT_CONFIGURED`.
 
 Envelope: `{"error": {"code": "...", "message": "...", "details": ...}}`
@@ -299,7 +299,7 @@ Action handler owns body parsing, validation, transactions. Validate/Service/DB 
 
 ## File uploads
 
-Tag a string field `mfx:"file,max_size:2MB,accept:image/*"`. Configure `maniflex.Config.FileStorage`.
+Tag a string field `mfx:"file,max_size:2MB,accept:image/*"`. Configure `maniflex.Config.FilesConfig.Storage`.
 
 Two upload styles:
 1. Multipart POST/PATCH to the model endpoint — fields become `ctx.ParsedBody`, file parts become `ctx.Files`, storage key is written into the column.
@@ -337,12 +337,12 @@ auth.BlockOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete)
 // (no AllowPublicWrite — keep an op public by NOT scoping JWTAuth onto it; scoping is inclusion-only)
 
 // BODY (Deserialize / Validate steps)
-body.MaxBodySize(16 << 20)                   // override 4MB default
+body.MaxBodySize(16 << 20)                   // override 4MB JSON default (also caps multipart, default 32MB — this LOWERS it)
 body.StripUnknownFields()
 body.CoerceTypes()
 
 // VALIDATE (Validate step)
-validate.UniqueField(sqlDB, "email")
+validate.UniqueField(sqlDB, maniflex.SQLite, "email")   // driver: maniflex.Postgres | maniflex.SQLite
 validate.RegexField("phone", `^\+?[0-9]{7,15}$`)
 validate.ForbiddenValues("role", "superadmin")
 validate.RequireAtLeastOne("name", "email")
@@ -351,22 +351,25 @@ validate.DateRange("start_date", "end_date")              // end must not be bef
 validate.RequireWhen("reason", "status:eq:rejected")      // conditional required
 
 // SERVICE (Service step — usually Before)
-service.HashField("password")                // bcrypt
+service.HashField("password", svcbcrypt.Hasher())    // import middleware/service/bcrypt
 service.SlugifyField("title", "slug")
 service.SetField("user_id", func(ctx) any { return ctx.Auth.UserID })
 service.StripField("password_confirm")
+service.CopyField("email", "billing_email")
+service.Timestamp("last_seen_at")
 service.TimestampWhen("published_at", "status", "published")
-service.OwnerScope("user_id")
-// Side effects — register on DB step at AtPosition(After)
-service.Emit(bus)
-service.Webhook(service.WebhookConfig{URL, Secret})
-service.SendEmail(mailer, func(ctx) *service.EmailMessage { return ... })
+service.OwnerScope("user_id")                        // unconditional SetField on create
+// Side effects are in package events (NOT service):
+events.Emit(bus)                                     // DB-step middleware, AtPosition(After)
+// Webhook/SendEmail are event-bus SUBSCRIBERS, not middleware — wire with bus.Subscribe:
+bus.Subscribe(ctx, events.Subscription{Patterns: []string{"order.*"},
+    Handler: events.Webhook(events.WebhookConfig{URL: u, Secret: s})})
 
 // DB (DB step)
 db.ForceFilter("org_id", func(ctx) any { return ctx.Auth.Claims["org_id"] })
 db.Tenancy("org_id", func(ctx) string { return ctx.Auth.TenantID })
 db.Paginate(50)
-db.RateLimit(db.RateLimitConfig{RequestsPerMinute: 10, Key: func(ctx) string {...}})
+db.RateLimit(db.RateLimitConfig{RequestsPerMinute: 10, KeyFunc: func(ctx) string {...}})  // Backend: for a cross-replica counter
 db.AuditLog(sink)                            // AtPosition(After), or default Before with db.WithChanges()
 db.Invalidate(cache, func(ctx) []string { return ["keys", ...] })  // AtPosition(After)
 
@@ -428,7 +431,7 @@ server.MustRegister(Invoice{}, maniflex.ModelConfig{Versioned: true})
 // or VersionedDiffOnly: true to skip snapshots
 ```
 
-Creates `invoice_histories` table with columns: `id, record_id, version, operation, actor_id, timestamp, request_id, diff, [snapshot]`.
+Creates `invoice_history` table (the source name + `_history`, not pluralised) with columns: `id, record_id, version, operation, actor_id, timestamp, request_id, diff, [snapshot]`.
 
 Diff excludes hidden/writeonly/encrypted fields and HMAC companions. History table is read-only (writes return 405).
 
@@ -539,7 +542,7 @@ server.Pipeline.Auth.Register(auth.JWTAuth(secret),
 
 ### Hash password on User create/update
 ```go
-server.Pipeline.Service.Register(service.HashField("password"),
+server.Pipeline.Service.Register(service.HashField("password", svcbcrypt.Hasher()), // import middleware/service/bcrypt
     maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate))
 ```
 
@@ -674,7 +677,7 @@ In-memory SQLite per test. `server.Handler()` returns the chi router but does
 ```go
 maniflex.OpCreate, maniflex.OpRead, maniflex.OpUpdate, maniflex.OpDelete, maniflex.OpList, maniflex.OpOptions, maniflex.OpAction
 maniflex.Before, maniflex.After, maniflex.Replace
-maniflex.OpEq, maniflex.OpNeq, maniflex.OpGt, maniflex.OpGte, maniflex.OpLt, maniflex.OpLte, maniflex.OpLike, maniflex.OpILike, maniflex.OpIn, maniflex.OpNotIn, maniflex.OpIsNull, maniflex.OpNotNull
+maniflex.OpEq, maniflex.OpNeq, maniflex.OpGt, maniflex.OpGte, maniflex.OpLt, maniflex.OpLte, maniflex.OpLike, maniflex.OpILike, maniflex.OpIn, maniflex.OpNotIn, maniflex.OpIsNull, maniflex.OpNotNull, maniflex.OpBetween, maniflex.OpContains, maniflex.OpStartsWith, maniflex.OpEndsWith
 maniflex.SortAsc, maniflex.SortDesc
 maniflex.OnDeleteCascade, maniflex.OnDeleteSetNull, maniflex.OnDeleteRestrict, maniflex.OnDeleteNoAction
 maniflex.IdentityHuman, maniflex.IdentityServiceAccount, maniflex.IdentityAnonymous

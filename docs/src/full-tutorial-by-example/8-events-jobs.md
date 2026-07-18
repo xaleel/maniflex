@@ -36,12 +36,15 @@ import (
 server := maniflex.New(maniflex.Config{ /* ... */ })
 server.MustRegister(Order{}, User{} /* ... */)
 
-db, _ := sqlite.Open(":memory:", server.Registry())
+db, _ := sqlite.Open("./app.db", server.Registry())
 server.SetDB(db)
 
-// Create the SQL-backed queue (uses the same DB as the server).
-queue := jobssql.New(db)
-jobssql.Migrate(ctx, db)
+// jobs/sql takes a database/sql handle, not the maniflex adapter; point it at the
+// same database file so jobs live alongside your data. (The "sqlite" driver is
+// registered by importing the db/sqlite package above.)
+jobsDB, _ := sql.Open("sqlite", "./app.db")
+queue := jobssql.New(jobsDB)
+jobssql.Migrate(ctx, jobsDB, "sqlite") // "postgres" on PG
 
 // Mount registers the StatusModel and returns a wrapped queue + sink.
 // After this, GET /api/job_statuses/:id is available automatically.
@@ -70,7 +73,7 @@ calling the mailer directly:
 server.Action(maniflex.ActionConfig{
     Method: "POST",
     Path:   "/orders",
-    Handler: func(ctx *maniflex.ActionContext) error {
+    Handler: func(ctx *maniflex.ServerContext) error {
         // ... validate, insert order, etc. ...
 
         jobID, err := queue.Enqueue(ctx.Ctx, jobs.Job{
@@ -138,17 +141,17 @@ by `Mount`.
 ## Emitting events from the pipeline
 
 For lighter-weight fan-out — "notify other services every time an `Order` is
-created" — the `service.Emit` middleware is a simpler fit than the job queue:
+created" — the `events.Emit` middleware is a simpler fit than the job queue:
 
 ```go
 import (
+    "github.com/xaleel/maniflex/events"
     "github.com/xaleel/maniflex/events/redis"
-    "github.com/xaleel/maniflex/middleware/service"
 )
 
-bus := redis.New(redisClient)
+bus := redis.New(redisClient, "myapp") // prefix namespaces the Redis stream keys
 server.Pipeline.DB.Register(
-    service.Emit(bus),
+    events.Emit(bus),
     maniflex.ForModel("Order"),
     maniflex.AtPosition(maniflex.After),
 )
@@ -162,18 +165,18 @@ connected clients, wire a `realtime.Hub` to the bus (see
 
 ## Webhooks
 
-`service.Webhook` delivers events to external URLs with an HMAC signature —
-useful for one-off partner integrations:
+`events.Webhook` delivers events to external URLs with an HMAC signature —
+useful for one-off partner integrations. Unlike `events.Emit`, it is an event-bus
+*subscriber*, not pipeline middleware, so wire it with `bus.Subscribe`:
 
 ```go
-server.Pipeline.DB.Register(
-    service.Webhook(service.WebhookConfig{
+bus.Subscribe(ctx, events.Subscription{
+    Patterns: []string{"order.*"},
+    Handler: events.Webhook(events.WebhookConfig{
         URL:    "https://partner.example.com/orders",
         Secret: os.Getenv("WEBHOOK_SECRET"),
     }),
-    maniflex.ForModel("Order"),
-    maniflex.AtPosition(maniflex.After),
-)
+})
 ```
 
 ## What we built
@@ -182,10 +185,10 @@ server.Pipeline.DB.Register(
 |---|---|
 | Decoupled post-order email | `jobs.Queue` — enqueue in action, process in worker |
 | Status polling | `jobs/maniflex.Mount` → `GET /api/job_statuses/:id` |
-| Automatic retries | `jobs.WorkerConfig.MaxRetry` + exponential backoff |
+| Automatic retries | `jobs.Job.MaxRetry` + exponential backoff |
 | Transactional enqueue | `jobs/sql` inserts the job row in the same DB transaction |
-| Domain event fan-out | `service.Emit` on DB-After → event bus subscribers |
-| External webhook delivery | `service.Webhook` on DB-After |
+| Domain event fan-out | `events.Emit` on DB-After → event bus subscribers |
+| External webhook delivery | `events.Webhook` as a bus subscriber |
 
 ## Next
 

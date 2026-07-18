@@ -2,9 +2,16 @@
 
 The `maniflex/middleware/validate` package supplies validators that go beyond what
 `mfx:` tags can express. Each one runs on the **Validate** step alongside the
-built-in tag enforcement, and aborts with `422 VALIDATION_ERROR` on rejection —
-except `RestrictField`/`FieldRole`, which answer `403 FIELD_FORBIDDEN` because
-they gate on *who is asking*, not on whether the value is valid.
+built-in tag enforcement, and most abort with `422 VALIDATION_ERROR` on rejection.
+The exceptions:
+
+- `RestrictField`/`FieldRole` answer `403 FIELD_FORBIDDEN`, because they gate on
+  *who is asking*, not on whether the value is valid.
+- `RequireLocale` answers `422 MISSING_LOCALE` — still a 422, but with its own
+  code so a missing translation is distinguishable from a plain validation miss.
+- `UniqueField`'s happy path is a `422`, but if the underlying count query itself
+  fails it answers `500 UNIQUE_CHECK_FAILED` rather than letting a duplicate slip
+  through.
 
 ## `UniqueField`
 
@@ -66,6 +73,27 @@ server.Pipeline.Validate.Register(
     maniflex.ForOperation(maniflex.OpUpdate),
 )
 ```
+
+## `RequireLocale`
+
+Ensures a localised (`LocaleString`) field carries a non-empty value for each of
+the required locale keys. Use it for translatable fields where certain languages
+are mandatory:
+
+```go
+server.Pipeline.Validate.Register(
+    validate.RequireLocale("name", "en", "ar"),
+    maniflex.ForModel("Department"),
+    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate),
+)
+```
+
+The field value may arrive as a JSON object (`map[string]any`) or a Go-native
+`map[string]string`. A locale key that is absent, `null`, or empty fails the
+check. When any required locale is missing the request is aborted with
+`422 MISSING_LOCALE`, and `details` lists every offending locale keyed by field.
+If the field is absent from the body, `null`, or not a locale map at all, the
+rule passes silently — pair it with `required` when presence itself is mandatory.
 
 ## `NumericPrecision`
 

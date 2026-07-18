@@ -81,7 +81,7 @@ without serving. A `Server` is not restartable — build a new one.
 ## Background writes
 
 Audit-log writes, cache invalidations (`db.Invalidate`), and async file
-cleanups (`Config.FileStorage` with `mfx:"auto_delete"` fields) run on
+cleanups (`Config.FilesConfig.Storage` with `mfx:"auto_delete"` fields) run on
 goroutines tracked by the server. `Shutdown` waits for those to drain
 within the same deadline as the HTTP listener. If the deadline elapses
 with goroutines still in flight, the server logs a warning with the

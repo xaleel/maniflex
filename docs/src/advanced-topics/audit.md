@@ -99,7 +99,7 @@ With `WithChanges()`, `Changes` is populated as:
 
 | Operation | `Changes` map |
 |---|---|
-| Create | `{field: {from: null, to: new_value}}` for each non-default field |
+| Create | `{field: {from: null, to: new_value}}` for each field returned by the write |
 | Update | `{field: {from: old, to: new}}` for each changed field |
 | Delete | `{field: {from: value, to: null}}` for each field on the pre-image |
 
@@ -124,9 +124,11 @@ Use this for secrets that shouldn't reach the audit pipeline even in
 hashed form. Field names are matched against the DB column name (e.g.
 `api_token`, not `apiToken`).
 
-`hidden`, `writeonly`, and `encrypted` fields are excluded automatically;
-`WithExcludeFields` is for things that don't carry one of those tags but
-still need to be redacted.
+`hidden`, `writeonly`, and `encrypted` fields are **not** excluded
+automatically — the diff is built from the raw row the write returns.
+`WithExcludeFields` is the only mechanism that keeps a column out of the
+`Changes` map, so name every sensitive column explicitly, including any
+that carry those tags.
 
 ## Common sinks
 
@@ -239,8 +241,9 @@ inside the app.
   volume, structured logs for medium, durable queue for high.
 - Register at `maniflex.Before` when using `WithChanges()`, at
   `maniflex.After` otherwise.
-- `WithExcludeFields` every secret column that isn't already
-  `writeonly` / `hidden` / `encrypted`.
+- `WithExcludeFields` every secret column — including `writeonly`,
+  `hidden`, and `encrypted` ones, which are **not** redacted from the
+  diff automatically.
 - Treat the sink as best-effort. Don't rely on the in-process goroutine
   for legal-grade audit retention; use a sink whose own storage is
   durable.

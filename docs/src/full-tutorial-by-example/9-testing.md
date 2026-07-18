@@ -141,7 +141,7 @@ func TestInvalidEmail(t *testing.T) {
     if code != 422 {
         t.Fatalf("got %d, want 422", code)
     }
-    if body["error"].(map[string]any)["code"] != "VALIDATION_FAILED" {
+    if body["error"].(map[string]any)["code"] != "VALIDATION_ERROR" {
         t.Fatalf("code = %v", body["error"])
     }
 }

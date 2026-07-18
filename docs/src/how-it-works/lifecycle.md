@@ -121,7 +121,7 @@ rules to `ctx.ParsedBody`:
   set, so no error.
 - `min` / `max` are checked on numeric fields when present.
 
-If any rule had failed, the step would have called `ctx.Abort(422, "VALIDATION_FAILED", …)`
+If any rule had failed, the step would have called `ctx.Abort(422, "VALIDATION_ERROR", …)`
 with `details: [...]` listing the bad fields.
 
 Custom Validate middleware (none in this example) would run alongside the
@@ -175,7 +175,7 @@ If the adapter returned `maniflex.ErrNotFound`, the step would abort with
 `404 NOT_FOUND`. `*maniflex.ErrConstraint` becomes `409 CONFLICT`. A
 context-cancelled error becomes `504 TIMEOUT` when a server-side deadline
 expired, or `499` when the client simply hung up. Any other adapter error
-becomes `500 DATABASE_ERROR`.
+becomes `500 DB_ERROR`.
 
 #### 6a. Audit-log Before middleware
 

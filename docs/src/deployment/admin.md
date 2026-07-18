@@ -59,7 +59,7 @@ unprotected panel can never be shipped by accident.
 | Field                  | Type                              | Default            | Description                                                                            |
 | ---------------------- | --------------------------------- | ------------------ | -------------------------------------------------------------------------------------- |
 | `PathPrefix`           | `string`                          | `"/admin"`         | Mount path; the returned handler serves routes under this prefix                       |
-| `Title`                | `string`                          | `"github.com/xaleel/maniflex admin"` | Displayed in the panel header                                                          |
+| `Title`                | `string`                          | `"maniflex admin"` | Displayed in the panel header                                                          |
 | `Auth`                 | `func(http.Handler) http.Handler` | —                  | Wraps the whole panel with an auth gate; required unless `AllowUnauthenticated` is set |
 | `AllowUnauthenticated` | `bool`                            | `false`            | Skips the auth requirement; **local dev only**                                         |
 | `Models`               | `[]string`                        | (all)              | Struct names to show; empty means every registered model                               |

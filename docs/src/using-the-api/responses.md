@@ -60,7 +60,7 @@ Every error response uses:
 ```json
 {
   "error": {
-    "code": "VALIDATION_FAILED",
+    "code": "VALIDATION_ERROR",
     "message": "one or more fields failed validation",
     "details": [
       { "field": "email",    "message": "field \"email\" is required" },
@@ -84,8 +84,8 @@ The catalogue of built-in codes is in [Error Handling](../the-request-pipeline/e
 |---|---|---|
 | `OpList` | `200 OK` | `400 INVALID_QUERY` |
 | `OpRead` | `200 OK` | `404 NOT_FOUND` |
-| `OpCreate` | `201 Created` | `400 INVALID_JSON`, `409 CONFLICT`, `422 VALIDATION_FAILED` |
-| `OpUpdate` | `200 OK` | `404 NOT_FOUND`, `409 CONFLICT`, `422 VALIDATION_FAILED` |
+| `OpCreate` | `201 Created` | `400 INVALID_JSON`, `409 CONFLICT`, `422 VALIDATION_ERROR` |
+| `OpUpdate` | `200 OK` | `404 NOT_FOUND`, `409 CONFLICT`, `422 VALIDATION_ERROR` |
 | `OpDelete` | `204 No Content` | `404 NOT_FOUND` |
 
 `HEAD` mirrors the `GET` for the same URL with the body suppressed: same status

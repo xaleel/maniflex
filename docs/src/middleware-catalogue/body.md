@@ -37,8 +37,9 @@ this middleware to enforce a stricter contract when desired.
 ## `CoerceTypes`
 
 Coerces string values in `ctx.ParsedBody` into the Go type declared on the
-model — `"42"` → `42`, `"true"` → `true`, ISO-8601 strings → `time.Time`. Helps
-when the client sends form-encoded or query-string-shaped payloads.
+model — `"42"` → `42` (int), `"3.14"` → `3.14` (float64), `"true"` → `true`
+(bool). Helps when the client sends form-encoded or query-string-shaped payloads.
+Only string→int/float64/bool is performed; other types are left as-is.
 
 ```go
 server.Pipeline.Validate.Register(body.CoerceTypes())

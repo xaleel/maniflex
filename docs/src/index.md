@@ -78,7 +78,7 @@ writing handlers, you attach middleware to the step where your logic belongs.
 
 A `func(ctx *maniflex.ServerContext, next func() error) error` registered on a pipeline
 step. Registration is scoped with `maniflex.ForModel(...)` and `maniflex.ForOperation(...)`,
-and positioned with `maniflex.Before` (default), `maniflex.After`, or `maniflex.Replace`. Set
+and positioned with `maniflex.AtPosition(maniflex.After)` (or `maniflex.Before`, the default, or `maniflex.Replace`). Set
 `ctx.Response` and return without calling `next()` to short-circuit the request.
 → [Writing Middleware](the-request-pipeline/middleware.md), [Middleware Catalogue](middleware-catalogue/index.md)
 

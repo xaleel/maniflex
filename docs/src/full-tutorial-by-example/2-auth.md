@@ -57,10 +57,13 @@ Then register the hashing middleware on the Service step, scoped to `User`
 create and update:
 
 ```go
-import "github.com/xaleel/maniflex/middleware/service"
+import (
+    "github.com/xaleel/maniflex/middleware/service"
+    "github.com/xaleel/maniflex/middleware/service/bcrypt"
+)
 
 server.Pipeline.Service.Register(
-    service.HashField("password"),
+    service.HashField("password", bcrypt.Hasher()),
     maniflex.ForModel("User"),
     maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate),
 )
@@ -197,7 +200,7 @@ curl -X PATCH localhost:8080/api/users/<id> \
 | Capability                  | How                                                 |
 | --------------------------- | --------------------------------------------------- |
 | Sign-up                     | `POST /api/users` stays public (auth not scoped onto it) |
-| Password hashing            | `service.HashField("password")` on the Service step |
+| Password hashing            | `service.HashField("password", bcrypt.Hasher())` on the Service step |
 | Bearer-token auth on writes | `auth.JWTAuth` on the Auth step                     |
 | Admin-only delete           | `auth.RequireRole("admin")`                         |
 | Token issuance              | `/api/auth/login` action                            |

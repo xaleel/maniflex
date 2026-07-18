@@ -210,6 +210,36 @@ The scope applies only to Actions. A generated CRUD route gets its scoping from
 the DB step, where `ctx.RawQuery` from an After-DB middleware is a normal thing
 to do and is not refused.
 
+### Action variants: `RateLimitAction` / `AuditLogAction`
+
+`RateLimit` and `AuditLog` register on the **DB step**, which a custom `Action`
+never runs, so they never fire for one. Their action-list counterparts run in the
+action's own `Middleware` list — after the global Auth step, so `ctx.Auth` is
+available:
+
+```go
+server.Action(maniflex.ActionConfig{
+    Method: "POST", Path: "/reports/{id}/evidence",
+    Middleware: []maniflex.MiddlewareFunc{
+        auth.JWTAuth(secret),
+        db.RateLimitAction(db.RateLimitConfig{RequestsPerMinute: 10}),
+        db.AuditLogAction(mySink),
+    },
+    Handler: uploadEvidence,
+})
+```
+
+`RateLimitAction` takes the same `RateLimitConfig` as `RateLimit` but keys on the
+caller (its `KeyFunc`, else the authenticated user id, else the remote IP) plus
+the request method and path, since an action has no model/operation to key on. It
+rejects over-limit requests with `429 RATE_LIMITED` and a `Retry-After` header.
+
+`AuditLogAction` writes one audit record after a successful action (a `>= 400`
+response is skipped), sourcing the actor and tenant from `ctx.Auth`, the resource
+id from the `{id}` URL param, the result from `ctx.Response.Data`, and
+`Operation = OpAction`. Writes are fire-and-forget, so a sink error never fails
+the request; change diffing (`WithChanges`) does not apply to actions.
+
 ## Request budgeting
 
 ### `Paginate`
@@ -229,7 +259,7 @@ A token-bucket rate limiter scoped by IP or by authenticated user:
 server.Pipeline.DB.Register(
     db.RateLimit(db.RateLimitConfig{
         RequestsPerMinute: 10,
-        Key: func(ctx *maniflex.ServerContext) string {
+        KeyFunc: func(ctx *maniflex.ServerContext) string {
             if ctx.Auth != nil {
                 return ctx.Auth.UserID
             }
@@ -240,12 +270,36 @@ server.Pipeline.DB.Register(
 )
 ```
 
-Rejected requests receive `429 RATE_LIMITED`.
+Rejected requests receive `429 RATE_LIMITED`. The counter is in-process by
+default; for a limit shared across replicas set `RateLimitConfig.Backend` (see
+[`middleware/db/redis`](https://github.com/xaleel/maniflex/tree/main/middleware/db/redis)
+for the Redis implementation).
 
 When the key falls back to the client IP (`ctx.Request.RemoteAddr`), that address
 is the direct TCP peer unless `Config.TrustProxyHeaders` is enabled — set it
 (only behind a trusted proxy) so per-IP limits see the real client instead of the
 load balancer. See [Security](../advanced-topics/security.md).
+
+### `RateLimitField`
+
+Rate-limits by the **value of a request-body field** rather than by caller
+identity — cap password-reset or OTP requests per email address, for instance,
+so one address cannot be flooded regardless of which client sends the requests:
+
+```go
+server.Pipeline.DB.Register(
+    db.RateLimitField("email", 3, time.Hour),
+    maniflex.ForModel("PasswordReset"),
+    maniflex.ForOperation(maniflex.OpCreate),
+)
+```
+
+The arguments are the field name (its parsed-body value becomes the bucket key),
+the request cap, and the window. If the field is absent from the parsed body the
+limit is not applied, so a legitimate request is never blocked by a missing
+field. Rejected requests receive `429 RATE_LIMITED`. Pass
+`db.WithRateLimitBackend` to share the window across replicas, or
+`db.WithRateLimitErrorMessage` to override the 429 message.
 
 ## Post-write hooks
 

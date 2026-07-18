@@ -297,7 +297,8 @@ func registerMiddleware(s *maniflex.Server, rsaPub *rsa.PublicKey) {
 	// ── DB: rate-limit anonymous event ingestion ─────────────────────────────
 	//
 	// CRUD POST /events is open, so we key the rate limiter on the remote IP.
-	// For production, replace with a Redis-backed counter (roadmap 7.6).
+	// For production across replicas, set RateLimitConfig.Backend to a shared
+	// counter (see middleware/db/redis).
 	s.Pipeline.DB.Register(
 		mwdb.RateLimit(mwdb.RateLimitConfig{
 			RequestsPerMinute: 10,

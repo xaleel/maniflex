@@ -14,28 +14,36 @@ request pipeline: an **event bus** for lightweight domain-event fan-out, and a
 ## Event bus
 
 The event bus lets pipeline middleware publish domain events that any number of
-subscribers consume independently. A `service.Emit` call on the DB-After step
+subscribers consume independently. An `events.Emit` call on the DB-After step
 publishes `user.created`, `order.placed`, etc. to whichever bus is wired up:
 
 ```go
 import (
+    "github.com/xaleel/maniflex/events"
     "github.com/xaleel/maniflex/events/redis"
-    "github.com/xaleel/maniflex/middleware/service"
 )
 
-bus := redis.New(redisClient)
+bus := redis.New(redisClient, "myapp") // prefix namespaces the Redis stream keys
 server.Pipeline.DB.Register(
-    service.Emit(bus),
+    events.Emit(bus),
     maniflex.ForModel("Order"),
     maniflex.AtPosition(maniflex.After),
 )
 ```
 
-Subscribers call `bus.Subscribe(ctx, "order.*", handler)`. For WebSocket
-fan-out, connect a `realtime.Hub` to the bus — see
+Subscribers register a `Subscription`:
+
+```go
+bus.Subscribe(ctx, events.Subscription{
+    Patterns: []string{"order.*"},
+    Handler:  func(ctx context.Context, e events.Event) error { /* ... */ return nil },
+})
+```
+
+For WebSocket fan-out, connect a `realtime.Hub` to the bus — see
 [Realtime / WebSockets](realtime.md).
 
-> **Custom actions emit manually.** `service.Emit` runs on the DB step, which
+> **Custom actions emit manually.** `events.Emit` runs on the DB step, which
 > [custom actions](actions.md) skip — so a `server.Action` handler never fires
 > the middleware and must publish to the bus itself:
 >
@@ -51,8 +59,8 @@ fan-out, connect a `realtime.Hub` to the bus — see
 > the event commits atomically with the write.
 
 Available adapters: `events/redis`, `events/kafka`, `events/nats`,
-`events/rabbitmq`. The in-process adapter (`events.NewInProcessBus`) ships in
-the core module for tests.
+`events/rabbitmq`. The in-process adapter (`inproc.New()` from
+`github.com/xaleel/maniflex/events/inproc`) ships in the core module for tests.
 
 > **Broker adapters are nested modules.** Adapters with heavy dependencies (e.g.
 > NATS) ship as their own Go modules — `go get github.com/xaleel/maniflex/events/nats`
@@ -87,13 +95,16 @@ adapters is a one-line change.
 
 ```go
 import (
+    "database/sql"
+
     "github.com/xaleel/maniflex/jobs"
     jobssql "github.com/xaleel/maniflex/jobs/sql"
 )
 
-// During startup, after opening the DB:
+// jobs/sql takes a database/sql handle, not the maniflex DB adapter.
+db, _ := sql.Open("sqlite", "./app.db")
 queue := jobssql.New(db)
-if err := jobssql.Migrate(ctx, db); err != nil { /* ... */ }
+if err := jobssql.Migrate(ctx, db, "sqlite"); err != nil { /* ... */ } // "postgres" on PG
 ```
 
 ### Lanes and secrets
@@ -306,13 +317,20 @@ tick is missed); for durable scheduling, combine `jobs/sql` with a
 `next_fire_at` column in your model. For field-based transitions (auto-publish,
 auto-expire), see [Scheduled Fields & Runner](scheduled.md).
 
-```go
-import "github.com/xaleel/maniflex/jobs/cron"
+Schedules are fixed **intervals** (`Every`), not cron expressions:
 
-cr := cron.New(queue, cron.Config{
-    Jobs: []cron.Entry{
-        {Type: "daily_report", Schedule: "@daily"},
-    },
+```go
+import (
+    "time"
+
+    "github.com/xaleel/maniflex/jobs"
+    "github.com/xaleel/maniflex/jobs/cron"
+)
+
+cr := cron.New(queue, nil) // nil logger → slog.Default()
+cr.Add(cron.Entry{
+    Every: 24 * time.Hour,
+    Job:   jobs.Job{Type: "daily_report"},
 })
-go cr.Run(ctx)
+cr.Start(ctx) // returns immediately; cr.Stop() halts the tickers
 ```

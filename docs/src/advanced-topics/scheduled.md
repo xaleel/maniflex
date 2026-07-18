@@ -166,18 +166,27 @@ dispatched by the worker pool:
 
 ```go
 import (
+    "time"
+
     "github.com/xaleel/maniflex/jobs"
+    "github.com/xaleel/maniflex/jobs/cron"
     "github.com/xaleel/maniflex/scheduled"
     "github.com/xaleel/maniflex/scheduled/jobsx"
 )
 
-handler := jobsx.JobHandler(runner)
-jobsQueue.Register("scheduled.sweep", handler)
-
-cron := cron.New()
-cron.Schedule("*/1 * * * *", func() {
-    jobsQueue.Enqueue("scheduled.sweep", nil)
+// Register the sweep handler on the worker, keyed by jobsx.JobType
+// ("maniflex.scheduled.sweep").
+w, _ := jobs.NewWorker(jobs.WorkerConfig{
+    Source:   queue.(jobs.Source),
+    Handlers: map[string]jobs.Handler{jobsx.JobType: jobsx.JobHandler(runner)},
 })
+go w.Run(ctx)
+
+// A fixed-interval ticker enqueues one sweep job per minute; exactly one worker
+// picks up any given tick.
+sched := cron.New(queue, nil)
+sched.Add(cron.Entry{Every: time.Minute, Job: jobs.Job{Type: jobsx.JobType}})
+sched.Start(ctx)
 ```
 
 In this setup the ticker drives the queue, not the runner directly —
@@ -192,12 +201,12 @@ changed even though no HTTP request caused the change:
 ```go
 runner, _ := scheduled.New(server, scheduled.Config{
     OnSetField: func(model, id, field, to string) {
-        bus.Publish(events.Event{
-            Kind: "scheduled-transition",
-            Data: map[string]any{
-                "model": model, "id": id,
-                "field": field, "to": to,
-            },
+        data, _ := json.Marshal(map[string]any{
+            "model": model, "id": id, "field": field, "to": to,
+        })
+        _ = bus.Publish(context.Background(), events.Event{
+            Type: "scheduled-transition",
+            Data: data, // Event.Data is json.RawMessage
         })
     },
 })

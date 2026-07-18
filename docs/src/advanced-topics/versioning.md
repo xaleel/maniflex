@@ -53,9 +53,10 @@ columns:
 | `diff` | TEXT | JSON `{field: {old, new}}` map |
 | `snapshot` | TEXT | full row state as JSON — omitted when `VersionedDiffOnly` is set |
 
-`AutoMigrate` also adds an index `idx_{table}_history_record_version` on
-`(record_id, version DESC)` for the standard "list history for one row"
-query.
+`AutoMigrate` also adds a **unique** index `uidx_{table}_history_record_version`
+on `(record_id, version DESC)` for the standard "list history for one row"
+query. The uniqueness guards against two concurrent writes computing the same
+`(record_id, version)`; the writer retries on the constraint violation.
 
 ## What gets diffed
 
@@ -68,7 +69,8 @@ query.
 }
 ```
 
-- **`OpCreate`** — every field is recorded as `{"old": null, "new": value}`.
+- **`OpCreate`** — every field with a non-nil value is recorded as
+  `{"old": null, "new": value}`; nil-valued fields are skipped.
 - **`OpUpdate`** — only fields whose value differs between pre-image and
   post-image appear.
 - **`OpDelete`** — every field is recorded as `{"old": value, "new": null}`.
@@ -90,7 +92,7 @@ By default each history row carries both the `diff` and the full
 like on date X?" queries:
 
 ```bash
-curl 'localhost:8080/api/invoice_histories?filter=record_id:eq:abc123&sort=version:desc&limit=1'
+curl 'localhost:8080/api/invoice_history?filter=record_id:eq:abc123&sort=version:desc&limit=1'
 ```
 
 For high-write models the snapshot is the largest column by far.
@@ -117,19 +119,19 @@ read endpoints work:
 
 ```bash
 # All history rows for one invoice, newest first.
-curl 'localhost:8080/api/invoice_histories
+curl 'localhost:8080/api/invoice_history
      ?filter=record_id:eq:abc123
      &sort=version:desc'
 
 # Recent activity by an actor.
-curl 'localhost:8080/api/invoice_histories
+curl 'localhost:8080/api/invoice_history
      ?filter=actor_id:eq:user-alice
      &sort=timestamp:desc
      &limit=50'
 ```
 
-`record_id`, `operation`, `actor_id`, and `request_id` are filterable;
-`version` and `timestamp` are sortable. Write operations (`POST`,
+`record_id`, `operation`, and `actor_id` are filterable; `version` and
+`timestamp` are sortable. `request_id` is stored but not filterable. Write operations (`POST`,
 `PATCH`, `DELETE`) on the history endpoint return `405 METHOD_NOT_ALLOWED`
 — the history is append-only by construction.
 

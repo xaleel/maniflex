@@ -76,8 +76,10 @@ field has a sensible default. See [Configuration](../deployment/config.md).
 ## D
 
 **DBAdapter.** The interface implemented by every database backend.
-Methods: `FindByID`, `FindMany`, `Create`, `Update`, `Delete`, `BeginTx`,
-`Raw`, `Ping`. See [Database Backends](../deployment/databases.md).
+Methods: `FindByID`, `FindMany`, `Create`, `Update`, `Delete`,
+`FindByIDForUpdate`, `AutoMigrate`, `BeginTx`, `Raw`, `Close`. `Ping` is
+**not** on `DBAdapter` — it is the separate, optional `Pinger` interface.
+See [Database Backends](../deployment/databases.md).
 
 **Diff (versioning).** The per-field `{old, new}` map written into the
 `diff` column of a history row. Hidden, writeonly, and encrypted fields
@@ -221,9 +223,9 @@ See [Pipeline Overview](../the-request-pipeline/pipeline.md).
 
 ## Q
 
-**Query model.** A read-only model registered with a SQL body
-(`ModelConfig.QueryModel`) instead of a table. Generates filterable,
-sortable list endpoints from a custom SELECT. See
+**Query model.** `ctx.QueryModel` (a `*ServerContext` method) is a read
+helper that fetches any registered model through the standard List path,
+returning filtered, sorted, paginated results without a full request. See
 [Raw Queries & Query Models](../advanced-topics/raw-queries.md).
 
 **`QueryParams`.** The parsed `?page=&limit=&filter=&sort=&include=` of

@@ -133,15 +133,28 @@ gets a fresh run, defeating the purpose.
 
 ### Redis (or any shared store)
 
-A shared cache backs the middleware across replicas:
+There is no built-in Redis cache. `maniflex.CacheStore` is a three-method
+interface you implement against whatever shared store you run:
 
 ```go
-import "github.com/xaleel/maniflex/middleware/db/redis"
+type CacheStore interface {
+    Get(ctx context.Context, key string) (any, bool)
+    Set(ctx context.Context, key string, value any, ttl time.Duration)
+    Delete(ctx context.Context, key string)
+}
+```
 
-store := redis.NewCacheStore(redisClient, "idempotency:")
+The value the idempotency middleware stores is an `idempotency.Entry`, so a
+cross-process backend must serialise it on `Set` and decode it back into an
+`idempotency.Entry` on `Get`. A store that returns the raw bytes (or a decoded
+`map`) instead makes the middleware abort with `IDEMPOTENCY_CACHE_CORRUPT`.
+Register the middleware with your implementation exactly as with the in-process
+cache:
+
+```go
 server.Pipeline.Deserialize.Register(
     idempotency.Middleware(idempotency.Config{
-        Store: store,
+        Store: myRedisCache, // your maniflex.CacheStore implementation
         TTL:   24 * time.Hour,
     }),
     maniflex.ForOperation(maniflex.OpCreate),
@@ -149,8 +162,8 @@ server.Pipeline.Deserialize.Register(
 )
 ```
 
-`CacheStore` is a four-method interface; any backend that can store a
-TTL'd key/value (Redis, Memcached, DynamoDB with TTL) is a drop-in.
+Any backend that can store a TTL'd key/value (Redis, Memcached, DynamoDB with
+TTL) works, provided it round-trips the stored value's type.
 
 ## Concurrent first-misses
 

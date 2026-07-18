@@ -22,7 +22,7 @@ server.Pipeline.Validate.Register(
 ```
 
 The middleware runs after the `mfx:` tag rules. A malformed ISBN aborts the
-request with `422 VALIDATION_FAILED` and the field in `details`.
+request with `422 VALIDATION_ERROR` and the field in `details`.
 
 We strip hyphens before validating so the client can send the human-readable
 form. A small Service-step middleware does the rewrite:

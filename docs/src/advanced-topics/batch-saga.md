@@ -60,6 +60,35 @@ Either every row commits or none does. Validation still runs because
 `ctx.GetModel(...).Create` goes through the adapter — but per-row middleware
 on the Service or Validate steps does not, since this is an action.
 
+### The `maniflex.Batch` helper
+
+The hand-rolled `BeginTx` / `ctx.Tx` / `defer Rollback` dance above is
+canonicalised by `maniflex.Batch(ctx, func(*maniflex.Batcher) error)`
+(`batch.go`). It opens a transaction (or joins `ctx.Tx` if one is already set),
+points `ctx.Tx` / `ctx.Ctx` at it for the duration of the callback, commits on
+success, and rolls back on any returned error or `ctx.Abort`. The `*Batcher`
+exposes the same five CRUD operations, all enlisted in the shared transaction:
+
+```go
+err := maniflex.Batch(ctx, func(b *maniflex.Batcher) error {
+    inv, err := b.Create("Invoice", invoiceData)
+    if err != nil {
+        return err
+    }
+    for _, line := range lines {
+        line["invoice_id"] = inv["id"]
+        if _, err := b.Create("InvoiceLine", line); err != nil {
+            return err // rolls the whole batch back
+        }
+    }
+    return nil
+})
+```
+
+Prefer `maniflex.Batch` over the manual transaction plumbing shown above — it
+gets the rollback, abort, and `ctx.Tx` restoration semantics right. A single
+batch transaction cannot span adapters; use a saga for cross-database work.
+
 For larger imports, batch the inserts (`INSERT … VALUES (…), (…), …` via
 `ctx.RawExec`) and commit every N rows.
 
@@ -70,8 +99,24 @@ reserve inventory, notify a partner — a single database transaction is no
 longer enough. The standard pattern is a **saga**: a sequence of forward
 steps, each with a compensating undo step.
 
-maniflex does not impose a saga framework. The mechanics fit naturally on
-the pipeline:
+maniflex ships a lightweight saga coordinator in `pkg/saga`:
+`saga.New(name).Step(name, do, undo).Execute(ctx, state)` runs the forward
+steps in order and, on any failure, runs the compensating `undo` functions in
+reverse order.
+
+```go
+err := saga.New("dispense_charge").
+    Step("create_invoice",  createInvoice, voidInvoice).
+    Step("debit_ar_ledger", debitAR,       reverseAR).
+    Step("deduct_stock",    deductStock,   restock).
+    Execute(ctx, saga.State{"patient_id": pid, "items": items})
+```
+
+It is an **in-process, non-crash-safe** coordinator: if the process dies
+mid-saga, no compensation runs. For durable, crash-safe workflows the
+transactional outbox pattern below remains the option to reach for (or wrap the
+saga's `Execute` inside a `pkg/jobs` job so a retry re-drives it). The outbox
+mechanics fit naturally on the pipeline:
 
 1. **Start a request transaction** with `maniflex.WithTransaction`. The local
    database changes commit or roll back atomically.

@@ -1,27 +1,35 @@
 # Service Middleware
 
 The `maniflex/middleware/service` package supplies business-logic helpers for the
-**Service** step — field transforms, derived values, owner-scoping — and
-side-effect helpers (events, webhooks, email) for the **DB-After** step.
+**Service** step — field transforms, derived values, and owner-scoping.
+Side-effect helpers (events, webhooks, email) live in the separate
+[`maniflex/events`](../advanced-topics/events-jobs.md) package, not here — see
+[Side effects](#side-effects) below.
 
 ## Field transforms
 
 ### `HashField`
 
-Replaces a plaintext field with its bcrypt hash before the DB step. Standard
-choice for passwords:
+Replaces a plaintext field with its hash before the DB step, using a `Hasher`
+you supply. The bcrypt hasher lives in the satellite package
+`maniflex/middleware/service/bcrypt` (kept separate so the core has no bcrypt
+dependency):
 
 ```go
-import "github.com/xaleel/maniflex/middleware/service"
+import (
+    "github.com/xaleel/maniflex/middleware/service"
+    svcbcrypt "github.com/xaleel/maniflex/middleware/service/bcrypt"
+)
 
 server.Pipeline.Service.Register(
-    service.HashField("password"),
+    service.HashField("password", svcbcrypt.Hasher()),
     maniflex.ForModel("User"),
 )
 ```
 
-The bcrypt cost can be configured via a second argument; the default is
-suitable for production.
+`svcbcrypt.Hasher()` takes an optional cost (`svcbcrypt.Hasher(12)`); the default
+is suitable for production. A `Hasher` is just `func(plaintext string) (string,
+error)`, so you can supply argon2 or any other implementation.
 
 ### `SlugifyField`
 
@@ -72,13 +80,38 @@ server.Pipeline.Service.Register(
 )
 ```
 
+### `Timestamp`
+
+Unconditionally sets a timestamp column to the current time on every write it
+runs for — use `ForOperation` to scope it (e.g. a `last_seen_at` touched on
+update):
+
+```go
+server.Pipeline.Service.Register(
+    service.Timestamp("last_seen_at"),
+    maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpUpdate),
+)
+```
+
+### `CopyField`
+
+Copies one field's value into another before the DB step — for denormalising a
+value the client shouldn't set directly:
+
+```go
+server.Pipeline.Service.Register(
+    service.CopyField("email", "billing_email"),
+    maniflex.ForModel("Account"), maniflex.ForOperation(maniflex.OpCreate),
+)
+```
+
 ## Authorisation
 
 ### `OwnerScope`
 
-Forces a user-id field to the authenticated caller on create. Equivalent to
-`SetField("user_id", …)` plus a refusal if the client tries to spoof a
-different value:
+Forces a user-id field to the authenticated caller on create. It is exactly
+`SetField("user_id", ctx.Auth.UserID)` — an unconditional overwrite, so any value
+the client sent for that field is replaced (not rejected):
 
 ```go
 server.Pipeline.Service.Register(
@@ -89,65 +122,37 @@ server.Pipeline.Service.Register(
 
 ## Side effects
 
-These middleware all run on the **DB** step at `maniflex.After` position, so they
-fire only when the database write has succeeded.
+Side effects — events, webhooks, email — are **not** in this package. They live
+in [`maniflex/events`](../advanced-topics/events-jobs.md), and only `events.Emit`
+is pipeline middleware; `events.Webhook` and `events.SendEmail` are event-bus
+*subscribers*, not middleware, so they are wired with `bus.Subscribe`, not
+`Pipeline.Register`.
 
-### `Emit`
-
-Publishes a domain event to a configured event bus after every mutating
-operation:
+`events.Emit` publishes a domain event on the **DB** step at `maniflex.After`,
+after the write succeeds:
 
 ```go
+import "github.com/xaleel/maniflex/events"
+
 server.Pipeline.DB.Register(
-    service.Emit(myBus),
+    events.Emit(bus),
     maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete),
     maniflex.AtPosition(maniflex.After),
 )
 ```
 
-`myBus` implements the event interface from `maniflex/events`; satellite packages
-exist for Kafka, NATS, RabbitMQ, and Redis. See
-[Events & Background Jobs](../advanced-topics/events-jobs.md).
-
-### `Webhook`
-
-POSTs the affected record to an external URL with an HMAC signature:
+Webhooks and email then react to those events as subscribers:
 
 ```go
-server.Pipeline.DB.Register(
-    service.Webhook(service.WebhookConfig{
-        URL:    "https://hooks.example.com/orders",
-        Secret: "whsec_…",
-    }),
-    maniflex.ForModel("Order"),
-    maniflex.AtPosition(maniflex.After),
-)
+bus.Subscribe(ctx, events.Subscription{
+    Patterns: []string{"order.*"},
+    Handler:  events.Webhook(events.WebhookConfig{URL: "https://hooks.example.com/orders", Secret: "whsec_…"}),
+})
 ```
 
-### `SendEmail`
-
-Sends a transactional email after a write. The factory takes a mailer and a
-function that builds the message from the request context:
-
-```go
-server.Pipeline.DB.Register(
-    service.SendEmail(mailer, func(ctx *maniflex.ServerContext) *service.EmailMessage {
-        user := ctx.DBResult.(map[string]any)
-        return &service.EmailMessage{
-            To:      user["email"].(string),
-            Subject: "Welcome",
-            Body:    "Thanks for signing up.",
-        }
-    }),
-    maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpCreate),
-    maniflex.AtPosition(maniflex.After),
-)
-```
-
-## Pairing with transactions
-
-Side-effect middleware runs *inside* the request transaction when
-`maniflex.WithTransaction` is registered. If the transaction rolls back the
-side-effect already happened — outbound emails do not unsend themselves. Pair
-event emission with a transactional outbox (see
-[Events & Background Jobs](../advanced-topics/events-jobs.md)) when this matters.
+`bus` is any `events.Bus` — `events/inproc` for a single binary, or the Kafka,
+NATS, RabbitMQ, and Redis adapters. See
+[Events & Background Jobs](../advanced-topics/events-jobs.md) for the full API,
+including the transactional outbox that makes `events.Emit` commit atomically
+with the write (without it, a rolled-back transaction leaves an already-sent
+side effect — outbound emails do not unsend themselves).

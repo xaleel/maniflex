@@ -263,66 +263,44 @@ tx.Commit()
 Both Postgres (`$N` placeholders) and SQLite (since 3.8.3, `?` placeholders)
 are handled transparently.
 
-## Read-only query models
+## Stable read-only endpoints for aggregates
 
-A *query model* is a struct registered with a SQL body instead of a table.
-The framework mounts the standard list/read routes, including filtering,
-sorting, and pagination, but every read runs the supplied SQL.
+maniflex has **no** SQL-backed "query model" — a struct cannot be registered with
+a SQL body. For a stable, repeatable read endpoint over computed data you have two
+real building blocks:
 
-```go
-type RevenueByMonth struct {
-    maniflex.BaseModel
-    Month   string  `json:"month"   mfx:"filterable,sortable"`
-    Total   float64 `json:"total"   mfx:"sortable"`
-    Orders  int64   `json:"orders"  mfx:"sortable"`
-}
-
-server.MustRegister(RevenueByMonth{}, maniflex.ModelConfig{
-    QueryModel: &maniflex.QueryModelSpec{
-        SQL: `SELECT to_char(created_at, 'YYYY-MM') AS month,
-                     SUM(total) AS total,
-                     COUNT(*) AS orders
-                FROM orders
-               WHERE status = 'paid'
-               GROUP BY month`,
-    },
-})
-```
-
-Behaviour:
-
-- `GET /revenue_by_months` runs the SQL, applies any client-supplied
-  `?filter`, `?sort`, and `?page` / `?limit` against the resulting columns, and
-  paginates the result.
-- `POST` / `PATCH` / `DELETE` are not mounted — query models are read-only.
-- The struct's `mfx:` tags still apply: `filterable` opens a column to
-  `?filter=`, `sortable` to `?sort=`, `hidden` and `writeonly` are honoured.
-- The model participates in OpenAPI generation, so the endpoint is documented
-  in `/openapi.json` like any other.
+- **The auto-generated aggregate endpoint.** Every model already exposes
+  `GET /{model}/aggregate` (see
+  [Auto-generated aggregate endpoint](#auto-generated-aggregate-endpoint)),
+  driven by [`ctx.Aggregate`](#structured-aggregation-ctxaggregate). Grouping,
+  counts, sums/averages, and the standard `?filter=` all apply, and it is in the
+  OpenAPI spec — reach for it first for counts/sums/averages over a registered
+  model.
+- **A custom action running raw SQL.** For a shape the aggregate endpoint cannot
+  express (a multi-table join, a window function), mount a
+  [custom action](actions.md) whose handler runs `ctx.RawQuery` and returns the
+  rows; you own filtering and pagination inside the handler. On Postgres, back an
+  expensive aggregate with a materialised view maintained in your migrations and
+  `SELECT` from it in the handler.
 
 ## When to use which
 
 | Need | Tool |
 |---|---|
 | One-off aggregate inside an action or middleware | `ctx.RawQuery` |
-| Aggregation that should be a stable, paginated, filterable endpoint | Query model |
+| Counts / sums / averages as a stable, filterable endpoint | `GET /{model}/aggregate` ([`ctx.Aggregate`](#structured-aggregation-ctxaggregate)) |
+| A bespoke read endpoint (joins, window functions) | custom [action](actions.md) + `ctx.RawQuery` |
 | Tree traversal (descendants, ancestors, depth limit) | `ctx.RecursiveQuery` |
 | Bulk mutation inside a single request | `ctx.RawExec` (inside a transaction) |
 | Per-row business logic across many rows | [Batch Operations & Sagas](batch-saga.md) |
 
-Query models are the better choice when an external consumer needs to call the
-endpoint repeatedly — the API surface is stable, filterable, documented, and
-auto-generated alongside the rest. Raw queries are the better choice for one-shot
-work inside an action.
-
 ## Performance notes
 
-- Query models do not cache; each request executes the SQL. For frequently-hit
-  aggregates, wrap with `response.Cache` (see
+- Raw queries do not cache; each request executes the SQL. For a frequently-hit
+  aggregate exposed through a custom action, wrap it with `response.Cache` (see
   [Response Middleware](../middleware-catalogue/response.md)) or maintain a summary
-  table.
-- The framework treats the SQL as a subquery; client filters become `WHERE`
-  clauses against the result columns. Avoid unbounded scans — add `WHERE` and
-  `LIMIT` clauses to the SQL itself when the underlying table is large.
-- For Postgres, a materialised view often beats a query model for expensive
-  aggregates. The query model can then `SELECT` from the materialised view.
+  table (the write-side [Maintained Rollups](rollups.md) are built for this).
+- Avoid unbounded scans — add `WHERE` and `LIMIT` clauses to any hand-written SQL
+  when the underlying table is large.
+- For Postgres, a materialised view often beats recomputing an expensive
+  aggregate per request; refresh it on a schedule and read it from the handler.

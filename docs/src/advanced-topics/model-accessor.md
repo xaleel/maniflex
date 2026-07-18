@@ -7,9 +7,12 @@ accessor is the in-process door for that work.
 
 `ctx.GetModel(name)` returns an object exposing the five standard CRUD
 operations bound to one registered model. Every call routes through the active
-transaction, respects per-model database overrides, and returns the same
-`map[string]any` shape the REST layer uses without the HTTP round-trip. The
-main difference is the interaction with middlewares, [more on that below](#relationship-to-pipeline-middleware).
+transaction, respects per-model database overrides, and returns
+`map[string]any` rows without the HTTP round-trip. These are the same underlying
+rows the REST layer reads, but keyed by DB column name and **not** run through
+response marshalling — so `hidden` / `writeonly` columns are present and the
+result is not the REST envelope shape. The main difference is the interaction
+with middlewares, [more on that below](#relationship-to-pipeline-middleware).
 
 ```go
 row, err := ctx.GetModel("User").Read(userID)
@@ -22,8 +25,9 @@ name := row["name"].(string)
 ## The `ModelAccessor` interface
 
 `ctx.GetModel(name)` yields a `*ModelAccessor`. All methods use
-`map[string]any`, keyed by JSON field name, matching the request body and
-response envelope.
+`map[string]any`, keyed by DB column name (each field's `mfx` DB name), not the
+JSON name — see [Relationship to pipeline middleware](#relationship-to-pipeline-middleware)
+below.
 
 | Method   | Signature                                                        | Returns                   |
 | -------- | ---------------------------------------------------------------- | ------------------------- |

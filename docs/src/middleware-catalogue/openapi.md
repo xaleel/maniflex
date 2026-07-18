@@ -24,6 +24,18 @@ server.Pipeline.OpenAPI.Generate.Register(
 )
 ```
 
+## `SetVersion`
+
+Overrides the spec's `info.version`, which is otherwise the framework default.
+Use it to surface your service's own release version in the published spec:
+
+```go
+server.Pipeline.OpenAPI.Generate.Register(
+    openapi.SetVersion("2.1.0"),
+    maniflex.After,
+)
+```
+
 ## `AddServer`
 
 Declares a server URL in `servers[]`. Repeat for multiple environments:
@@ -57,6 +69,42 @@ server.Pipeline.OpenAPI.Generate.Register(
 Pair with [`auth.JWTAuth`](auth.md#jwtauth) on the runtime side. For API keys,
 use `Type: "apiKey"` and set `In` and `Name`.
 
+## `AddTag`
+
+Appends a Tag Object to the spec. Tags render as collapsible groups in Swagger
+UI; maniflex already emits one tag per model, so use `AddTag` for cross-cutting
+or documentation-only groupings. A tag whose name already exists is not
+duplicated.
+
+```go
+server.Pipeline.OpenAPI.Generate.Register(
+    openapi.AddTag("Authentication", "Endpoints related to user authentication"),
+    maniflex.After,
+)
+```
+
+## `InjectRequestExample`
+
+Attaches an example request body to a specific operation so Swagger UI's "Try it
+out" pre-populates with realistic values. The operation is named by path and
+lower-case method:
+
+```go
+server.Pipeline.OpenAPI.Generate.Register(
+    openapi.InjectRequestExample(
+        openapi.OperationTarget{Path: "/posts", Method: "post"},
+        "Example post", map[string]any{
+            "title":  "Hello World",
+            "body":   "My first post.",
+            "status": "draft",
+        }),
+    maniflex.After,
+)
+```
+
+The example is only applied when the target operation and its request body exist
+in the generated spec; an unmatched target is a no-op.
+
 ## `AddExtension`
 
 A general-purpose escape hatch — receives the full `*maniflex.OpenAPISpec` and lets
@@ -65,11 +113,7 @@ you mutate any part of it:
 ```go
 server.Pipeline.OpenAPI.Generate.Register(
     openapi.AddExtension(func(spec *maniflex.OpenAPISpec) {
-        spec.Info.Contact = &maniflex.OASContact{
-            Name:  "API team",
-            Email: "api@example.com",
-        }
-        spec.Info.License = &maniflex.OASLicense{Name: "MIT"}
+        spec.Info.Description += "\n\nContact the API team at api@example.com."
     }),
     maniflex.After,
 )

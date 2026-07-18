@@ -262,7 +262,8 @@ type window struct {
 
 // RateLimit is an in-process token-bucket rate limiter keyed on the
 // authenticated user ID (or remote IP for unauthenticated requests).
-// For distributed rate limiting use ForceFilter with a Redis-backed counter.
+// For a limit shared across replicas, set RateLimitConfig.Backend to a
+// distributed counter (see middleware/db/redis for the Redis implementation).
 //
 //	// Limit writes to 60/minute globally
 //	server.Pipeline.DB.Register(

@@ -89,12 +89,12 @@ A few details follow from how the route is mounted (the `buildRouter` block in
 
 Static serving is for assets *you* ship with the app. It is unrelated to the
 file-upload feature, which stores user-submitted files and is wired up
-separately through `Config.FileStorage` and the `/files` endpoints. For
+separately through `Config.FilesConfig.Storage` and the `/files` endpoints. For
 user uploads see [File Fields & Uploads](files.md).
 
 | | Static files | File uploads |
 |---|---|---|
 | URL | `/static/*` | `/files/*` |
 | Source | a directory you commit and name in `StaticDir` | user `POST`s at runtime |
-| Configured by | `Config.Static*` | `Config.FileStorage` |
+| Configured by | `Config.Static*` | `Config.FilesConfig.Storage` |
 | Use for | app assets, admin pages | avatars, attachments |

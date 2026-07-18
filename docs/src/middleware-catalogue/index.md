@@ -6,16 +6,20 @@ audit logging, caching, CORS, and so on. Each one is an ordinary
 `maniflex.MiddlewareFunc` you register on the appropriate pipeline step, with the
 same scoping options as any other middleware.
 
-The packages live under `maniflex/middleware/`. Each one is its own Go module so a
-project pulls in only the dependencies it actually uses:
+The packages live under `maniflex/middleware/`. Most are part of the root module,
+so they need no extra `require` to use. Only the two with heavy third-party
+dependencies are broken out into their own Go modules — `middleware/db/redis`
+(the Redis rate-limit/cache backend) and `middleware/service/bcrypt` (password
+hashing) — so a project pulls those dependencies in only when it uses them:
 
 | Package | Step | What it ships |
 |---|---|---|
 | [`middleware/auth`](auth.md) | Auth | JWT, API key, role gates, public-read helpers |
 | [`middleware/body`](body.md) | Deserialize / Validate | body size limits, unknown-field stripping, type coercion |
+| `middleware/idempotency` | Deserialize | idempotency-key replay for safely retried `POST`s |
 | [`middleware/validate`](validate.md) | Validate | uniqueness, regex, cross-field rules, numeric precision, date ranges, conditional required |
 | [`middleware/workflow`](workflow.md) | Validate | state-machine transitions with role-gated guards |
-| [`middleware/service`](service.md) | Service / DB-After | password hashing, slugify, derived fields, event emission, webhooks, email |
+| [`middleware/service`](service.md) | Service / DB-After | password hashing, slugify, derived fields |
 | [`middleware/db`](db.md) | DB | tenancy, forced filters, rate limiting, audit log, cache invalidation |
 | [`middleware/response`](response.md) | Response | CORS, caching, transforms, redaction, envelopes, metrics |
 | [`middleware/openapi`](openapi.md) | OpenAPI.Generate | security schemes, servers, titles, custom extensions |
@@ -36,7 +40,7 @@ server.Pipeline.Auth.Register(
 )
 
 server.Pipeline.Service.Register(
-    service.HashField("password"),
+    service.HashField("password", svcbcrypt.Hasher()), // svcbcrypt = middleware/service/bcrypt
     maniflex.ForModel("User"),
 )
 ```
@@ -55,7 +59,8 @@ typical REST API is roughly:
 2. **Body** — `MaxBodySize` and `StripUnknownFields` shape input early.
 3. **Validate** — built-in tag rules plus `UniqueField` and friends.
 4. **Service** — `HashField`, `SetField`, `SlugifyField`, then any custom
-   business logic, then `Emit` / `Webhook` / `SendEmail` on the After side.
+   business logic, then the `maniflex/events` helpers (`events.Emit` /
+   `events.Webhook` / `events.SendEmail`) on the After side.
 5. **DB** — `Tenancy` or `ForceFilter` enforces row-level scoping; `AuditLog`
    and `Invalidate` run After.
 6. **Response** — `CORSHeaders`, `Cache`, `RedactField`, then `Logging` /

@@ -301,7 +301,7 @@ being a storage key, so on another type they would all be silently skipped.
 | `auto_delete:false` | keep the stored file when the record is hard-deleted or the field is replaced (default: delete it) |
 | `upload:presigned`  | mount `POST /{model}/{field}/upload-url` so the client uploads straight to storage                 |
 | `file_acl:private`  | (default) response carries the raw storage key                                                     |
-| `file_acl:signed`   | response replaces the key with a pre-signed URL (TTL: `Config.FileSignedURLTTL`, default 1h)       |
+| `file_acl:signed`   | response replaces the key with a pre-signed URL (TTL: `Config.FilesConfig.SignedURLTTL`, default 1h)       |
 | `file_acl:public`   | response replaces the key with a permanent / long-lived URL                                        |
 
 ```go
@@ -396,5 +396,4 @@ filtering/sorting behaviour.
 | `encrypted` `key:…`                                          | encryption            |
 | `scheduled;…`                                                | scheduled transitions |
 | `locale` `split` `resolve` `dynamic` `default_locale:…`      | localization          |
-| `locale` `split` `resolve` `dynamic` `default_locale:`       | localisation          |
 | `-`                                                          | exclude the field     |

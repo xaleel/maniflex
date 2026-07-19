@@ -959,9 +959,14 @@ func (a *ModelAccessor) Read(id string) (map[string]any, error) {
 // to the caller that made it. The stamp overwrites whatever the caller supplied
 // for those columns, which is what stops a caller placing a row in someone
 // else's scope — the same thing db.Tenancy does on the CRUD path.
-func (a *ModelAccessor) Create(data map[string]any) (map[string]any, error) {
+func (a *ModelAccessor) Create(data map[string]any, opts ...WriteOption) (map[string]any, error) {
 	if a.err != nil {
 		return nil, a.err
+	}
+	if !applyWriteOptions(opts).skipValidation {
+		if err := validateDataValues(a.meta, data); err != nil {
+			return nil, err
+		}
 	}
 	inject, err := a.scope.injectable()
 	if err != nil {
@@ -993,9 +998,14 @@ func (a *ModelAccessor) Create(data map[string]any) (map[string]any, error) {
 // Returns *maniflex.ErrConstraint on unique/check violations.
 // A scoped update of a record outside the scope returns ErrNotFound without
 // writing.
-func (a *ModelAccessor) Update(id string, data map[string]any) (map[string]any, error) {
+func (a *ModelAccessor) Update(id string, data map[string]any, opts ...WriteOption) (map[string]any, error) {
 	if a.err != nil {
 		return nil, a.err
+	}
+	if !applyWriteOptions(opts).skipValidation {
+		if err := validateDataValues(a.meta, data); err != nil {
+			return nil, err
+		}
 	}
 	if err := a.inScope(id); err != nil {
 		return nil, err

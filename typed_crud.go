@@ -284,7 +284,7 @@ func typedInScope(ctx *ServerContext, meta *ModelMeta, a DBAdapter, tx Tx, id st
 // overwriting whatever the caller set — a row created outside the scope would be
 // invisible to the caller that created it, and letting a caller choose the value
 // is exactly the placement the scope exists to prevent.
-func Create[T any](ctx *ServerContext, record *T) (*T, error) {
+func Create[T any](ctx *ServerContext, record *T, opts ...WriteOption) (*T, error) {
 	meta, a, tx, err := modelExec[T](ctx)
 	if err != nil {
 		return nil, err
@@ -294,7 +294,13 @@ func Create[T any](ctx *ServerContext, record *T) (*T, error) {
 	}
 	// Declared before the encryption branch so both write paths inherit it:
 	// recordToMap (inside encryptedWriteRecord) filters the map by this same set.
-	defer swapPresent(record, createPresent(meta, record))()
+	present := createPresent(meta, record)
+	if !applyWriteOptions(opts).skipValidation {
+		if err := validateRecordValues(meta, record, present); err != nil {
+			return nil, err
+		}
+	}
+	defer swapPresent(record, present)()
 	// Encrypted models write through the map bridge so mfx:"encrypted" fields are
 	// encrypted (and *_hmac companions written) instead of stored as plaintext by
 	// the struct fast-path. Unencrypted models keep the direct struct write.
@@ -326,13 +332,18 @@ func Create[T any](ctx *ServerContext, record *T) (*T, error) {
 // Not written: id, and any column the model marks mfx:"readonly" or
 // mfx:"immutable" — which includes the framework-managed created_at. See
 // updatablePresent. updated_at is still stamped by the adapter.
-func Update[T any](ctx *ServerContext, id string, record *T) (*T, error) {
+func Update[T any](ctx *ServerContext, id string, record *T, opts ...WriteOption) (*T, error) {
 	meta, a, tx, err := modelExec[T](ctx)
 	if err != nil {
 		return nil, err
 	}
 	var write any = record
 	present := updatablePresent(meta)
+	if !applyWriteOptions(opts).skipValidation {
+		if err := validateRecordValues(meta, record, present); err != nil {
+			return nil, err
+		}
+	}
 	if meta.HasEncryptedFields() {
 		if write, err = encryptedWriteRecord(ctx, meta, record); err != nil {
 			return nil, err

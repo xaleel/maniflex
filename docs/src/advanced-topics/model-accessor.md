@@ -135,9 +135,40 @@ exactly as above.
 
 The accessor talks directly to the database adapter (through the active
 transaction when one is set). It does **not** run the request pipeline. Response
-transforms, dynamic redaction, field-visibility rules, validation, and any other
-registered middleware never observe an accessor read or write — they operate on
+transforms, dynamic redaction, field-visibility rules, and any other registered
+middleware never observe an accessor read or write — they operate on
 `ctx.Response`/`ctx.Body`, which the accessor does not populate.
+
+The one exception is the model's own **value constraints**. `enum`, `min` and
+`max` are checked on accessor and typed writes just as they are on an HTTP
+request, and a violation returns an error before anything reaches the database:
+
+```go
+_, err := ctx.GetModel("Account").Create(map[string]any{"role": "superuser"})
+// err: maniflex: Account: field "role" must be one of: [user admin]
+```
+
+Pass `maniflex.SkipValidation()` where the violation is deliberate — backfilling
+rows that predate an enum, say:
+
+```go
+_, err := ctx.GetModel("Account").Create(legacyRow, maniflex.SkipValidation())
+```
+
+`readonly` and `immutable` are **not** applied here, deliberately. Those tags
+say a value may not come from a client, and the accessor is not a client —
+stamping such a column from a background job is much of why these APIs exist.
+The split is between data integrity, which is a bug whoever writes it, and
+access control, which depends on who is asking.
+
+> Before v0.2.5 no constraint was checked on these paths, so the same model
+> accepted a value in Go that it answered `422` for over HTTP.
+
+**This is not a substitute for validating untrusted input.** Value constraints
+are the model's own rules, not an authorization boundary: decoding a request
+body into a struct and handing it to `maniflex.Create` still writes whatever
+fields it contains, including `readonly` ones. Untrusted bodies belong on the
+HTTP path, or must be checked before they reach here.
 
 The practical consequence: an accessor returns the record **as stored**, before
 any response-layer shaping. Given a redacting transform on the Response stage —
@@ -213,10 +244,13 @@ instead.
 
 Columns the model marks `mfx:"readonly"` or `mfx:"immutable"` are **not** among
 them, and neither are `id`, `created_at` and `updated_at`. Those tags used to be
-enforced only by the Validate step, which no typed helper runs, so a caller
-building a fresh struct to change one field stamped the zero time over the row's
-real `created_at` and blanked every readonly column along with it. To write such
-a column deliberately, name it:
+enforced only by the Validate step, which the typed helpers do not run, so a
+caller building a fresh struct to change one field stamped the zero time over the
+row's real `created_at` and blanked every readonly column along with it. Note
+this is a guard against accidental blanking on a full-struct *update*, not an
+access rule: `maniflex.Create` writes readonly columns from the struct, and
+`ctx.GetModel(name).Update` writes whatever key you name. To write such a column
+deliberately, name it:
 
 ```go
 ctx.GetModel("User").Update(id, map[string]any{"origin": "import"})

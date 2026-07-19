@@ -343,13 +343,22 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 		case strings.HasPrefix(part, "cursor_field:"):
 			t.CursorField = strings.TrimPrefix(part, "cursor_field:")
 		case strings.HasPrefix(part, "file_acl:"):
+			// private needs a case of its own. It used to be produced by the
+			// default arm — the same arm that swallowed every typo — so the two
+			// were indistinguishable, and mfx:"file_acl:pubic" quietly became
+			// private (audit 13.10). Failing closed is the right direction but
+			// the wrong outcome: the author asked for signed or public URLs and
+			// got neither, and the response carries raw storage keys with no
+			// indication why.
 			switch FileACLMode(strings.TrimPrefix(part, "file_acl:")) {
+			case FileACLPrivate:
+				t.FileACL = FileACLPrivate
 			case FileACLSigned:
 				t.FileACL = FileACLSigned
 			case FileACLPublic:
 				t.FileACL = FileACLPublic
 			default:
-				t.FileACL = FileACLPrivate
+				t.MalformedOpts = append(t.MalformedOpts, part)
 			}
 		case strings.HasPrefix(part, "upload:"):
 			switch strings.TrimPrefix(part, "upload:") {

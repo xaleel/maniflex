@@ -1321,8 +1321,10 @@ func collectFields(
 		if len(tags.MalformedOpts) > 0 {
 			return fmt.Errorf(
 				"maniflex: model %q field %q has unusable mfx values %v — "+
-					"min:/max: take a number and enum: takes non-empty |-separated "+
-					"options; these parse as a constraint but enforce nothing",
+					"min:/max: take a number, enum: takes non-empty |-separated "+
+					"options, file_acl: takes private|signed|public; a value the "+
+					"parser cannot use leaves the option looking set and doing "+
+					"nothing, or quietly doing something else",
 				meta.Name, sf.Name, tags.MalformedOpts)
 		}
 

@@ -56,6 +56,11 @@ Tag sub-options:
 | `file_acl:signed` | response replaces the key with a pre-signed URL valid for `Config.FilesConfig.SignedURLTTL` (default 1h). Requires `FileStorage.URL()` |
 | `file_acl:public` | response replaces the key with a permanent / long-lived URL (e.g. S3 7-day max). Pair with public-read ACL on the bucket for true permanence |
 
+Those three are the whole set — anything else is a registration error naming the
+field. A typo used to be read as `private`, which looks like the safe direction
+and is not the safe outcome: the field was asked to serve signed or public URLs
+and served raw storage keys instead, with nothing to say why.
+
 `accept` matches the content type the client declared on the multipart part; when
 the part declares nothing (or the generic `application/octet-stream`), the type is
 sniffed from the first 512 bytes. A declared type is a client-supplied claim, so

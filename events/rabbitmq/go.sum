@@ -20,5 +20,7 @@ github.com/xaleel/maniflex v0.2.4 h1:FY6BJikc3ErhFL8G3Fn4ye4EVQplSHsH4LTg9sILYqQ
 github.com/xaleel/maniflex v0.2.4/go.mod h1:yWuHLsAX/jMhD6UpPrSzPy5jluvkJwNM6NugaQqt9Ao=
 github.com/xaleel/maniflex v0.2.5 h1:ISCqrbxKWfmV8nvq8KmCPHqleFR78PcMRfoW207Y808=
 github.com/xaleel/maniflex v0.2.5/go.mod h1:yWuHLsAX/jMhD6UpPrSzPy5jluvkJwNM6NugaQqt9Ao=
+github.com/xaleel/maniflex v0.2.6 h1:W0eVVY6ewWJqql5mIcboM4S7ZnC3HMgP1UuPMJagd98=
+github.com/xaleel/maniflex v0.2.6/go.mod h1:yWuHLsAX/jMhD6UpPrSzPy5jluvkJwNM6NugaQqt9Ao=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
 go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=

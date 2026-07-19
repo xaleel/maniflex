@@ -18,16 +18,25 @@ GET /invoices/export             → CSV (default)
 GET /invoices/export?format=xlsx → XLSX
 ```
 
-The endpoint reuses the full request pipeline — Auth, tenancy, soft-delete,
-and any other middleware registered on `ForOperation(maniflex.OpList)` should
-also list `OpExport`:
+The endpoint reuses the full request pipeline — Auth, tenancy, soft-delete —
+and middleware registered on `ForOperation(maniflex.OpList)` **covers the
+export too**. An export is a list in another format, so whatever decides which
+rows a caller may list decides which rows they may export:
 
 ```go
 server.Pipeline.Auth.Register(
     auth.JWTAuth(secret, auth.JWTOptions{}),
-    maniflex.ForOperation(maniflex.OpList, maniflex.OpExport),
+    maniflex.ForOperation(maniflex.OpList), // also covers OpExport
 )
 ```
+
+Naming `OpExport` as well is harmless but redundant. The implication runs one
+way only: `ForOperation(maniflex.OpExport)` means the export alone, which is
+what you want for export-specific middleware such as a rate limiter.
+
+> Before v0.2.5 this was not so — a middleware scoped to `OpList` did not run
+> for exports, so tenancy written that way scoped the list and let the export
+> return every tenant's rows.
 
 ## Query parameters
 

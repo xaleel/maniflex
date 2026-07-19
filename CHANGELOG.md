@@ -2,6 +2,7 @@
 
 ## v0.2.5
 
+- **Security:** `ForOperation(OpList)` now covers `OpExport`, and `ForOperation(OpRead)` covers `OpReadAttachment` and `OpReadHistory` — the routes that are the same read in another shape. Scoping written for the obvious operation silently missed the derived one: `db.Tenancy` on `OpList` scoped the list and let `GET /:model/export` return every tenant's rows. One-way — `ForOperation(OpExport)` still means export alone.
 - **Bugfix (breaking):** an explicit JSON `null` for a non-pointer field is now refused with `422` naming the field, instead of answering two ways for one request: sourced from the typed record it stored `""` with a `200`, sourced from the body map it carried the nil to a `NOT NULL` column and leaked the database's constraint error. Nullability is the Go type — `*T` gets a `NULL` column and still accepts `null`.
 
 ## v0.2.4 (2026-07-19)

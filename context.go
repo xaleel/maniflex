@@ -42,8 +42,10 @@ const (
 	// (FindByID) like a regular Read, then the Response step streams the
 	// referenced file instead of writing a JSON envelope.
 	//
-	// Middleware filtered with ForOperation(OpRead) does NOT match attachment
-	// requests; use ForOperation(OpRead, OpReadAttachment) to apply to both.
+	// Middleware filtered with ForOperation(OpRead) DOES match attachment
+	// requests: an attachment is a read of one record, so whatever decides who
+	// may read it decides this too (audit MS-8). The implication is one-way —
+	// ForOperation(OpReadAttachment) stays attachment-only.
 	OpReadAttachment Operation = "read_attachment"
 
 	// OpReadHistory identifies a request for GET /:model/:id/history — the
@@ -57,8 +59,12 @@ const (
 	// its history is fetched, and every auth, tenancy and force-filter middleware
 	// already registered ForModel(parent) governs it unchanged.
 	//
-	// Middleware filtered with ForOperation(OpRead) does NOT match history
-	// requests; use ForOperation(OpRead, OpReadHistory) to apply to both.
+	// Middleware filtered with ForOperation(OpRead) DOES match history requests
+	// (audit MS-8), and that is load-bearing rather than a convenience: the gate
+	// above reads the request's *forced* filters, so a tenancy middleware scoped
+	// to OpRead that never ran would leave the gate with nothing to scope by and
+	// hand every tenant's history to every caller. The implication is one-way —
+	// ForOperation(OpReadHistory) stays history-only.
 	OpReadHistory Operation = "read_history"
 
 	// OpAction identifies a request handled by a custom action registered via
@@ -88,8 +94,10 @@ const (
 	// step streams CSV (default) or XLSX (?format=xlsx) directly instead of
 	// emitting a JSON envelope.
 	//
-	// Middleware filtered with ForOperation(OpList) does NOT match exports;
-	// use ForOperation(OpList, OpExport) to cover both.
+	// Middleware filtered with ForOperation(OpList) DOES match exports: an
+	// export is a list in another format, so list-scoped auth and tenancy
+	// cover it (audit MS-8). The implication is one-way —
+	// ForOperation(OpExport) stays export-only.
 	OpExport Operation = "export"
 
 	// Minting a presigned upload for an mfx:"file,upload:presigned" field —

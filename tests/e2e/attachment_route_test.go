@@ -285,11 +285,21 @@ func TestAttachmentRoute(t *testing.T) {
 		srv.GETRaw("/documents/" + id + "/file").AssertStatus(http.StatusOK)
 		srv.GET("/documents/" + id).AssertStatus(http.StatusOK)
 
+		// ForOperation(OpReadAttachment) is still attachment-only: the
+		// implication runs from the base operation to the derived one, never
+		// back.
 		if attachmentHits != 1 {
 			t.Errorf("OpReadAttachment middleware: got %d hits want 1", attachmentHits)
 		}
-		if readHits != 1 {
-			t.Errorf("OpRead middleware: got %d hits want 1", readHits)
+		// ForOperation(OpRead) covers BOTH — the plain read and the attachment
+		// (audit MS-8). This assertion used to want 1, pinning the behaviour the
+		// audit found: an attachment is a read of one record, so middleware that
+		// decides who may read that record was silently skipped for it, and an
+		// app scoping tenancy with ForOperation(OpRead) left the attachment route
+		// unscoped. Wanting 2 is the fix, not a regression.
+		if readHits != 2 {
+			t.Errorf("OpRead middleware: got %d hits want 2 (the plain read and "+
+				"the attachment, which is a read of the same record)", readHits)
 		}
 	})
 }

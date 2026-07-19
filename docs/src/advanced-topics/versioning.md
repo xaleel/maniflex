@@ -165,9 +165,11 @@ would give you rather than a `403` that confirms it exists. Every auth,
 tenancy and force-filter middleware you already registered applies, with
 nothing new to configure.
 
-Middleware scoped with `ForOperation(OpRead)` does not match these
-requests. Use `ForOperation(maniflex.OpRead, maniflex.OpReadHistory)` to
-cover both.
+Middleware scoped with `ForOperation(OpRead)` **does** match these requests,
+and that is what makes the gate work: it reads the request's forced filters, so
+a tenancy middleware that never ran would leave it with nothing to scope by.
+The implication runs one way only — `ForOperation(maniflex.OpReadHistory)`
+means history requests alone.
 
 ### Deleted records
 

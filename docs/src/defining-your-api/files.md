@@ -619,10 +619,14 @@ no storage backend, the route is absent and requests return `404` from the
 router. (Unlike the standalone `/files` endpoints, per-model attachment routes
 do not require `MountEndpoints`.)
 
-Internally this is dispatched as a new operation, `maniflex.OpReadAttachment`.
-Middleware filtered by `ForOperation(OpRead)` does **not** apply to
-attachment requests; use `ForOperation(OpRead, OpReadAttachment)` to cover
-both.
+Internally this is dispatched as its own operation, `maniflex.OpReadAttachment`.
+Middleware filtered by `ForOperation(OpRead)` **does** apply to attachment
+requests: an attachment is a read of one record, so whatever decides who may
+read that record decides who may download its file. The implication runs one way
+only — `ForOperation(OpReadAttachment)` means attachment requests alone.
+
+> Before v0.2.5 an `OpRead`-scoped middleware did not run for attachments, so
+> tenancy written that way left the attachment route unscoped.
 
 ## Resumable downloads (HTTP `Range`)
 

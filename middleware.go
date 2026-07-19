@@ -132,12 +132,51 @@ func (m *registeredMiddleware) appliesTo(model string, op Operation) bool {
 	}
 	opMatch := len(m.cfg.Operations) == 0
 	for _, o := range m.cfg.Operations {
-		if o == op {
+		if o == op || operationCovers(o, op) {
 			opMatch = true
 			break
 		}
 	}
 	return modelMatch && opMatch
+}
+
+// derivedOperations maps a base read operation to the operations that are the
+// same read wearing different clothes. A registration naming the base also
+// applies to those (audit MS-8).
+//
+// The implication is one-way and that is the point: OpList covers OpExport, but
+// ForOperation(OpExport) still means export alone, so export-only middleware
+// stays export-only.
+//
+// Without this, scoping written for the obvious operation silently missed the
+// derived route. An app that registered db.Tenancy with ForOperation(OpList)
+// scoped its list and left GET /:model/export returning every tenant's rows;
+// one that scoped ForOperation(OpRead) left the per-record attachment and
+// history routes unscoped the same way. Each derived route runs the base
+// operation's query — export is a list, an attachment and a history read are
+// both reads of one record — so middleware that decides who may perform the base
+// read is answering the same question for them, and had no way to say so short
+// of naming every constant.
+//
+// Failing open is what makes this the right default rather than a convenience:
+// the cost of the alias is that a middleware runs somewhere its author did not
+// name, and the cost of its absence is a silent authorisation hole. A middleware
+// that genuinely must not run on a derived route can still exclude it by naming
+// the base operation it does want.
+var derivedOperations = map[Operation][]Operation{
+	OpList: {OpExport},
+	OpRead: {OpReadAttachment, OpReadHistory},
+}
+
+// operationCovers reports whether a registration naming `registered` should also
+// apply to a request running as `actual`.
+func operationCovers(registered, actual Operation) bool {
+	for _, d := range derivedOperations[registered] {
+		if d == actual {
+			return true
+		}
+	}
+	return false
 }
 
 // StepRegistry holds all middlewares registered for one pipeline step.

@@ -143,7 +143,52 @@ BelongsTo relations (`mfx:"relation"` on `ProductID` and `TagID`), so the
 framework can resolve which side of the join goes where.
 
 `?include=tags` on a product follows the junction and returns the related tags
-directly; the junction rows are hidden from the response.
+directly.
+
+### Junction payload (`_through`)
+
+A junction often carries data of its own — a role, a position, a date the link
+was made. When it does, each included row gains a `_through` object holding
+those columns:
+
+```jsonc
+{
+  "id": "tag-1",
+  "label": "blue",
+  "_through": { "position": 2, "linked_at": "2026-07-19T09:00:00Z" }
+}
+```
+
+The two foreign keys and the junction's `id` are excluded — they say nothing the
+response does not already carry.
+
+**The junction is a model like any other, and `_through` honours its tags.** A
+column marked `mfx:"hidden"` or `mfx:"writeonly"` is absent, exactly as it would
+be in a response from the junction's own endpoint:
+
+```go
+type ProductTag struct {
+    maniflex.BaseModel
+    ProductID string `json:"product_id" mfx:"required,filterable,relation"`
+    TagID     string `json:"tag_id"     mfx:"required,filterable,relation"`
+    Position  int    `json:"position"`                      // in _through
+    InvitedBy string `json:"invited_by" mfx:"hidden"`       // not in _through
+}
+```
+
+Two further exclusions are worth knowing:
+
+- **`mfx:"encrypted"` columns are omitted**, along with their `_hmac`
+  companions. The junction payload has no decryption pass, so the alternative
+  would be emitting ciphertext — no use to a client, and it discloses the
+  encryption envelope. Put a value you need to read on the related model, not on
+  the junction.
+- **Columns the junction model does not declare are omitted.** A column present
+  in the table but absent from the model is schema drift, and dumping it is what
+  used to make this a leak.
+
+> Before v0.2.5 `_through` was copied verbatim from the junction row, so hidden
+> and write-only columns surfaced on every include.
 
 ## Cascading deletes
 

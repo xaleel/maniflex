@@ -2019,7 +2019,7 @@ func populateIncludes(ctx context.Context, runner queryRunner, reg maniflex.Regi
 				return err
 			}
 		case maniflex.ManyToMany:
-			if err := populateManyToMany(ctx, runner, driver, relMeta, rel, rows, scope); err != nil {
+			if err := populateManyToMany(ctx, runner, driver, reg, relMeta, rel, rows, scope); err != nil {
 				return err
 			}
 		}
@@ -2122,7 +2122,54 @@ func populateHasMany(ctx context.Context, runner queryRunner, driver maniflex.Dr
 //
 // Junction payload columns (everything except the two FK columns and "id") are
 // surfaced as a "_through" sub-object on each included child.
-func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta, rows []map[string]any, scope []*maniflex.FilterExpr) error {
+// throughPayload builds the "_through" object exposed on each row of a
+// many-to-many include: the junction's own payload columns, minus the two
+// foreign keys and id, which say nothing the response does not already carry.
+//
+// It is built from the junction model's declared fields rather than from the
+// result row's columns (audit MS-10). Copying the row wholesale ignored the
+// junction's tags, so a mfx:"hidden" invited_by or a mfx:"writeonly" secret_note
+// surfaced verbatim on every include — the junction is a model like any other,
+// and its tags were the one thing the payload did not consult. Response-step
+// filtering does not catch it either: toJSONMap preserves underscore-prefixed
+// keys as framework-reserved and passes them through untouched.
+//
+// Excluded, in addition to the tags that hide a field from responses anywhere:
+//
+//   - mfx:"encrypted" columns and their _hmac companions. The junction payload
+//     has no decryption pass, so the alternative is emitting ciphertext, which
+//     exposes the envelope and is of no use to a client.
+//   - Columns the junction model does not declare. A column present in the table
+//     but absent from the model is drift; dumping it is how this leaked in the
+//     first place.
+//
+// A junction whose model cannot be resolved yields no payload at all. That is
+// the fail-closed direction: without the model there are no tags to honour, and
+// an unfiltered dump is exactly what this fixes.
+func throughPayload(junctionMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta,
+	jrow map[string]any,
+) map[string]any {
+	if junctionMeta == nil {
+		return nil
+	}
+	skip := map[string]bool{rel.ThroughLocalFK: true, rel.ThroughRemoteFK: true, "id": true}
+	out := make(map[string]any, len(junctionMeta.Fields))
+	for i := range junctionMeta.Fields {
+		f := &junctionMeta.Fields[i]
+		if skip[f.Tags.DBName] || f.Tags.Hidden || f.Tags.WriteOnly || f.Tags.Encrypted {
+			continue
+		}
+		if v, ok := jrow[f.Tags.DBName]; ok {
+			out[f.Tags.JSONName] = v
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex.DriverType, reg maniflex.RegistryAccessor, relMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta, rows []map[string]any, scope []*maniflex.FilterExpr) error {
 	if rel.ThroughTable == "" {
 		return nil // unresolved stub — skip silently
 	}
@@ -2181,7 +2228,12 @@ func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex
 	}
 	parentToRemotes := make(map[string][]pair)
 
-	fkCols := map[string]bool{rel.ThroughLocalFK: true, rel.ThroughRemoteFK: true, "id": true}
+	var junctionMeta *maniflex.ModelMeta
+	if reg != nil && rel.ThroughModel != "" {
+		if jm, ok := reg.Get(rel.ThroughModel); ok {
+			junctionMeta = jm
+		}
+	}
 	for _, jrow := range junctions {
 		pid := fmt.Sprint(jrow[rel.ThroughLocalFK])
 		rid := fmt.Sprint(jrow[rel.ThroughRemoteFK])
@@ -2189,15 +2241,10 @@ func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex
 			continue
 		}
 		remoteIDSet[rid] = true
-
-		// Extract _through payload (everything except the FK and id columns)
-		through := make(map[string]any)
-		for k, v := range jrow {
-			if !fkCols[k] {
-				through[k] = v
-			}
-		}
-		parentToRemotes[pid] = append(parentToRemotes[pid], pair{remoteID: rid, through: through})
+		parentToRemotes[pid] = append(parentToRemotes[pid], pair{
+			remoteID: rid,
+			through:  throughPayload(junctionMeta, rel, jrow),
+		})
 	}
 
 	// Step 3: batch-fetch related model rows

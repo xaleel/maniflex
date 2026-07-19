@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.5
+## v0.2.5 (2026-07-19)
 
 - **Fix:** `maniflex.Create`/`Update` and `ctx.GetModel(...).Create`/`Update` now enforce the model's `enum`, `min` and `max` constraints, which previously ran for HTTP callers only — the same model accepted in Go what it answered 422 for over HTTP. A violation errors before the adapter call; pass `maniflex.SkipValidation()` where deliberate. `readonly` stays writable here: it means "not from a client", and a job is not a client.
 - **Fix:** a GET→PATCH round-trip no longer corrupts `mfx:"locale"` fields. Split mode emits `name` plus `name_i18n`; the write side understood neither, so echoing a response back stored a JSON scalar the next read could not parse — 500 on the record and on the whole collection. `name_i18n` is now consumed on write and wins, a bare string folds into the effective locale, and a stored scalar resolves with a warning instead of erroring.

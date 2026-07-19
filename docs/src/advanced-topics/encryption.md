@@ -304,7 +304,7 @@ on the output of `Encrypt`.
 | `mfx:"encrypted"` + `unique` | HMAC companion column; standard unique violation as `409` |
 | `mfx:"encrypted"` + `filterable` / `sortable` | not allowed — a query that filters an encrypted field is rejected at query time with `ENCRYPTED_FIELD_NOT_FILTERABLE`; the tag itself is not stripped |
 | `mfx:"encrypted"` + soft-delete | independent — soft-delete operates on a separate marker column |
-| `mfx:"encrypted"` + versioning | encrypted fields are *excluded* from the `diff` only; the `snapshot` still stores the full row including ciphertext. Use `VersionedDiffOnly` to avoid persisting them in a snapshot |
+| `mfx:"encrypted"` + versioning | encrypted fields are excluded from **both** the `diff` and the `snapshot`, along with their `_hmac` companions. The history row is built from the decrypted record, so anything left in it would be stored as plaintext |
 | `mfx:"encrypted"` + audit log | the audit `Changes` diff does **not** exclude encrypted fields automatically; use `WithExcludeFields` to keep them out |
 | `mfx:"encrypted"` + relations | a relation FK is never encrypted; relation joins remain unaffected |
 

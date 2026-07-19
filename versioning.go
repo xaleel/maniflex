@@ -183,7 +183,7 @@ func appendHistoryRow(ctx *ServerContext, exec dbExec, source, histMeta *ModelMe
 
 	var snapshotPtr *string
 	if !source.Config.VersionedDiffOnly {
-		snap := chooseSnapshot(pre, post, ctx.Operation)
+		snap := redactSnapshot(source, chooseSnapshot(pre, post, ctx.Operation))
 		snapJSON, _ := json.Marshal(snap)
 		s := string(snapJSON)
 		snapshotPtr = &s
@@ -311,6 +311,30 @@ func chooseSnapshot(pre, post map[string]any, op Operation) map[string]any {
 		return pre
 	}
 	return post
+}
+
+// redactSnapshot drops the columns that must never be recorded in history from
+// a snapshot row, returning a copy so the caller's map (the live DBResult or
+// pre-image) is left alone.
+//
+// The snapshot is built from an already-decrypted row, so without this the
+// history table stores the plaintext of every encrypted column — and of hidden
+// and write-only fields such as password hashes — defeating the at-rest
+// guarantee for a table nobody thinks of as holding secrets. computeDiff has
+// always applied this exclusion set; the snapshot must apply the same one, or
+// the two halves of a history row disagree about what is a secret.
+func redactSnapshot(model *ModelMeta, snap map[string]any) map[string]any {
+	if snap == nil {
+		return nil
+	}
+	excluded := excludedDBNames(model)
+	out := make(map[string]any, len(snap))
+	for k, v := range snap {
+		if !excluded[k] {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 // excludedDBNames returns the set of DB column names that must not appear in

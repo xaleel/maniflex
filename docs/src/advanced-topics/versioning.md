@@ -77,13 +77,17 @@ query. The uniqueness guards against two concurrent writes computing the same
 
 Excluded by default:
 
-- The primary key (`id`).
+- The primary key (`id`) — from the diff only; the snapshot keeps it.
 - `hidden` fields.
 - `writeonly` fields.
 - `encrypted` fields and their `{field}_hmac` companions.
 
 This avoids leaking secrets into history while still capturing the
-business-meaningful changes.
+business-meaningful changes. **The same exclusions apply to the
+`snapshot`** — history rows are built from the decrypted row, so an
+encrypted column left in the snapshot would sit in the history table as
+plaintext and quietly undo the at-rest guarantee. If you need a value
+in history, don't mark it `encrypted`, `hidden` or `writeonly`.
 
 ## Snapshot vs. diff-only
 

@@ -2397,7 +2397,7 @@ func (s *defaultSteps) streamExportRows(ctx *ServerContext) {
 	}
 
 	model := ctx.Model
-	fields := exportColumns(model)
+	fields := exportColumns(model, ctx)
 
 	if err := streamExport(ctx.Writer, model.Name, format, fields, s.exportRowSeq(ctx, model, lr)); err != nil {
 		ctx.Logger().Warn("export write failed", "error", err.Error())
@@ -2585,9 +2585,15 @@ func (s *defaultSteps) marshalRecord(model *ModelMeta, record any, ctx *ServerCo
 		splitSuffix = ctx.SplitSuffix
 	}
 
+	redacted := ctx != nil && len(ctx.redactedFields) > 0
 	for i := range model.Fields {
 		f := &model.Fields[i]
 		if f.Tags.Hidden || f.Tags.WriteOnly {
+			continue
+		}
+		// Declared through ctx.RedactResponseField — a per-request decision the
+		// static tags cannot express (audit MS-11).
+		if redacted && ctx.IsFieldRedacted(f.Tags.JSONName) {
 			continue
 		}
 		v, ok := recordValue(sv, f, extra, present)
@@ -2696,8 +2702,14 @@ func (s *defaultSteps) toJSONMap(dbMap map[string]any, model *ModelMeta, ctx *Se
 		splitSuffix = ctx.SplitSuffix
 	}
 
+	redacted := ctx != nil && len(ctx.redactedFields) > 0
 	for _, f := range model.Fields {
 		if f.Tags.Hidden || f.Tags.WriteOnly {
+			continue
+		}
+		// Declared through ctx.RedactResponseField — a per-request decision the
+		// static tags cannot express (audit MS-11).
+		if redacted && ctx.IsFieldRedacted(f.Tags.JSONName) {
 			continue
 		}
 		v, ok := dbMap[f.Tags.DBName]

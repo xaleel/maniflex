@@ -237,12 +237,21 @@ func applyTransform(data any, field string, fn TransformFunc) any {
 //	)
 func RedactField(field string, shouldRedact func(ctx *maniflex.ServerContext) bool) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
+		// Declared before next(), not after: an export streams its bytes during
+		// next() and never builds a ctx.Response, so a middleware that only
+		// mutated the response masked the JSON and left the CSV in full (audit
+		// MS-11). The declaration is what the export honours.
+		if shouldRedact(ctx) {
+			ctx.RedactResponseField(field)
+		}
 		if err := next(); err != nil {
 			return err
 		}
 		if ctx.Response == nil || !shouldRedact(ctx) {
 			return nil
 		}
+		// Belt and braces: the marshalling paths already drop a declared field,
+		// but a Replace middleware may have built ctx.Response.Data by hand.
 		ctx.Response.Data = applyRedact(ctx.Response.Data, field)
 		return nil
 	}

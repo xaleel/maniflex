@@ -61,6 +61,12 @@ columns are excluded:
 | `writeonly` | no |
 | `file` | no (raw storage keys are useless to the recipient) |
 
+A field masked for this caller by a response middleware
+([`response.RedactField`](../middleware-catalogue/response.md#redactfield)) is
+excluded too — column and values both, so the export does not advertise a field
+it will not fill. Those tags are the same for every caller; a masking middleware
+decides per request, and the export honours both.
+
 Computed fields registered via `Server.AddComputedField` are **not** included
 yet — they require runtime evaluation per row and the export is read-only at
 the storage layer.

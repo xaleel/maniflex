@@ -38,13 +38,25 @@ func parseExportFormat(raw string) (ExportFormat, error) {
 // in declaration order. Hidden, writeonly, and file fields are excluded
 // (writeonly never appears in responses; file fields would dump opaque keys
 // the recipient can't use).
-func exportColumns(model *ModelMeta) []FieldMeta {
+//
+// Fields declared through ctx.RedactResponseField are excluded too (audit
+// MS-11). Those tags are static — the same for every caller — while a masking
+// middleware decides per request, and an export used to consult only the tags:
+// an app that hid salary from non-admins on the JSON path served it in full at
+// /employees/export. The column is dropped from the header as well as the rows,
+// so the export does not advertise a field it will not fill.
+//
+// ctx may be nil, which selects on the tags alone.
+func exportColumns(model *ModelMeta, ctx *ServerContext) []FieldMeta {
 	out := make([]FieldMeta, 0, len(model.Fields))
 	for _, f := range model.Fields {
 		if f.Tags.Hidden || f.Tags.WriteOnly {
 			continue
 		}
 		if f.Tags.File {
+			continue
+		}
+		if ctx != nil && ctx.IsFieldRedacted(f.Tags.JSONName) {
 			continue
 		}
 		out = append(out, f)

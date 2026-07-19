@@ -45,6 +45,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -148,6 +149,38 @@ func (c *ServerContext) InProcess() bool { return c.inProcess }
 // different type, or a validation rule that only makes sense against a body,
 // since a restore carries none (ctx.ParsedBody is empty).
 func (c *ServerContext) IsRestore() bool { return c.restore }
+
+// RedactResponseField declares that this response must not disclose the named
+// field, by its JSON name. It is additive and idempotent.
+//
+// Use it from a Response-step middleware that masks a field, and call it
+// **before** next(). Mutating ctx.Response after next() is not enough on its
+// own: an export streams its bytes during next() and never builds a Response,
+// so a middleware that only mutates one masks the JSON and silently leaves the
+// CSV in full (audit MS-11). Declaring the field lets the export honour the same
+// decision while still writing a row at a time.
+//
+//	server.Pipeline.Response.Register(
+//	    response.RedactField("salary", isNotAdmin),
+//	    maniflex.ForModel("Employee"),
+//	)
+//
+// response.RedactField already does this. Reach for it directly when you write
+// your own masking middleware — a middleware that only edits ctx.Response
+// applies to JSON responses alone.
+func (c *ServerContext) RedactResponseField(jsonNames ...string) {
+	for _, n := range jsonNames {
+		if n == "" || slices.Contains(c.redactedFields, n) {
+			continue
+		}
+		c.redactedFields = append(c.redactedFields, n)
+	}
+}
+
+// IsFieldRedacted reports whether RedactResponseField named this field.
+func (c *ServerContext) IsFieldRedacted(jsonName string) bool {
+	return slices.Contains(c.redactedFields, jsonName)
+}
 
 // executableOps lists the operations Execute can run: the five that go through
 // the full six-step pipeline and produce a value rather than a byte stream.

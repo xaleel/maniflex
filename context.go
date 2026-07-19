@@ -371,6 +371,18 @@ type ServerContext struct {
 	// Update. Read it from middleware with IsRestore.
 	restore bool
 
+	// redactedFields names response fields this request must not disclose,
+	// declared through RedactResponseField (audit MS-11).
+	//
+	// A Response-step middleware masks by mutating ctx.Response after next()
+	// returns. An export has no ctx.Response — it streams bytes and leaves it
+	// nil — so such a middleware silently masked nothing, and an app that hid
+	// salary from non-admins served it in full at /employees/export. The
+	// declaration is what bridges that: it is recorded *before* next(), so the
+	// export path, which runs inside next(), can honour it while still writing
+	// one row at a time.
+	redactedFields []string
+
 	// maxBody overrides the default JSON body size limit for this request; zero
 	// means maxBodyBytes. Set through SetMaxBodySize (body.MaxBodySize).
 	maxBody int64

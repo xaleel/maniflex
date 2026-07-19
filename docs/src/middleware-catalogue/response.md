@@ -96,6 +96,35 @@ which takes the same predicate on the Validate step. Note the two differ on
 purpose when the predicate fails: a redacted read returns the record without the
 field, while a refused write returns `403` rather than quietly dropping it.
 
+It covers **exports too**: `GET /:model/export` masks the same field for the
+same callers, and drops it from the CSV/XLSX header rather than emitting an
+empty column.
+
+#### Writing your own masking middleware
+
+A Response-step middleware normally masks by editing `ctx.Response` after
+`next()` returns. That is not enough on its own, because an export has no
+`ctx.Response` — it streams its bytes during `next()` — so a middleware that
+only edits one masks the JSON and leaves the export in full.
+
+Declare the field instead, **before** calling `next()`:
+
+```go
+func maskSalary(ctx *maniflex.ServerContext, next func() error) error {
+    if !ctx.HasRole("admin") {
+        ctx.RedactResponseField("salary") // before next(), so the export sees it
+    }
+    return next()
+}
+```
+
+The declaration is honoured by every read path — list, single read, create and
+update echoes, and both export formats. `response.RedactField` does this for
+you.
+
+> Before v0.2.5 a masking middleware applied to JSON responses only. An app
+> that hid a column from non-admins served it in full at `/:model/export`.
+
 ### `Envelope`
 
 Replaces the default `{"data": ...}` envelope with one of your own:

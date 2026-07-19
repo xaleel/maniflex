@@ -2,6 +2,7 @@ package maniflex
 
 import (
 	"fmt"
+	"runtime/debug"
 	"sync"
 )
 
@@ -30,7 +31,10 @@ const computedExportChunk = 500
 // `row` map keys are JSON field names.
 //
 // A non-nil error is logged and the field is omitted from that row — a
-// computed-field failure must not poison the whole record.
+// computed-field failure must not poison the whole record. A panic is contained
+// the same way: logged with its stack and the field omitted, never propagated
+// (audit MS-6). Rows of a list resolve in worker goroutines, where an escaping
+// panic would take the process down rather than the request.
 //
 // The callback receives the *ServerContext, so it can reach ctx.Tx,
 // ctx.GetModel and ctx.Auth. Note that rows of a list resolve concurrently
@@ -297,13 +301,7 @@ func applyComputedRows(ctx *ServerContext, model *ModelMeta, rows []map[string]a
 
 // applyBatchComputed resolves one batch field for every row in a single call.
 func applyBatchComputed(ctx *ServerContext, model *ModelMeta, c ComputedField, rows []map[string]any, records []any) {
-	var vals []any
-	var err error
-	if c.batchRecordFn != nil {
-		vals, err = c.batchRecordFn(ctx, records)
-	} else {
-		vals, err = c.batchFn(ctx, rows)
-	}
+	vals, err := callBatchComputed(ctx, model, c, rows, records)
 	if err != nil {
 		ctx.Logger().Warn("batch computed field failed",
 			"model", model.Name, "field", c.Name, "error", err.Error())
@@ -321,6 +319,31 @@ func applyBatchComputed(ctx *ServerContext, model *ModelMeta, c ComputedField, r
 	for i, v := range vals {
 		rows[i][c.Name] = v
 	}
+}
+
+// callBatchComputed invokes one batch callback and converts a panic into an
+// error, so the field is logged and omitted exactly as a returned error already
+// is (audit MS-6).
+//
+// A batch callback runs inline, so a panic here was never fatal the way the
+// per-row one was — PanicRecoverer caught it and answered 500. But that made
+// panic and error disagree within one function, and made the blast radius depend
+// on which registration form the field happened to use: converting a per-row
+// field to a batch one silently upgraded a bad row from an omitted column to a
+// failed request. Containment is the contract; this makes it hold either way.
+func callBatchComputed(ctx *ServerContext, model *ModelMeta, c ComputedField, rows []map[string]any, records []any) (vals []any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			vals, err = nil, fmt.Errorf("batch computed field %q panicked: %v", c.Name, r)
+			ctx.Logger().Error("batch computed field panicked",
+				"model", model.Name, "field", c.Name, "panic", fmt.Sprint(r),
+				"stack", string(debug.Stack()))
+		}
+	}()
+	if c.batchRecordFn != nil {
+		return c.batchRecordFn(ctx, records)
+	}
+	return c.batchFn(ctx, rows)
 }
 
 // applyPerRowComputed runs the per-row callbacks over rows, bounded to
@@ -355,13 +378,7 @@ func applyPerRowComputed(ctx *ServerContext, model *ModelMeta, fields []Computed
 // whole record.
 func computeRow(ctx *ServerContext, model *ModelMeta, fields []ComputedField, record any, row map[string]any) {
 	for _, c := range fields {
-		var v any
-		var err error
-		if c.recordFn != nil {
-			v, err = c.recordFn(ctx, record)
-		} else {
-			v, err = c.Fn(ctx, row)
-		}
+		v, err := callComputed(ctx, model, c, record, row)
 		if err != nil {
 			ctx.Logger().Warn("computed field failed",
 				"model", model.Name, "field", c.Name, "error", err.Error())
@@ -369,6 +386,38 @@ func computeRow(ctx *ServerContext, model *ModelMeta, fields []ComputedField, re
 		}
 		row[c.Name] = v
 	}
+}
+
+// callComputed invokes one per-row callback and converts a panic into an error,
+// so a panicking computed field costs its own field and nothing else (audit
+// MS-6).
+//
+// Without this a panic here was fatal to the process, not to the request:
+// applyPerRowComputed fans rows out across a worker pool, and PanicRecoverer
+// only wraps the request goroutine — nothing recovers a panic in a goroutine it
+// did not start. The behaviour split on row count, which is what hid it: a
+// single-row read runs this inline and recovered into a 500, while the same
+// field on a two-row page killed the server. An unchecked `row["id"].(string)`
+// on a null id was enough, from any client.
+//
+// The recover belongs here, around the callback, and not around the worker
+// body: a worker unwinding out of its receive loop would leave the sender
+// blocked on a channel no one reads, trading a crash for a hang. Recovering per
+// callback also matches the error path's `continue` — one bad field does not
+// cost the row its other computed fields.
+func callComputed(ctx *ServerContext, model *ModelMeta, c ComputedField, record any, row map[string]any) (v any, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("computed field %q panicked: %v", c.Name, r)
+			ctx.Logger().Error("computed field panicked",
+				"model", model.Name, "field", c.Name, "panic", fmt.Sprint(r),
+				"stack", string(debug.Stack()))
+		}
+	}()
+	if c.recordFn != nil {
+		return c.recordFn(ctx, record)
+	}
+	return c.Fn(ctx, row)
 }
 
 // recordAt returns the record aligned to row index i, or nil when the caller

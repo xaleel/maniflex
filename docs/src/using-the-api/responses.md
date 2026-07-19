@@ -133,6 +133,12 @@ Computed fields:
 - **Tolerate errors per-row** — a non-nil error from the function is
   logged and the field is omitted from that row; the rest of the response
   is unaffected.
+- **Tolerate a panic the same way** — a panicking callback is logged
+  (with its stack, at `ERROR`) and its field omitted, exactly as a
+  returned error is. It costs that one field on that one row: the record
+  is still returned and the model's other computed fields still resolve.
+  This holds for batch callbacks too, so converting a per-row field to a
+  batch one does not change what a bad row costs.
 - **Run on every read path** that goes through the default Response step,
   including the create and update echoes.
 - **Appear in the OpenAPI spec** as read-only properties of the model's

@@ -18,8 +18,25 @@ func (c *ServerContext) SetField(jsonName string, value any) {
 	if c.ParsedBody == nil {
 		c.ParsedBody = NewRequestBody(nil)
 	}
+	// Remember that the server put this here, not the client. readonly and
+	// immutable mean "not from a client" — a middleware stamping a tenant or an
+	// owner is not a client — so the Validate step must not strip it back out.
+	// Only middleware running before Validate could be affected, which until
+	// ProvidesScope() hoisted scope providers was a narrow set.
+	if c.serverSet == nil {
+		c.serverSet = make(map[string]struct{}, 2)
+	}
+	c.serverSet[jsonName] = struct{}{}
+
 	c.ParsedBody.set(jsonName, value)
 	c.syncRecordField(jsonName, value)
+}
+
+// ServerSetField reports whether jsonName was written by SetField — that is, by
+// the server rather than parsed from the request body.
+func (c *ServerContext) ServerSetField(jsonName string) bool {
+	_, ok := c.serverSet[jsonName]
+	return ok
 }
 
 // Field reads a request-body field by its JSON name. ParsedBody is the

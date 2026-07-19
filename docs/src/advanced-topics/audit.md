@@ -106,6 +106,11 @@ With `WithChanges()`, `Changes` is populated as:
 Fields that didn't change between pre-image and post-image are omitted.
 Fields excluded from the diff (see below) are also omitted.
 
+The pre-image is read through `ctx.ResolveResourceID()`, so a scoped `Singleton`
+diffs against the caller's own row rather than against nothing. When that row has
+not been provisioned yet, the update that provisions it is diffed as a create —
+`{from: null, to: value}` — which is what it is.
+
 ## Excluding fields from the diff
 
 `WithExcludeFields("password", "api_key", "session_token")` keeps named

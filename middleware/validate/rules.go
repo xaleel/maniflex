@@ -69,9 +69,15 @@ func UniqueField(db DBQuerier, driver maniflex.DriverType, field string) manifle
 		pb := sqlcore.NewPlaceholderBuilder(driver)
 		valPH := pb.Add(val)
 
+		// ResolveResourceID, not ctx.ResourceID: a Singleton has no {id} in the
+		// URL, and for a scoped one the field still holds the SingletonID
+		// placeholder here. Excluding by it excluded nothing, so the row matched
+		// its own value and PATCH answered "already taken" against itself
+		// (audit 13.12). Resolving needs the scope, which is why the middleware
+		// that establishes it must be registered maniflex.ProvidesScope().
 		var query string
-		if ctx.Operation == maniflex.OpUpdate && ctx.ResourceID != "" {
-			idPH := pb.Add(ctx.ResourceID)
+		if id := ctx.ResolveResourceID(); ctx.Operation == maniflex.OpUpdate && id != "" {
+			idPH := pb.Add(id)
 			query = fmt.Sprintf("SELECT COUNT(*) FROM %s WHERE %s = %s AND %s != %s",
 				sqlcore.Quote(ctx.Model.TableName),
 				sqlcore.Quote(dbCol), valPH,

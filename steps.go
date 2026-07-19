@@ -433,14 +433,19 @@ func (s *defaultSteps) validate(ctx *ServerContext, next func() error) error {
 			continue
 		}
 
-		// Readonly fields are never accepted from clients.
-		if field.Tags.Readonly {
+		// Readonly fields are never accepted from clients — but a value the
+		// server stamped is not from a client. Without this a middleware running
+		// before Validate (db.Tenancy hoisted with ProvidesScope, an auth
+		// middleware setting an owner column) had its injection stripped, and the
+		// row was written with the field empty: invisible to the tenant that
+		// created it, and visible to anyone whose scope is also empty.
+		if field.Tags.Readonly && !ctx.ServerSetField(jn) {
 			ctx.DeleteField(jn)
 			continue
 		}
 
 		// Immutable fields may be set on create but not changed on update.
-		if field.Tags.Immutable && ctx.Operation == OpUpdate {
+		if field.Tags.Immutable && ctx.Operation == OpUpdate && !ctx.ServerSetField(jn) {
 			ctx.DeleteField(jn)
 			continue
 		}
@@ -1454,7 +1459,17 @@ func (s *defaultSteps) ensureScopedSingletonRow(ctx *ServerContext, exec dbExec,
 func (s *defaultSteps) findScopedSingleton(ctx *ServerContext, exec dbExec,
 	model *ModelMeta, forced []*FilterExpr,
 ) (string, error) {
-	rows, _, err := exec.FindMany(ctx.Ctx, model, &QueryParams{Page: 1, Limit: 1, Filters: forced})
+	return findScopedSingletonID(ctx.Ctx, exec, model, forced)
+}
+
+// findScopedSingletonID reads the id of the row this scope's singleton lives in,
+// returning "" when it has not been provisioned yet. Read-only: provisioning is
+// ensureScopedSingletonRow's job, and ServerContext.ResolveResourceID shares
+// this lookup precisely because it must not acquire that side effect.
+func findScopedSingletonID(c context.Context, exec dbExec,
+	model *ModelMeta, forced []*FilterExpr,
+) (string, error) {
+	rows, _, err := exec.FindMany(c, model, &QueryParams{Page: 1, Limit: 1, Filters: forced})
 	if err != nil {
 		return "", err
 	}
@@ -1462,6 +1477,39 @@ func (s *defaultSteps) findScopedSingleton(ctx *ServerContext, exec dbExec,
 		return "", nil
 	}
 	return singletonRecordID(model, rows[0]), nil
+}
+
+// ResolveResourceID returns the id of the record this request addresses.
+//
+// Almost always that is ctx.ResourceID, read straight from the URL. The
+// exception is a Singleton, which has no {id} to read: the handler pins
+// ResourceID to the SingletonID placeholder, and for a *scoped* singleton the DB
+// step later swaps in the caller's real row id, since one fixed value cannot
+// name one row per scope. Middleware at the DB pipeline's Before position runs
+// ahead of that swap and therefore sees the placeholder — which addresses no
+// row, so a read through it silently returns nothing (audit 13.9).
+//
+// Returns "" when a scoped singleton's row does not exist yet. That is the
+// honest answer — there is no record to address — and callers should treat it
+// the same way they treat a create, which is what the request is about to
+// become. Never provisions the row: resolving must stay read-only.
+func (c *ServerContext) ResolveResourceID() string {
+	if c.Model == nil || !c.Model.Config.Singleton || c.ResourceID != SingletonID {
+		return c.ResourceID
+	}
+	var forced []*FilterExpr
+	if c.Query != nil {
+		forced = forcedFilters(c.Query.Filters)
+	}
+	if len(forced) == 0 {
+		return c.ResourceID // unscoped: the placeholder *is* the row's id
+	}
+	exec := dbExec{adapter: c.Model.ResolveAdapter(c.adapter), tx: c.Tx}
+	id, err := findScopedSingletonID(c.Ctx, exec, c.Model, forced)
+	if err != nil {
+		return ""
+	}
+	return id
 }
 
 // singletonRecordID reads a record's primary key, whether the adapter handed back

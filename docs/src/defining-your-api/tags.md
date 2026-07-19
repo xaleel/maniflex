@@ -124,6 +124,11 @@ These govern whether a field can be set by a client, and when.
 `BaseModel`'s `created_at` and `updated_at` are `readonly`. Use `immutable` for
 values that are set once and must not change afterwards, such as an owner ID.
 
+Both mean "not from a client". A value the *server* stamps via `ctx.SetField` —
+`db.Tenancy` writing a tenant column, an auth middleware writing an owner — is
+kept, even on a `readonly` or `immutable` field. Only values parsed from the
+request body are stripped.
+
 ```go
 Email   string `json:"email"    mfx:"required,immutable"`
 ApiKey  string `json:"api_key"  mfx:"readonly"`

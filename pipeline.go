@@ -168,6 +168,7 @@ func (p *Pipeline) chainFor(model string, op Operation) MiddlewareFunc {
 	fn := buildChain([]MiddlewareFunc{
 		p.Auth.build(model, op),
 		p.Deserialize.build(model, op),
+		p.scopeChain(model, op),
 		p.Validate.build(model, op),
 		p.Service.build(model, op),
 		p.DB.build(model, op),
@@ -178,6 +179,28 @@ func (p *Pipeline) chainFor(model string, op Operation) MiddlewareFunc {
 		p.chains.Store(k, fn)
 	}
 	return fn
+}
+
+// scopeChain composes every ProvidesScope middleware, from all six steps, into
+// the segment that runs between Deserialize and Validate.
+//
+// It sits there because a scope is an input to the whole rest of the request,
+// not just to the query: it needs ctx.Query, which Deserialize creates, and
+// everything downstream — Validate, Service, the DB step's own singleton
+// resolution — can then ask which rows the caller can see. Registering scope on
+// the DB step and reading it earlier is what audit 13.9 and 13.12 both were.
+//
+// Collected across all steps rather than only DB so that where a scope provider
+// is registered stays a matter of taste, as it is for every other middleware.
+func (p *Pipeline) scopeChain(model string, op Operation) MiddlewareFunc {
+	var chain []namedFn
+	for _, s := range p.steps() {
+		chain = append(chain, s.scopeMiddlewares(model, op)...)
+	}
+	if len(chain) == 0 {
+		return func(_ *ServerContext, next func() error) error { return next() }
+	}
+	return buildNamedChain(chain, nil)
 }
 
 // steps returns the six core step registries in execution order. Used by

@@ -271,6 +271,12 @@ type ServerContext struct {
 	// means every DB path behaves exactly as it always has.
 	actionScope *ActionScope
 
+	// serverSet names the body fields written by SetField — stamped by the
+	// server rather than parsed from the request. The Validate step consults it
+	// so a readonly or immutable field a middleware injected survives the strip
+	// that exists to keep clients out of it. See SetField.
+	serverSet map[string]struct{}
+
 	// inProcess marks a request Server.Execute raised rather than one a client
 	// sent. Read it through InProcess(); it is unexported so that only Execute can
 	// set it — a middleware, and therefore anything a client can reach, cannot

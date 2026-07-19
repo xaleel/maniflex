@@ -37,6 +37,37 @@ Set by the handler before Auth runs; safe to read in any step.
 | `RequestID` | chi's request ID, echoed in `X-Request-Id` |
 | `TraceID` | the W3C `traceparent` header, when present |
 
+A `Singleton` has no `{id}` to read, so `ResourceID` is pinned to the
+`SingletonID` placeholder. For an *unscoped* singleton that placeholder is the
+row's real id. For a **scoped** one it is not — there is one row per scope, and
+the DB step swaps in the caller's real id once the forced filters are known.
+
+Middleware running before that swap — anything at the DB pipeline's `Before`
+position — therefore sees a value that addresses no row. Call
+`ctx.ResolveResourceID()` instead of reading the field directly when you need an
+id you can query with:
+
+```go
+id := ctx.ResolveResourceID() // "" if the scoped row is not provisioned yet
+```
+
+It returns `ctx.ResourceID` unchanged for every non-singleton request, and never
+provisions a row.
+
+For it to resolve anything, the scope must already be established — register the
+scope middleware with `maniflex.ProvidesScope()`:
+
+```go
+server.Pipeline.DB.Register(
+    db.Tenancy("org_id", tenantFromAuth),
+    maniflex.ProvidesScope(),
+)
+```
+
+That hoists it to run right after Deserialize instead of at the DB step, so
+Validate, Service and the DB step all see the same scope. Without it the scope
+still applies to the query, but nothing before the DB step can ask what it is.
+
 ## Step outputs
 
 Populated in order by the pipeline.

@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.0
+
+- **Feature:** `maniflex.ProvidesScope()` marks a scope-establishing middleware (`db.Tenancy`, `db.ForceFilter`, `db.ForceFilterVia`) so it is hoisted out of its step and run right after Deserialize. Scope was conventionally registered on the DB step, which is after Validate, so nothing earlier could ask which rows the caller can see — a scoped `Singleton`'s row id was unknown during validation and `validate.UniqueField` reported the row as conflicting with itself, refusing every PATCH with `422`. Opt-in: the framework cannot tell a scope provider from any other middleware.
+- **Bugfix:** `readonly` and `immutable` no longer strip a value the *server* stamped via `ctx.SetField` — they mean "not from a client", and a middleware injecting a tenant or owner column is not a client. Previously any such middleware running before Validate had its write silently discarded, so the row was stored with the column empty: invisible to the tenant that created it, and visible to every caller whose scope was also empty.
+- **Bugfix:** `db.AuditLog(db.WithChanges())` now diffs a scoped `Singleton` against the caller's own row. A singleton has no `{id}` in the URL, so `ctx.ResourceID` holds the `SingletonID` placeholder until the DB step swaps in the real per-scope id — and the audit pre-fetch runs before that, so it read nothing and reported every field of the result as newly set, an edit the caller never made. New `ctx.ResolveResourceID()` performs the lookup read-only; it returns `ctx.ResourceID` unchanged for every other request.
+
 ## v0.2.6 (2026-07-19)
 
 - **Security:** `ctx.Aggregate` now validates `SortExpr.Direction` against asc/desc instead of concatenating it into the `ORDER BY`. The column side was already checked against the aggregate aliases; the direction was not, so a developer passing user input as `Direction` had an injection point. The HTTP endpoint was never affected — it constrains the value already.

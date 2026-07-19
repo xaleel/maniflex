@@ -39,6 +39,11 @@ type MiddlewareConfig struct {
 	// RequiredFields names the model fields this middleware acts on, declared
 	// with RequiresField. Checked at startup; empty means "declares nothing".
 	RequiredFields []string
+
+	// ProvidesScope marks this middleware as one that establishes the request's
+	// row scope, declared with ProvidesScope. Such middleware is hoisted out of
+	// its own step and run immediately after Deserialize — see that option.
+	ProvidesScope bool
 }
 
 // MiddlewareOption is a functional option applied to a MiddlewareConfig.
@@ -63,6 +68,37 @@ func ForOperation(ops ...Operation) MiddlewareOption {
 //	pipeline.Response.Register(addHeaders, maniflex.AtPosition(maniflex.After))
 func AtPosition(p Position) MiddlewareOption {
 	return func(c *MiddlewareConfig) { c.Position = p }
+}
+
+// ProvidesScope declares that this middleware establishes the request's row
+// scope — it appends forced filters, as db.Tenancy, db.ForceFilter and
+// db.ForceFilterVia do. Declaring it hoists the middleware out of the step it is
+// registered on and runs it immediately after Deserialize, ahead of Validate.
+//
+//	server.Pipeline.DB.Register(
+//	    db.Tenancy("org_id", tenantFromAuth),
+//	    maniflex.ProvidesScope(),
+//	)
+//
+// Scope is conventionally registered on the DB step, which is late: a scope is
+// an input to almost everything that runs before the write, not just to the
+// query. Anything earlier in the chain that needs to know which rows the caller
+// can see therefore could not ask. The sharpest case is a scoped Singleton,
+// whose row id is not known until its scope is — so validate.UniqueField
+// excluded the record under edit by a placeholder that matched nothing, and the
+// row collided with itself (audit 13.12). auth.ABAC, the auth ownership checks
+// and the workflow transition guard read the record by the same placeholder.
+//
+// The middleware itself does not change. Hoisting only moves when it runs, and
+// forced-filter middleware is written to be movable: it needs ctx.Query, which
+// Deserialize creates, and nothing the later steps produce.
+//
+// It is opt-in rather than inferred because the framework cannot tell a scope
+// provider from any other middleware that happens to touch filters, and running
+// the wrong one early is a behaviour change nobody asked for. An operation that
+// skips the step the middleware is registered on still skips it when hoisted.
+func ProvidesScope() MiddlewareOption {
+	return func(c *MiddlewareConfig) { c.ProvidesScope = true }
 }
 
 // WithName sets name for middleware for debug purposes
@@ -294,6 +330,9 @@ func (s *StepRegistry) compose(model string, op Operation) MiddlewareFunc {
 
 	for _, m := range s.middlewares {
 		nfn := namedFn{step: s.displayName, name: m.cfg.Name, fn: m.fn}
+		if m.cfg.ProvidesScope {
+			continue // hoisted ahead of Validate by Pipeline.scopeChain
+		}
 		if !m.appliesTo(model, op) {
 			skipped = append(skipped, nfn)
 			continue
@@ -312,6 +351,25 @@ func (s *StepRegistry) compose(model string, op Operation) MiddlewareFunc {
 	core := namedFn{step: s.displayName, name: coreName, fn: coreFn}
 	chain := append(append(before, core), after...)
 	return buildNamedChain(chain, skipped)
+}
+
+// scopeMiddlewares returns this step's ProvidesScope registrations that apply to
+// the given model+operation, in registration order. compose skips these, so each
+// runs exactly once — in the hoisted position, not the step's own chain.
+//
+// An operation that skips this step skips its scope middleware too: hoisting
+// changes when a middleware runs, never whether it does.
+func (s *StepRegistry) scopeMiddlewares(model string, op Operation) []namedFn {
+	if opSkipsStep(op, s.name) {
+		return nil
+	}
+	var out []namedFn
+	for _, m := range s.middlewares {
+		if m.cfg.ProvidesScope && m.appliesTo(model, op) {
+			out = append(out, namedFn{step: s.displayName + "→Scope", name: m.cfg.Name, fn: m.fn})
+		}
+	}
+	return out
 }
 
 // buildNamedChain composes a slice of namedFns into a single MiddlewareFunc.

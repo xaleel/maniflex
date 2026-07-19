@@ -40,7 +40,15 @@ type ForceFilterFunc func(ctx *maniflex.ServerContext) any
 //	        if ctx.Auth != nil { return ctx.Auth.UserID }
 //	        return ""
 //	    }),
+//	    maniflex.ProvidesScope(),
 //	)
+//
+// Add maniflex.ProvidesScope() so the filter is in place before Validate runs,
+// not just before the DB step. Without it the scope still applies to the query,
+// but anything earlier in the chain that needs to know which rows the caller can
+// see cannot ask — which for a scoped Singleton means its row id is unknown
+// during validation, and validate.UniqueField reports the row as conflicting
+// with itself (audit 13.12).
 func ForceFilter(field string, fn ForceFilterFunc) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
 		val := fn(ctx)
@@ -540,10 +548,14 @@ func auditPreFetch(ctx *maniflex.ServerContext, trackChanges bool) map[string]an
 	if ctx.Operation != maniflex.OpUpdate && ctx.Operation != maniflex.OpDelete {
 		return nil
 	}
-	if ctx.ResourceID == "" {
+	// Not ctx.ResourceID: for a scoped Singleton that is still the SingletonID
+	// placeholder at this point in the pipeline, and reading through it misses,
+	// leaving every field of the result looking newly set (audit 13.9).
+	id := ctx.ResolveResourceID()
+	if id == "" {
 		return nil
 	}
-	before, _ := ctx.GetModel(ctx.Model.Name).Read(ctx.ResourceID)
+	before, _ := ctx.GetModel(ctx.Model.Name).Read(id)
 	return before
 }
 

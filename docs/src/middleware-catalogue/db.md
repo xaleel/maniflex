@@ -17,6 +17,7 @@ server.Pipeline.DB.Register(
     db.ForceFilter("org_id", func(ctx *maniflex.ServerContext) any {
         return ctx.Auth.Claims["org_id"]
     }),
+    maniflex.ProvidesScope(),
 )
 ```
 
@@ -44,6 +45,38 @@ and have it reach the query; a non-forced one set that early is dropped. The DB
 step remains the idiomatic home for scoping (`ForceFilter`, `Tenancy`), and is
 required when the scope must also cover writes end-to-end within one transaction.
 
+### `ProvidesScope` — running the scope before Validate
+
+Registering a scoper on the DB step puts it *after* Validate. The scope reaches
+the query, but nothing earlier in the chain can ask what it is. Declare
+`maniflex.ProvidesScope()` to hoist it to run right after Deserialize instead:
+
+```go
+server.Pipeline.DB.Register(
+    db.Tenancy("org_id", tenantFromAuth),
+    maniflex.ProvidesScope(),          // ← hoists it ahead of Validate
+)
+```
+
+Add it to every `ForceFilter`, `ForceFilterVia` and `Tenancy` registration unless
+you have a reason not to. It changes *when* the middleware runs, never what it
+does: the same filter is appended, the same rows are scoped, and an operation
+that skips the DB step still skips it. Hoisted middleware runs exactly once — it
+is removed from its own step, not duplicated.
+
+**It is opt-in, and forgetting it fails quietly.** The framework cannot tell a
+scope provider from any other middleware, so it will not infer this, and there is
+no startup error for a registration that omits it. What you get instead is a
+scope that works for the query and is invisible to everything before the write.
+The sharpest symptom is on a scoped `Singleton`, whose row id is not known until
+its scope is: `validate.UniqueField` then excludes the record under edit by a
+placeholder that matches nothing, the row collides with itself, and every `PATCH`
+is refused with `422 "<field> is already taken"` (audit 13.12).
+
+Anything that needs the record a request addresses should ask
+`ctx.ResolveResourceID()` rather than reading `ctx.ResourceID` directly — see
+[the context reference](../the-request-pipeline/context.md).
+
 Use the `maniflex.Op*` constants for `Operator`. It's a bare string type, and a
 hand-built filter is never parsed — only filters arriving over HTTP are — so
 `Operator: "equals"` compiles and boots, and until v0.2.3 it produced a scope that
@@ -67,6 +100,7 @@ server.Pipeline.DB.Register(
         return ctx.Auth.Claims["owner_id"]
     }),
     maniflex.ForModel("DamagedItem"),
+    maniflex.ProvidesScope(),
 )
 ```
 
@@ -124,6 +158,7 @@ server.Pipeline.DB.Register(
     db.Tenancy("org_id", func(ctx *maniflex.ServerContext) string {
         return ctx.Auth.Claims["org_id"].(string)
     }),
+    maniflex.ProvidesScope(),
 )
 ```
 
@@ -133,6 +168,14 @@ on updates matters twice over: it stamps the caller's tenant onto whatever row
 the update reaches, so an update that reached the wrong row would not merely
 overwrite it — it would move it into the caller's tenant and leave the owner
 unable to see it at all.
+
+That stamp is written with `ctx.SetField`, which marks the field as set by the
+server. A tenant column is normally `readonly` — a client must not choose its own
+tenant — and `readonly` means *not from a client*, so the Validate step keeps a
+value the server stamped and strips only one that arrived in the request body.
+Without that distinction a hoisted `Tenancy` would have its stamp discarded and
+write the row with an empty tenant: invisible to the tenant that created it, and
+visible to every caller whose scope is also empty.
 
 ### Scoping Actions: `TenancyAction` / `ForceFilterAction`
 
@@ -399,3 +442,8 @@ Row-level scopers (`ForceFilter`, `ForceFilterVia`, `Tenancy`) must run **Before
 the default DB step — the default position — so the filter is in place when the
 SELECT or UPDATE runs. Post-write hooks must run **After**, so they observe the result.
 The package's defaults follow this; only change them if you know why.
+
+`Before` is the latest a scoper can run, not the earliest it should. Pair it with
+[`maniflex.ProvidesScope()`](#providesscope--running-the-scope-before-validate)
+to hoist the scoper ahead of the Validate step, so the steps between Deserialize
+and the write see the same scope the query does.

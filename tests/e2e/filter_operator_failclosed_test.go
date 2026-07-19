@@ -101,10 +101,15 @@ func TestGoodFilterOperator_StillServes(t *testing.T) {
 		},
 	})
 	asA := map[string]string{"X-Org": "tenant-a"}
+	asOtherOrg := map[string]string{"X-Org": "tenant-b"}
 	srv.MustID(srv.POST("/articles",
-		map[string]any{"title": "a", "body": "B", "status": "draft", "org_id": "tenant-a"}, asA))
+		map[string]any{"title": "a", "body": "B", "status": "draft"}, asA))
+	// The out-of-scope row is created *as* tenant-b. It used to be created as
+	// tenant-a with org_id spelled "tenant-b" in the body, which only worked
+	// because ForceFilter did not stamp creates — the fixture was relying on
+	// audit 13.8, the very leak that let one tenant plant rows into another's.
 	srv.MustID(srv.POST("/articles",
-		map[string]any{"title": "b", "body": "B", "status": "draft", "org_id": "tenant-b"}, asA))
+		map[string]any{"title": "b", "body": "B", "status": "draft"}, asOtherOrg))
 
 	if n := len(srv.GET("/articles", asA).DataList()); n != 1 {
 		t.Errorf("list = %d items, want 1 — the operator check broke a valid scope", n)

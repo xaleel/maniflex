@@ -55,6 +55,26 @@ func ForceFilter(field string, fn ForceFilterFunc) maniflex.MiddlewareFunc {
 		if val == nil {
 			return next()
 		}
+
+		// On writes: stamp the scope onto the row, as Tenancy does and as
+		// ActionScope and scoped-singleton provisioning both do via
+		// scopeColumns. An equality on a plain column says two things at once —
+		// "only rows where field = value" and "a row you create has field =
+		// value" — and ForceFilter used to honour only the first. A create was
+		// stored with whatever the client sent in the scope column, so the row
+		// landed outside its own author's scope: invisible to them on their very
+		// next read, and, because that column is the client's to send, plantable
+		// straight into someone else's scope (audit 13.8). Updates are stamped
+		// too: the forced filter stops an update *reaching* a row outside scope,
+		// but not one rewriting the column to push a row out of it.
+		//
+		// An immutable scope column is left alone on update — it cannot change,
+		// so re-sending it would only produce a redundant write or a rejection.
+		if ctx.Operation == maniflex.OpCreate ||
+			(ctx.Operation == maniflex.OpUpdate && !scopeFieldImmutable(ctx, field)) {
+			ctx.SetField(field, val)
+		}
+
 		if ctx.Query == nil {
 			ctx.Query = &maniflex.QueryParams{Page: 1, Limit: 20}
 		}
@@ -159,7 +179,7 @@ func Tenancy(tenantField string, fn TenantFunc) maniflex.MiddlewareFunc {
 		// theirs, handing them the record and leaving the owner to 404 on it. The
 		// forced filter below is what stops the write reaching that row at all.
 		if ctx.Operation == maniflex.OpCreate ||
-			(ctx.Operation == maniflex.OpUpdate && !tenantFieldImmutable(ctx, tenantField)) {
+			(ctx.Operation == maniflex.OpUpdate && !scopeFieldImmutable(ctx, tenantField)) {
 			// Write through to both ParsedBody and the typed record (ctx.Record).
 			ctx.SetField(tenantField, tenantID)
 		}
@@ -181,21 +201,21 @@ func Tenancy(tenantField string, fn TenantFunc) maniflex.MiddlewareFunc {
 	}
 }
 
-// tenantFieldImmutable reports whether the model's tenant field carries the
-// `mfx:"immutable"` tag. Returns false when the model or field cannot be
-// resolved — in that case Tenancy keeps the historical behaviour of injecting
-// the tenant ID.
-func tenantFieldImmutable(ctx *maniflex.ServerContext, tenantField string) bool {
+// scopeFieldImmutable reports whether the model's scope column — Tenancy's
+// tenant field or ForceFilter's field — carries the `mfx:"immutable"` tag.
+// Returns false when the model or field cannot be resolved, in which case both
+// keep the historical behaviour of injecting the value.
+func scopeFieldImmutable(ctx *maniflex.ServerContext, scopeField string) bool {
 	if ctx.Model == nil {
 		return false
 	}
-	if f := ctx.Model.FieldByJSONName(tenantField); f != nil {
+	if f := ctx.Model.FieldByJSONName(scopeField); f != nil {
 		return f.Tags.Immutable
 	}
-	// tenantField is sometimes supplied as a DB column name rather than a
+	// scopeField is sometimes supplied as a DB column name rather than a
 	// JSON name (e.g. "tenant_id"). Walk the field list as a fallback.
 	for _, fm := range ctx.Model.Fields {
-		if fm.Tags.DBName == tenantField {
+		if fm.Tags.DBName == scopeField {
 			return fm.Tags.Immutable
 		}
 	}

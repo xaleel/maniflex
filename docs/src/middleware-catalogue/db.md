@@ -28,6 +28,15 @@ answers `404` if it does not match, indistinguishably from a record that is
 genuinely absent. The check and the write share one transaction, so the row
 cannot leave scope in between.
 
+On a create or an update the scope value is also **stamped onto the row**. An
+equality on a plain column says two things at once — "only rows where `field` =
+`value`" and "a row you create has `field` = `value`" — and both are honoured.
+Without the stamp a create stored whatever the client sent in the scope column,
+so the row landed outside its own author's scope: invisible to them on their next
+read, and, since that column is the client's to send, plantable straight into
+someone else's scope. The stamp is skipped on update when the column is
+`immutable`, which cannot change anyway.
+
 That read is the only cost, and only a request carrying a forced filter pays it:
 a write with nothing scoped goes straight to the adapter as before. A client's
 own `?filter=` never constrains a write — only filters the server imposed do.

@@ -2,7 +2,7 @@ module github.com/xaleel/maniflex/admin
 
 go 1.25.4
 
-require github.com/xaleel/maniflex v0.2.3
+require github.com/xaleel/maniflex v0.2.4
 
 require (
 	github.com/go-chi/chi/v5 v5.2.5 // indirect

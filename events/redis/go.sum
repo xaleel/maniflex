@@ -30,6 +30,8 @@ github.com/xaleel/maniflex v0.2.2 h1:6CQYCjmeuWYDsiRHJrLt2UWl7knmjb2Z2KYmgI4+diI
 github.com/xaleel/maniflex v0.2.2/go.mod h1:yWuHLsAX/jMhD6UpPrSzPy5jluvkJwNM6NugaQqt9Ao=
 github.com/xaleel/maniflex v0.2.3 h1:UdbrrLADNmIqwL/tYWHOKcRFep2wnviFStVkoDB6Yuw=
 github.com/xaleel/maniflex v0.2.3/go.mod h1:yWuHLsAX/jMhD6UpPrSzPy5jluvkJwNM6NugaQqt9Ao=
+github.com/xaleel/maniflex v0.2.4 h1:FY6BJikc3ErhFL8G3Fn4ye4EVQplSHsH4LTg9sILYqQ=
+github.com/xaleel/maniflex v0.2.4/go.mod h1:yWuHLsAX/jMhD6UpPrSzPy5jluvkJwNM6NugaQqt9Ao=
 github.com/zeebo/xxh3 v1.1.0 h1:s7DLGDK45Dyfg7++yxI0khrfwq9661w9EN78eP/UZVs=
 github.com/zeebo/xxh3 v1.1.0/go.mod h1:IisAie1LELR4xhVinxWS5+zf1lA4p0MW4T+w+W07F5s=
 go.uber.org/atomic v1.11.0 h1:ZvwS0R+56ePWxUNi+Atn9dWONBPp/AUETXlHW0DxSjE=

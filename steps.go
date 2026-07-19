@@ -491,43 +491,11 @@ func (s *defaultSteps) validate(ctx *ServerContext, next func() error) error {
 			continue
 		}
 
-		// Enum validation (if value is present and enum list is non-empty).
-		if len(field.Tags.Enum) > 0 {
-			if val, present := body.Get(jn); present && val != nil {
-				strVal := fmt.Sprintf("%v", val)
-				valid := false
-				for _, e := range field.Tags.Enum {
-					if e == strVal {
-						valid = true
-						break
-					}
-				}
-				if !valid {
-					errs = append(errs, map[string]string{
-						"field":   jn,
-						"message": fmt.Sprintf("field %q must be one of: %v", jn, field.Tags.Enum),
-					})
-				}
-			}
-		}
-
-		// Numeric min/max validation.
-		if field.Tags.Min != nil || field.Tags.Max != nil {
-			if val, present := body.Get(jn); present && val != nil {
-				if num, ok := toFloat64(val); ok {
-					if field.Tags.Min != nil && num < *field.Tags.Min {
-						errs = append(errs, map[string]string{
-							"field":   jn,
-							"message": fmt.Sprintf("field %q must be >= %g", jn, *field.Tags.Min),
-						})
-					}
-					if field.Tags.Max != nil && num > *field.Tags.Max {
-						errs = append(errs, map[string]string{
-							"field":   jn,
-							"message": fmt.Sprintf("field %q must be <= %g", jn, *field.Tags.Max),
-						})
-					}
-				}
+		// Enum and numeric min/max, shared with the programmatic write paths so
+		// the two cannot drift apart (see checkFieldValue, audit MS-15).
+		if val, present := body.Get(jn); present && val != nil {
+			if msg := checkFieldValue(&field, val); msg != "" {
+				errs = append(errs, map[string]string{"field": jn, "message": msg})
 			}
 		}
 	}
@@ -3045,15 +3013,40 @@ func isNumberAndGreaterThanZero(value any) bool {
 func (s *defaultSteps) getNestedField(nested any, relModel *ModelMeta, ctx *ServerContext) any {
 	switch t := nested.(type) {
 	case map[string]any:
+		s.decryptNested(t, relModel, ctx)
 		return s.toJSONMap(t, relModel, ctx)
 	case []map[string]any:
 		arr := []map[string]any{}
 		for _, relObj := range t {
+			s.decryptNested(relObj, relModel, ctx)
 			arr = append(arr, s.toJSONMap(relObj, relModel, ctx))
 		}
 		return arr
 	default:
 		return nested
+	}
+}
+
+// decryptNested decrypts an included relation's row in place.
+//
+// The top-level record is decrypted by the DB step, but a row pulled in by
+// ?include= reached the serializer straight from the adapter: toJSONMap strips
+// hidden and write-only columns but has never decrypted anything, so an
+// mfx:"encrypted" field on an included model came back as base64 ciphertext
+// (audit MS-L4). Reading the same model directly returned plaintext, so the
+// value a client saw depended on how it was fetched.
+//
+// A failure leaves the row as-is and logs. The alternative — failing the whole
+// request because one included relation could not be decrypted — turns a
+// degraded field into a dead endpoint, and the top-level record is unaffected.
+func (s *defaultSteps) decryptNested(row map[string]any, relModel *ModelMeta, ctx *ServerContext) {
+	if row == nil || relModel == nil || !relModel.HasEncryptedFields() || ctx == nil {
+		return
+	}
+	if err := decryptForRead(ctx.Ctx, s.keyProvider, relModel, row); err != nil {
+		ctx.Logger().Warn("could not decrypt included relation",
+			slog.String("model", relModel.Name),
+			slog.String("error", err.Error()))
 	}
 }
 

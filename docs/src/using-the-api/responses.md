@@ -141,6 +141,17 @@ Computed fields:
   batch one does not change what a bad row costs.
 - **Run on every read path** that goes through the default Response step,
   including the create and update echoes.
+- **Must be goroutine-safe.** On a multi-row page the per-row callbacks run
+  concurrently (bounded to 8 at a time), so a callback that writes to a
+  captured variable, a shared map, or any other state must synchronise it.
+  Batch callbacks are called once for the whole page and are not affected.
+
+> **Do not use `ctx.Tx` from a per-row callback.** A `*sql.Tx` is not safe
+> for concurrent use, and the callbacks for one page share the same
+> `ServerContext`. Reads through `ctx.GetModel` or `maniflex.Read` enlist
+> `ctx.Tx` when one is open, so a computed field that reads while the
+> request is in a transaction is exactly this case. Resolve such a field
+> with `AddBatchComputedField`, which runs once and sequentially.
 - **Appear in the OpenAPI spec** as read-only properties of the model's
   response schema (never in a create or update body).
 

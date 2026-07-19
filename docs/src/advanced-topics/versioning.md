@@ -241,6 +241,23 @@ Losing one history row is preferable to refusing a write that the user
 already saw succeed. The error is logged via `ctx.Logger()` so an
 operator can investigate.
 
+That default is wrong when history is an audit record rather than a
+convenience: the gap is silent, and it surfaces only when someone asks what
+changed. Set `VersionedRequired` to make the failure fail the request:
+
+```go
+server.MustRegister(Invoice{}, maniflex.ModelConfig{
+    Versioned:         true,
+    VersionedRequired: true, // no history row → no write
+})
+```
+
+Because the history row is written in the same transaction, returning the
+error rolls the primary write back with it — the change and its audit entry
+stand or fall together. Note the exception: with no transaction in force
+there is nothing to roll back, and the error only reports that history is
+missing after the fact.
+
 ## Performance notes
 
 - One additional `INSERT` per write to a versioned model. Postgres handles

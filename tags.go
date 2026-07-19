@@ -2,6 +2,7 @@ package maniflex
 
 import (
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -198,6 +199,13 @@ type FieldTags struct {
 	// failing open in exactly the case it exists to protect.
 	UnknownOpts []string
 
+	// MalformedOpts holds mfx: parts whose *key* is recognised but whose value
+	// could not be used — mfx:"min:abc", mfx:"max:", mfx:"enum:a||b". These used
+	// to be dropped silently, which reads at a glance as a constraint that is
+	// enforced and is not. ScanModel turns a non-empty list into a registration
+	// error (audit MS-L11).
+	MalformedOpts []string
+
 	// Derived names
 	JSONName  string
 	DBName    string
@@ -276,14 +284,27 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 		case part == "searchable":
 			t.Searchable = true
 		case strings.HasPrefix(part, "enum:"):
-			t.Enum = strings.Split(strings.TrimPrefix(part, "enum:"), "|")
+			members := strings.Split(strings.TrimPrefix(part, "enum:"), "|")
+			// enum: yields [""] and enum:a||b a valid-looking empty member, so
+			// an empty option becomes a silently permitted value (audit MS-L11).
+			if slices.Contains(members, "") {
+				t.MalformedOpts = append(t.MalformedOpts, part)
+				break
+			}
+			t.Enum = members
 		case strings.HasPrefix(part, "min:"):
+			// A value ParseFloat rejects used to be dropped on the floor, so
+			// mfx:"min:abc" read as a constraint and enforced nothing.
 			if v, err := strconv.ParseFloat(strings.TrimPrefix(part, "min:"), 64); err == nil {
 				t.Min = &v
+			} else {
+				t.MalformedOpts = append(t.MalformedOpts, part)
 			}
 		case strings.HasPrefix(part, "max:"):
 			if v, err := strconv.ParseFloat(strings.TrimPrefix(part, "max:"), 64); err == nil {
 				t.Max = &v
+			} else {
+				t.MalformedOpts = append(t.MalformedOpts, part)
 			}
 		case strings.HasPrefix(part, "default:"):
 			t.Default = strings.TrimPrefix(part, "default:")

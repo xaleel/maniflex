@@ -190,6 +190,97 @@ Two further exclusions are worth knowing:
 > Before v0.2.5 `_through` was copied verbatim from the junction row, so hidden
 > and write-only columns surfaced on every include.
 
+### Which models are join tables
+
+A junction can be declared three ways. In order of precedence:
+
+| | How | When to use |
+|---|---|---|
+| Explicit relation | `mfx:"through:Junction"` on a slice field | you want the relation named on the model |
+| Explicit marker | embed `maniflex.JunctionModel` | the junction carries columns of its own |
+| Auto-detected | two BelongsTo relations, **no other columns** | a plain link table |
+
+Auto-detection accepts only the unambiguous shape — two foreign keys, an `id`,
+timestamps, and nothing else:
+
+```go
+type ProductTag struct {           // auto-detected
+    maniflex.BaseModel
+    ProductID string `json:"product_id" mfx:"relation"`
+    TagID     string `json:"tag_id"     mfx:"relation"`
+}
+```
+
+Add a column of its own and detection stops, because that shape is equally what
+an ordinary entity looks like:
+
+```go
+type Order struct {                // NOT a junction — nothing is inferred
+    maniflex.BaseModel
+    CustomerID string `json:"customer_id" mfx:"relation"`
+    AddressID  string `json:"address_id"  mfx:"relation"`
+    Total      int    `json:"total"`
+}
+```
+
+> Before v0.2.6 `Order` *was* treated as a join table, so Customer and Address
+> silently gained a many-to-many through it. If you relied on detection for a
+> junction that carries payload, embed `JunctionModel` — see below.
+
+A junction that carries payload says so:
+
+```go
+type Enrollment struct {
+    maniflex.BaseModel
+    maniflex.JunctionModel
+    StudentID string `json:"student_id" mfx:"relation"`
+    CourseID  string `json:"course_id"  mfx:"relation"`
+    Term      string `json:"term"`      // in _through
+}
+```
+
+`JunctionModel` is embedded **alongside** `BaseModel`, not instead of it — a
+junction is an ordinary model with an `id`. The model must have exactly two
+BelongsTo relations to distinct models; anything else is a registration error.
+
+`ModelConfig.DisableAutoJunction` opts a model out of detection entirely, for a
+link-shaped model that should not gain the relation.
+
+### Unique links
+
+Junction pairs are **not** unique by default. Declare it when they should be:
+
+```go
+type ProductTag struct {
+    maniflex.BaseModel
+    maniflex.JunctionModel `mfx:"unique"`
+    ProductID string `json:"product_id" mfx:"relation"`
+    TagID     string `json:"tag_id"     mfx:"relation"`
+}
+```
+
+This emits a `UNIQUE` index over the two key columns, so a repeated link is
+refused with `409`. It also lets an include collapse duplicate pairs: with the
+declaration a repeat is corruption, without it a repeat is data.
+
+Off by default because a junction carrying its own attributes may legitimately
+repeat a pair — `Enrollment{student_id, course_id, term}` holds one row per
+term, and each carries its own `_through` payload. A pure link table almost
+always wants the tag.
+
+Adding it to a table that already holds duplicates fails the migration until
+they are cleaned up. That is why it is separate from the marker: embedding
+`JunctionModel` changes nothing about the schema, so declaring what a model *is*
+never risks a migration.
+
+### Junction deletes
+
+A junction's foreign keys default to `ON DELETE CASCADE`, so deleting either
+endpoint takes its link rows with it — a link to a row that no longer exists
+says nothing. An explicit `mfx:"on_delete:..."` on the column wins, and edges
+where either side soft-deletes are handled in maniflex's own delete path rather
+than by a database constraint (see below).
+
 ## Cascading deletes
 
 A BelongsTo relation may declare what happens to this row when the parent it

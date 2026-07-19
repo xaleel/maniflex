@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.6
+
+- **Security:** `ctx.Aggregate` now validates `SortExpr.Direction` against asc/desc instead of concatenating it into the `ORDER BY`. The column side was already checked against the aggregate aliases; the direction was not, so a developer passing user input as `Direction` had an injection point. The HTTP endpoint was never affected — it constrains the value already.
+- **Security:** `?include=` now decrypts `mfx:"encrypted"` fields on the included relation. An included row reached the serializer without the DB step's decryption pass, so it came back as base64 ciphertext while reading the same model directly returned plaintext.
+- **Bugfix:** registration now refuses four shapes that used to fail later or not at all: a pointer embed (nil after scanning, panics on first access), two fields mapping to one DB column (lookups took the first, writes the last), `min:`/`max:` values that are not numbers and empty `enum:` members (parsed as a constraint, enforced nothing), and `readonly,required` (stripped before the required check, so never required).
+- **Bugfix:** a value a `min`/`max` bound cannot be measured against — a string sent to a numeric field — now fails validation instead of skipping the check.
+- **Bugfix:** the locale last-resort fallback is now deterministic. It ranged the map and took whatever came first, which Go randomises, so a field with two or more locales outside the request chain changed between identical reads — destabilising ETags into spurious `412`s and defeating the response cache. The lexicographically smallest key now wins.
+- **Bugfix:** setting an `encrypted`+`unique` field to `""` now clears its `{field}_hmac` companion. The digest of the previous value was left behind, and that column is what uniqueness consults — it kept blocking a value the record no longer held.
+- **Bugfix:** versioning diffs no longer report phantom changes. Values were compared as `fmt` strings, so JSON columns differed on key order, `time.Time` differed on precision, and `1` vs `1.0` from different drivers read as an edit.
+- **Bugfix:** a junction's foreign keys now default to `ON DELETE CASCADE`, so deleting either endpoint takes its link rows with it instead of leaving orphans. An explicit `mfx:"on_delete:"` still wins.
+- **Bugfix:** `mfx:"default:"` values are now validated per SQL type before reaching the DDL, rather than numeric and boolean defaults being interpolated verbatim.
+- **Breaking / Feature:** many-to-many auto-detection now accepts only models carrying *nothing but* their two foreign keys. Any model with two BelongsTo to distinct models used to be treated as a join table, so `Order{customer_id, address_id, total}` silently registered a Customer↔Address relation. A junction that carries columns of its own declares itself by embedding the new `maniflex.JunctionModel` alongside `BaseModel`; `ModelConfig.DisableAutoJunction` opts out entirely.
+- **Feature:** `maniflex.JunctionModel` with `mfx:"unique"` emits a `UNIQUE` index over a junction's two key columns, so a duplicate link is refused with `409`, and lets includes collapse repeated pairs. Off by default: a junction carrying its own attributes may legitimately repeat a pair — `Enrollment{student_id, course_id, term}` holds one row per term, each with its own `_through` payload.
+- **Feature:** `ModelConfig.VersionedRequired` makes a failed history write fail the request. By default it is logged and the primary write still succeeds, which is wrong when history is an audit record: the gap is silent. In a transaction, the primary write rolls back with it.
+
 ## v0.2.5 (2026-07-19)
 
 - **Fix:** `maniflex.Create`/`Update` and `ctx.GetModel(...).Create`/`Update` now enforce the model's `enum`, `min` and `max` constraints, which previously ran for HTTP callers only — the same model accepted in Go what it answered 422 for over HTTP. A violation errors before the adapter call; pass `maniflex.SkipValidation()` where deliberate. `readonly` stays writable here: it means "not from a client", and a job is not a client.

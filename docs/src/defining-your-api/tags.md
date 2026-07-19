@@ -64,6 +64,27 @@ Status   string `json:"status"   mfx:"required,enum:draft|published|archived"`
 Priority int    `json:"priority" mfx:"min:1,max:5,default:3"`
 ```
 
+### Malformed values are refused at registration
+
+A value these directives cannot use is a startup error, not a silent no-op:
+
+| Written | Result |
+|---|---|
+| `mfx:"min:abc"`, `mfx:"max:"` | registration error — not a number |
+| `mfx:"enum:"`, `mfx:"enum:a\|\|b"` | registration error — empty option |
+| `mfx:"readonly,required"` | registration error — unsatisfiable |
+
+The first two used to be dropped on the floor, so a tag that reads as a
+constraint enforced nothing. `readonly,required` is the same unsatisfiable shape
+as `hidden,required`: readonly strips the field from the request before the
+required check runs, so the check never sees it and the field was quietly
+optional. (`hidden` implies readonly, so that combination reports its own more
+specific message.)
+
+Separately, a value that a `min`/`max` bound cannot be measured against — a
+string sent to a numeric field — now fails validation with *"must be a number"*
+rather than skipping the check.
+
 ### How `default:` is applied
 
 `default:V` becomes a SQL `DEFAULT` clause on the column. Nothing applies it in

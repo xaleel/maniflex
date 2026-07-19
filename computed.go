@@ -236,6 +236,16 @@ func AddBatchComputedField[T any](s *Server, modelName, name string, fn func(ctx
 // typedRecord coerces a loaded record to *T. The create/update echo carries the
 // stored row as a map rather than the scanned record, so it is re-read through
 // the typed path to give the callback populated fields. Never returns nil.
+//
+// That re-read is a second SELECT of the row the write just returned, on every
+// create and update of a model with a typed computed field (audit MS-L14).
+// Bridging the map with mapToRecord instead was tried and reverted: the bridge
+// assigns only values whose Go type already matches the field, and a stored row
+// carries driver-shaped scalars (int64 for an int column), which land in the
+// extra carrier rather than the struct — so the callback received a zero-valued
+// record. scanStruct, which Read[T] goes through, is what does the conversion.
+// Removing the round trip needs that conversion reachable from here, not a
+// cheaper bridge.
 func typedRecord[T any](ctx *ServerContext, record any) *T {
 	if rec, ok := record.(*T); ok && rec != nil {
 		return rec

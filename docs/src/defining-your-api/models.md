@@ -29,6 +29,16 @@ server.MustRegister(Article{})
 for use in `main` or package initialisation. A struct is rejected at
 registration if it is not a struct type or does not embed `BaseModel`.
 
+Two embedding rules are enforced there as well:
+
+- **Embed by value, never by pointer.** `*maniflex.BaseModel` — or any other
+  pointer embed — is left nil by the record scanner, so every field access
+  through it panics on the first request. It is refused at registration instead.
+- **Two fields cannot map to the same column.** A field shadowing one of
+  `BaseModel`'s columns produced two entries with the same DB name, and the
+  framework then disagreed with itself about which was meant: lookups took the
+  first, writes took the last. Rename one, or give it an explicit `db:"..."`.
+
 ## BaseModel
 
 Every model must embed `maniflex.BaseModel`. It contributes three columns common to

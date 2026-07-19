@@ -225,6 +225,13 @@ The DB step runs the decryption pass after every read:
 - Values that do not have the `enc:` prefix are left as-is — important
   for *gradual* adoption: enable encryption on a column whose existing
   rows are plaintext, and only new writes get encrypted.
+- Rows pulled in by `?include=` are decrypted too. A relation's row reaches
+  the serializer straight from the adapter rather than through the DB step's
+  own pass, so before v0.2.5 an encrypted field on an included model came
+  back as base64 ciphertext while the same model read directly returned
+  plaintext. If a relation cannot be decrypted the field is left as stored
+  and a warning is logged, rather than failing the whole request over one
+  included row.
 
 If `KeyProvider` is nil but a model has encrypted fields, reads return
 the raw stored ciphertext (so the application still functions in some
@@ -306,7 +313,8 @@ on the output of `Encrypt`.
 | `mfx:"encrypted"` + soft-delete | independent — soft-delete operates on a separate marker column |
 | `mfx:"encrypted"` + versioning | encrypted fields are excluded from **both** the `diff` and the `snapshot`, along with their `_hmac` companions. The history row is built from the decrypted record, so anything left in it would be stored as plaintext |
 | `mfx:"encrypted"` + audit log | the audit `Changes` diff does **not** exclude encrypted fields automatically; use `WithExcludeFields` to keep them out |
-| `mfx:"encrypted"` + relations | a relation FK is never encrypted; relation joins remain unaffected |
+| `mfx:"encrypted"` + relations | a relation FK is never encrypted; relation joins remain unaffected. Encrypted fields on an **included** relation are decrypted like any other read |
+| `mfx:"encrypted"` + export | the export writes **decrypted plaintext** — it is a portable file of the data, not of the ciphertext. Exclude the column with [`response.RedactField`](../middleware-catalogue/response.md#redactfield) where that is not wanted |
 
 ## Operational checklist
 

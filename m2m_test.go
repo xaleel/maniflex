@@ -19,8 +19,13 @@ type m2mTag struct {
 	Name string `json:"name" db:"name" mfx:"required"`
 	// No explicit Products field — auto-detection should wire this up as M2M.
 }
+
+// M2MProductTag carries a column of its own (AssignedBy), so it is not the
+// unambiguous two-keys-and-nothing-else shape auto-detection accepts. It says
+// what it is instead — which is the point of the marker.
 type M2MProductTag struct {
 	maniflex.BaseModel
+	maniflex.JunctionModel
 	ProductID  string `json:"product_id"  db:"product_id"  mfx:"required,relation"`
 	TagID      string `json:"tag_id"      db:"tag_id"      mfx:"required,relation"`
 	AssignedBy string `json:"assigned_by" db:"assigned_by"`

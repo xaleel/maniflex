@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -606,10 +607,10 @@ func (a *Adapter) addColumn(ctx context.Context, exec sqlExec, table string, f m
 	// ALTER succeeds against existing rows, which a NULL column does not need,
 	// and defaulting a nullable column to zero would be a claim the model never
 	// made.
-	if f.Tags.Default != "" {
-		// User-supplied raw value → quote it for the SQL type.
-		col += fmt.Sprintf(" DEFAULT %s", a.quotedDefault(f.Tags.Default, sqlType))
-	} else if lit := a.zeroDefaultSQL(f.Type, sqlType); lit != "" && !isPtr {
+	if lit := a.quotedDefault(f.Tags.Default, sqlType); f.Tags.Default != "" && lit != "" {
+		// User-supplied raw value → rendered as a literal for the SQL type.
+		col += " DEFAULT " + lit
+	} else if lit := a.zeroDefaultSQL(f.Type, sqlType); lit != "" && !isPtr && f.Tags.Default == "" {
 		// Pre-formatted SQL literal (already quoted where needed) → embed directly.
 		col += " DEFAULT " + lit
 	}
@@ -751,15 +752,52 @@ func zeroValuerLiteral(t reflect.Type) (string, bool) {
 	}
 }
 
+// quotedDefault renders an mfx:"default:" value as a SQL literal.
+//
+// This is the one place a tag value reaches SQL as text rather than as a bound
+// parameter, so every branch has to produce something that cannot be anything
+// but a literal. It used to return numeric and boolean defaults verbatim and
+// interpolate the CAST fallback unescaped (audit MS-L13): mfx:"default:0)"
+// followed by arbitrary SQL would have landed in the DDL as written.
+//
+// Not attacker-reachable — a struct tag is written by the developer, is fixed at
+// compile time and runs at migration — which is why this is a footgun rather
+// than an injection. It still should not be the thing standing between a typo
+// and a malformed schema.
+//
+// A numeric or boolean default that does not parse as one is refused outright
+// rather than quoted into a string: a column typed INTEGER cannot take 'abc' as
+// its default, so emitting it would only move the failure to the database with a
+// worse message.
 func (a *Adapter) quotedDefault(val, sqlType string) string {
+	v := strings.TrimSpace(val)
 	switch sqlType {
-	case "INTEGER", "BIGINT", "REAL", "BOOLEAN":
-		return val
+	case "INTEGER", "BIGINT", "REAL":
+		// The tag is written in Go terms, not SQL ones: a Go bool is INTEGER on
+		// SQLite, so default:true has to be accepted here and rendered as 1/0.
+		// Keying the check on the SQL type alone silently dropped it.
+		switch strings.ToUpper(v) {
+		case "TRUE":
+			return "1"
+		case "FALSE":
+			return "0"
+		}
+		if _, err := strconv.ParseFloat(v, 64); err != nil {
+			return ""
+		}
+		return v
+	case "BOOLEAN":
+		switch strings.ToUpper(v) {
+		case "TRUE", "1":
+			return "TRUE"
+		case "FALSE", "0":
+			return "FALSE"
+		}
+		return ""
 	case "TEXT", "TIMESTAMPTZ":
-		escaped := strings.ReplaceAll(val, "'", "''")
-		return fmt.Sprintf("'%s'", escaped)
+		return "'" + strings.ReplaceAll(val, "'", "''") + "'"
 	}
-	return fmt.Sprintf("CAST('%s' AS %s)", val, sqlType)
+	return fmt.Sprintf("CAST('%s' AS %s)", strings.ReplaceAll(val, "'", "''"), sqlType)
 }
 
 func (a *Adapter) columnDef(f maniflex.FieldMeta) string {
@@ -783,9 +821,9 @@ func (a *Adapter) columnDef(f maniflex.FieldMeta) string {
 		// Mirrors addColumn: an explicit default: tag applies whether or not the
 		// column is nullable, while the synthesised zero literal is NOT NULL-only.
 		// See the note there — the tag used to be dropped for pointer fields.
-		if f.Tags.Default != "" {
-			col += fmt.Sprintf(" DEFAULT %s", a.quotedDefault(f.Tags.Default, sqlType))
-		} else if lit := a.zeroDefaultSQL(f.Type, sqlType); lit != "" && !f.Tags.Required && !isPtr {
+		if lit := a.quotedDefault(f.Tags.Default, sqlType); f.Tags.Default != "" && lit != "" {
+			col += " DEFAULT " + lit
+		} else if lit := a.zeroDefaultSQL(f.Type, sqlType); lit != "" && !f.Tags.Required && !isPtr && f.Tags.Default == "" {
 			// 			    			don't default-zero required fields ^
 			col += " DEFAULT " + lit
 		}
@@ -2128,6 +2166,9 @@ func populateHasMany(ctx context.Context, runner queryRunner, driver maniflex.Dr
 	return nil
 }
 
+// linkKey identifies one (parent, remote) edge of a junction table.
+type linkKey struct{ parent, remote string }
+
 // populateManyToMany loads a many-to-many relation for the given parent rows.
 // It performs a two-step join:
 //  1. Query the junction table for all rows whose local FK is in the parent IDs.
@@ -2247,11 +2288,29 @@ func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex
 			junctionMeta = jm
 		}
 	}
+	// Collapse duplicate (local, remote) pairs only when the junction declares
+	// the pair unique (mfx:"unique" on its JunctionModel embed).
+	//
+	// The declaration is what makes a repeat meaningless: with it, a second row
+	// for the same pair is corruption the UNIQUE index exists to prevent, and
+	// showing the same child twice only propagates it. Without it, a repeat is
+	// data — Enrollment{student_id, course_id, term} holds one row per term, and
+	// each carries its own _through payload, so collapsing them would drop
+	// everything but the first arbitrarily.
+	dedupe := junctionMeta != nil && junctionMeta.Config.JunctionUnique
+	seenLink := make(map[linkKey]bool, len(junctions))
 	for _, jrow := range junctions {
 		pid := fmt.Sprint(jrow[rel.ThroughLocalFK])
 		rid := fmt.Sprint(jrow[rel.ThroughRemoteFK])
 		if pid == "" || rid == "" {
 			continue
+		}
+		if dedupe {
+			link := linkKey{pid, rid}
+			if seenLink[link] {
+				continue
+			}
+			seenLink[link] = true
 		}
 		remoteIDSet[rid] = true
 		parentToRemotes[pid] = append(parentToRemotes[pid], pair{

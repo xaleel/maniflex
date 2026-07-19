@@ -40,17 +40,12 @@ func resolveManyToMany(reg *Registry) error {
 		}
 	}
 
-	// ── Step 2: auto-detect junction models ───────────────────────────────────
+	// ── Step 2: register many-to-many for junction models ─────────────────────
 	for _, jMeta := range models {
-		belongsTos := belongsToRelations(jMeta)
-		if len(belongsTos) != 2 {
+		if !isJunction(jMeta) {
 			continue
 		}
-		sideA := belongsTos[0]
-		sideB := belongsTos[1]
-		if sideA.RelatedModel == sideB.RelatedModel {
-			continue // both FKs point to the same model — not a true junction
-		}
+		sideA, sideB, _ := junctionSides(jMeta)
 
 		metaA, okA := reg.Get(sideA.RelatedModel)
 		metaB, okB := reg.Get(sideB.RelatedModel)

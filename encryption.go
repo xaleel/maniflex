@@ -54,6 +54,16 @@ func encryptFields(ctx context.Context, kp KeyProvider, model *ModelMeta, data m
 		}
 		plaintext := fmt.Sprint(val)
 		if plaintext == "" {
+			// The column is being set to "", so its HMAC companion must be
+			// cleared with it. Skipping the whole field left the digest of the
+			// *previous* value behind (audit MS-L6), and that column is what the
+			// uniqueness check consults: a stale digest keeps blocking the value
+			// this record no longer holds, and lets the record itself pass a
+			// check it should fail. Nothing to encrypt, so only the companion is
+			// written.
+			if f.Tags.Unique {
+				data[dbName+"_hmac"] = ""
+			}
 			continue
 		}
 

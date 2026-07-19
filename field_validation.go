@@ -123,13 +123,20 @@ func checkFieldValue(f *FieldMeta, val any) string {
 		}
 	}
 	if f.Tags.Min != nil || f.Tags.Max != nil {
-		if num, ok := toFloat64(val); ok {
-			if f.Tags.Min != nil && num < *f.Tags.Min {
-				return fmt.Sprintf("field %q must be >= %g", jn, *f.Tags.Min)
-			}
-			if f.Tags.Max != nil && num > *f.Tags.Max {
-				return fmt.Sprintf("field %q must be <= %g", jn, *f.Tags.Max)
-			}
+		num, ok := toFloat64(val)
+		if !ok {
+			// A value the bound cannot be applied to used to skip the check
+			// entirely, so a numeric field sent "abc" passed validation and was
+			// left to the database to reject, or silently coerced (audit
+			// MS-L11). A bound the value cannot be measured against is a failed
+			// bound, not an absent one.
+			return fmt.Sprintf("field %q must be a number", jn)
+		}
+		if f.Tags.Min != nil && num < *f.Tags.Min {
+			return fmt.Sprintf("field %q must be >= %g", jn, *f.Tags.Min)
+		}
+		if f.Tags.Max != nil && num > *f.Tags.Max {
+			return fmt.Sprintf("field %q must be <= %g", jn, *f.Tags.Max)
 		}
 	}
 	return ""

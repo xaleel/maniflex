@@ -153,9 +153,15 @@ func (c *Server) registerVersioningFor(meta *ModelMeta) error {
 		}
 		exec := dbExec{adapter: ctx.Model.ResolveAdapter(steps.adapter), tx: ctx.Tx}
 		if err := appendHistoryRow(ctx, exec, meta, histMeta); err != nil {
-			// History write failure should not break the primary response.
 			ctx.Logger().Error("versioning: history write failed",
 				"model", modelName, "error", err)
+			// Fail-closed when the model asks for it: returning the error
+			// rolls back the enclosing transaction, so the change and its
+			// history row stand or fall together. Otherwise the primary
+			// response is not broken by a missing history row.
+			if meta.Config.VersionedRequired {
+				return fmt.Errorf("versioning: history write failed for %s: %w", modelName, err)
+			}
 		}
 		return nil
 	}
@@ -473,6 +479,41 @@ func excludedDBNames(model *ModelMeta) map[string]bool {
 
 // equalValues compares two values from a DB row map for equality.
 func equalValues(a, b any) bool {
-	return fmt.Sprintf("%v", a) == fmt.Sprintf("%v", b)
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	// time.Time first: two instants can be equal while their struct fields
+	// differ (monotonic reading, *Location pointer, wall-clock precision from
+	// different drivers), which is exactly the case DeepEqual gets wrong.
+	if at, ok := a.(time.Time); ok {
+		if bt, ok := b.(time.Time); ok {
+			return at.Equal(bt)
+		}
+	}
+	if reflect.DeepEqual(a, b) {
+		return true
+	}
+	// Structured columns (JSON maps and slices) compare by content, not by the
+	// order Go happened to range them in. fmt of a map sorts its keys, so this
+	// mostly worked before; fmt of a *slice* does not, and neither formatting
+	// distinguishes 1 from "1" or 1.0 from 1 (audit MS-L8).
+	switch a.(type) {
+	case map[string]any, []any, map[string]string:
+		aj, aerr := json.Marshal(a)
+		bj, berr := json.Marshal(b)
+		if aerr == nil && berr == nil {
+			var av, bv any
+			if json.Unmarshal(aj, &av) == nil && json.Unmarshal(bj, &bv) == nil {
+				return reflect.DeepEqual(av, bv)
+			}
+		}
+	}
+	// Numeric columns arrive as int64 from one driver and float64 from another,
+	// so a same-valued round-trip must not read as a change.
+	if af, ok := toFloat64(a); ok {
+		if bf, ok := toFloat64(b); ok {
+			return af == bf
+		}
+	}
+	return false
 }
-

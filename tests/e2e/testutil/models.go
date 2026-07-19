@@ -155,6 +155,12 @@ type Dispense struct {
 }
 
 // DefaultModels returns all test model fixtures.
+//
+// Comment needs no junction opt-out: it has two BelongsTo relations (Post, User)
+// but also carries body and approved, so it is not the two-keys-and-nothing-else
+// shape auto-detection accepts. Under the old rule it silently registered a
+// Post↔User many-to-many nothing asked for — audit MS-L9, in the framework's own
+// fixtures.
 func DefaultModels() []any {
 	return []any{User{}, Post{}, Comment{}, Tag{}}
 }

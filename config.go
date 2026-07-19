@@ -58,6 +58,41 @@ type ModelConfig struct {
 	// VersionedDiffOnly skips the snapshot column. Only changed fields are
 	// stored. Equivalent to mfx:"versioned:diff_only" on BaseModel.
 	VersionedDiffOnly bool
+	// VersionedRequired makes a failed history write fail the request.
+	//
+	// By default a history write that fails is logged and the primary write
+	// still succeeds, so a data change can end up with no history row and
+	// nothing tells the caller (audit MS-L7). That is the right default for a
+	// model where history is a convenience, and the wrong one where it is an
+	// audit record: the gap is silent and only shows up when someone asks what
+	// changed. With this set, the failure is returned and — when the write is
+	// running in a transaction — the primary write rolls back with it, so the
+	// row and its history entry stand or fall together.
+	//
+	// Note that without a transaction there is nothing to roll back: the
+	// primary write has already committed, and the error only tells the caller
+	// that history is missing.
+	VersionedRequired bool
+
+	// DisableAutoJunction opts this model out of many-to-many auto-detection.
+	//
+	// A model with exactly two BelongsTo relations to distinct models is treated
+	// as a join table and registers a many-to-many between its two endpoints.
+	// That is right for a real join table and wrong for an entity that happens
+	// to have two foreign keys — Order{customer_id, shipping_address_id} — which
+	// this turns off (audit MS-L9). Explicit mfx:"through:" relations are
+	// unaffected.
+	DisableAutoJunction bool
+
+	// Junction marks this model as a many-to-many join table. Set by embedding
+	// maniflex.JunctionModel; settable here for a model whose struct you do not
+	// control. See JunctionModel for what it implies.
+	Junction bool
+	// JunctionUnique adds a UNIQUE index over the junction's two key columns and
+	// lets includes collapse duplicate links. Set by mfx:"unique" on the
+	// JunctionModel embed. Off by default — a junction carrying its own columns
+	// may legitimately repeat a pair.
+	JunctionUnique bool
 
 	// Indices declares extra DB indexes to create during AutoMigrate. Use this
 	// to pre-declare indexes that the framework would otherwise auto-generate

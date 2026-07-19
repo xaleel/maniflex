@@ -481,6 +481,112 @@ func (m *ModelMeta) rejectBadMaxCount() error {
 	return nil
 }
 
+// rejectReadonlyRequired refuses mfx:"readonly,required", which is the same
+// unsatisfiable shape rejectHiddenRequired covers and was left open by it.
+//
+// The Validate step strips readonly fields from the body before the required
+// check runs, so the check sees an absent field on every create. Unlike
+// hidden+required it did not even 422 — the strip happens first and the required
+// branch is never reached — so the tag simply did nothing and the field was
+// silently optional (audit MS-L11). Note mfx:"hidden" implies readonly (MS-1),
+// so the hidden case is reported by its own more specific message first.
+// rejectDuplicateDBNames refuses two fields resolving to the same column.
+//
+// scanFields appends without a uniqueness check, so a field shadowing one of
+// BaseModel's columns produced two FieldMeta with the same DBName — and the two
+// halves of the framework then disagreed about which one it meant: FieldByDBName
+// (and the MS-PERF-A index) is first-wins, while toDBMap builds a map and is
+// last-wins (audit MS-L12). A write went to one field and the read came back
+// from the other, which is not something to resolve by picking a winner.
+// applyJunctionEmbed reads an embedded maniflex.JunctionModel and its mfx tag.
+//
+// Read here rather than inferred later because the marker is a property of the
+// type: it travels with the struct, so a model registered from two places
+// cannot be a junction in one and not the other. That is the failing of
+// ModelConfig for this purpose — it lives at the registration call site, and a
+// model registered in four places needs the flag in four places.
+func (m *ModelMeta) applyJunctionEmbed(t reflect.Type) error {
+	tag, found := junctionEmbed(t)
+	if !found {
+		return nil
+	}
+	m.Config.Junction = true
+	for _, opt := range strings.Split(tag, ",") {
+		switch strings.TrimSpace(opt) {
+		case "":
+		case "unique":
+			m.Config.JunctionUnique = true
+		default:
+			return fmt.Errorf(
+				"maniflex: model %q has unknown option %q on its maniflex.JunctionModel embed "+
+					"(the only option is \"unique\")", m.Name, opt)
+		}
+	}
+	a, b, ok := junctionSides(m)
+	if !ok {
+		return fmt.Errorf(
+			"maniflex: model %q embeds maniflex.JunctionModel but does not have exactly two "+
+				"BelongsTo relations to distinct models — a join table joins a pair, so there "+
+				"is nothing for this to declare",
+			m.Name)
+	}
+	if m.Config.JunctionUnique {
+		// Declared through the ordinary index mechanism so it migrates, is
+		// skipped when already present, and can be inspected like any other.
+		// m.Indices, not m.Config.Indices: the config list is copied into
+		// m.Indices when the meta is built, above this point, and the migrator
+		// reads m.Indices.
+		name := "ux_" + m.TableName + "_" + a.FKColumn + "_" + b.FKColumn
+		if !m.hasNamedIndex(name) {
+			m.Indices = append(m.Indices, IndexSpec{
+				Name:    name,
+				Columns: []string{a.FKColumn, b.FKColumn},
+				Unique:  true,
+			})
+		}
+	}
+	return nil
+}
+
+// hasNamedIndex reports whether an index of this name is already declared, so a
+// hand-declared equivalent wins over the generated one.
+func (m *ModelMeta) hasNamedIndex(name string) bool {
+	for _, ix := range m.Indices {
+		if ix.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *ModelMeta) rejectDuplicateDBNames() error {
+	seen := make(map[string]string, len(m.Fields))
+	for _, f := range m.Fields {
+		if prev, dup := seen[f.Tags.DBName]; dup {
+			return fmt.Errorf(
+				"maniflex: model %q maps both %q and %q to column %q — "+
+					"two fields cannot share a column; rename one or give it db:\"...\"",
+				m.Name, prev, f.Name, f.Tags.DBName)
+		}
+		seen[f.Tags.DBName] = f.Name
+	}
+	return nil
+}
+
+func (m *ModelMeta) rejectReadonlyRequired() error {
+	for _, f := range m.Fields {
+		if f.Tags.Readonly && f.Tags.Required && !f.Tags.WriteOnly && !f.Tags.Hidden {
+			return fmt.Errorf(
+				"maniflex: model %q field %q is both mfx:\"readonly\" and mfx:\"required\" — "+
+					"readonly means the field is stripped from the request before validation, "+
+					"so the required check can never see it. Drop required if the server "+
+					"populates the field, or drop readonly if the client must supply it",
+				m.Name, f.Name)
+		}
+	}
+	return nil
+}
+
 func (m *ModelMeta) rejectHiddenRequired() error {
 	for _, f := range m.Fields {
 		if f.Tags.Hidden && f.Tags.Required && !f.Tags.WriteOnly {
@@ -691,6 +797,15 @@ func ScanModel(v any, cfg ModelConfig) (*ModelMeta, error) {
 	// required" — including the ones that did send it. Same shape as the singleton
 	// case above: an unsatisfiable requirement, caught here rather than at runtime.
 	if err := meta.rejectHiddenRequired(); err != nil {
+		return nil, err
+	}
+	if err := meta.rejectReadonlyRequired(); err != nil {
+		return nil, err
+	}
+	if err := meta.rejectDuplicateDBNames(); err != nil {
+		return nil, err
+	}
+	if err := meta.applyJunctionEmbed(t); err != nil {
 		return nil, err
 	}
 
@@ -980,7 +1095,8 @@ func scanFields(t reflect.Type, meta *ModelMeta, indexPath []int) error {
 
 	// ── Pass 1: categorise ───────────────────────────────────────────────────
 	if err := collectFields(t, indexPath, meta, &explicitFKs, &conventionFKs,
-		companions, &hasManySlices, &m2mSlices, &scalars); err != nil {
+		companions, &hasManySlices, &m2mSlices, &scalars,
+		make(map[reflect.Type]bool)); err != nil {
 		return err
 	}
 
@@ -1128,7 +1244,22 @@ func collectFields(
 	hasManySlices *[]rawField,
 	m2mSlices *[]rawField,
 	scalars *[]rawField,
+	visited map[reflect.Type]bool,
 ) error {
+	// Embedding is a graph, not a tree: `type A struct{ *B }; type B struct{ *A }`
+	// is legal Go, and recursing it without a visited set overflowed the stack at
+	// registration — a boot crash with no usable message (audit MS-L1). Pointer
+	// embeds are what make the cycle expressible; a value-embedded cycle cannot
+	// be constructed, so this is reachable only through them.
+	if visited[t] {
+		return fmt.Errorf(
+			"maniflex: model %q embeds %s.%s in a cycle — embedded structs must form "+
+				"a tree, and a pointer embed that reaches itself has no finite set of columns",
+			meta.Name, t.PkgPath(), t.Name())
+	}
+	visited[t] = true
+	defer delete(visited, t)
+
 	for i := 0; i < t.NumField(); i++ {
 		sf := t.Field(i)
 
@@ -1145,11 +1276,21 @@ func collectFields(
 		if sf.Anonymous {
 			ft := sf.Type
 			if ft.Kind() == reflect.Ptr {
-				ft = ft.Elem()
+				// A pointer embed is left nil by reflect.New, so every later
+				// FieldByIndex through it panics on the first request — the model
+				// registers cleanly and then takes the process down. Refused here
+				// rather than guarded at each use: there is no value in a nil
+				// embed, and a boot error names the field (audit MS-L2).
+				return fmt.Errorf(
+					"maniflex: model %q embeds %s by pointer — embed it by value "+
+						"(%s, not *%s), as a pointer embed is nil on a freshly "+
+						"scanned record and panics on first access",
+					meta.Name, sf.Name, sf.Name, sf.Name)
 			}
 			if ft.Kind() == reflect.Struct {
 				if err := collectFields(ft, idx, meta,
-					explicitFKs, conventionFKs, companions, hasManySlices, m2mSlices, scalars); err != nil {
+					explicitFKs, conventionFKs, companions, hasManySlices, m2mSlices, scalars,
+					visited); err != nil {
 					return err
 				}
 			}
@@ -1173,6 +1314,16 @@ func collectFields(
 		// this parser has no case for.
 		if len(tags.UnknownOpts) > 0 {
 			return unknownOptError(meta.Name, sf.Name, tags.UnknownOpts)
+		}
+		// A recognised directive whose value could not be parsed. Reported
+		// separately from an unknown option because the fix is different: the
+		// name is right and the value is not (audit MS-L11).
+		if len(tags.MalformedOpts) > 0 {
+			return fmt.Errorf(
+				"maniflex: model %q field %q has unusable mfx values %v — "+
+					"min:/max: take a number and enum: takes non-empty |-separated "+
+					"options; these parse as a constraint but enforce nothing",
+				meta.Name, sf.Name, tags.MalformedOpts)
 		}
 
 		// Determine the element type (unwrap ptr/slice)

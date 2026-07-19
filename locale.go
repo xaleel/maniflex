@@ -268,13 +268,28 @@ func resolveLocaleString(m map[string]string, chain []string) string {
 			return v
 		}
 	}
-	// Last resort: any non-empty value.
-	for _, v := range m {
-		if v != "" {
-			return v
+	// Last resort: the non-empty value under the lexicographically smallest key.
+	//
+	// This used to range the map and return the first non-empty value it saw,
+	// which Go deliberately randomises: a field with two or more locales outside
+	// the chain rendered differently on every read. That is not merely untidy —
+	// the response feeds the ETag, so the same unchanged row produced a new ETag
+	// each time and optimistic-lock writes failed with spurious 412s, and the
+	// response cache could never hit (audit MS-L5). Any fixed rule would do; the
+	// smallest key is the one a reader can predict.
+	best := ""
+	for k, v := range m {
+		if v == "" {
+			continue
+		}
+		if best == "" || k < best {
+			best = k
 		}
 	}
-	return ""
+	if best == "" {
+		return ""
+	}
+	return m[best]
 }
 
 // localeStringToMap parses a DB-stored locale value into a map[string]string.

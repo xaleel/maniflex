@@ -79,9 +79,22 @@ type ForeignKeySpec struct {
 // adapter emits and the edges enforceCascadeDelete skips are the same set, drawn
 // by the same line.
 func ForeignKeysFor(reg RegistryAccessor, m *ModelMeta) []ForeignKeySpec {
+	junction := isJunction(m)
 	var out []ForeignKeySpec
 	for _, rel := range m.Relations {
-		if rel.Kind != BelongsTo || rel.OnDelete == OnDeleteNoAction {
+		if rel.Kind != BelongsTo {
+			continue
+		}
+		action := rel.OnDelete
+		if action == OnDeleteNoAction && junction {
+			// A junction's keys cascade unless the model says otherwise. A link
+			// row pointing at an endpoint that no longer exists says nothing,
+			// and keeping it is how join tables accumulated orphans that only a
+			// manual sweep removed (audit MS-L10). An explicit mfx:"on_delete:"
+			// on the column still wins — this only fills the unset case.
+			action = OnDeleteCascade
+		}
+		if action == OnDeleteNoAction {
 			continue
 		}
 		parent, ok := reg.Get(rel.RelatedModel)
@@ -93,7 +106,7 @@ func ForeignKeysFor(reg RegistryAccessor, m *ModelMeta) []ForeignKeySpec {
 			Column:    rel.FKColumn,
 			RefTable:  parent.TableName,
 			RefColumn: "id",
-			OnDelete:  rel.OnDelete,
+			OnDelete:  action,
 		})
 	}
 	return out

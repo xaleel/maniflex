@@ -180,7 +180,11 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 			default:
 				return nil, fmt.Errorf("maniflex: OrderBy %q is not an aggregate alias or GroupBy column", s.DBName)
 			}
-			parts = append(parts, col+" "+strings.ToUpper(string(s.Direction)))
+			dir, derr := aggDirection(s.Direction)
+			if derr != nil {
+				return nil, derr
+			}
+			parts = append(parts, col+" "+dir)
 		}
 		orderBySQL = " ORDER BY " + strings.Join(parts, ", ")
 	}
@@ -378,6 +382,28 @@ func (p *aggPH) add(v any) string {
 		return "$" + strconv.Itoa(len(p.args))
 	}
 	return "?"
+}
+
+// aggDirection maps a SortExpr.Direction onto the only two words allowed to
+// reach the SQL, rather than upper-casing whatever the caller supplied.
+//
+// The column side of ORDER BY is already checked against the aggregate aliases
+// and GroupBy columns, but the direction was concatenated raw. That is safe from
+// an HTTP request — the endpoint constrains it to asc/desc — and unsafe from
+// ctx.Aggregate, which is a developer API that may well be handed a value that
+// came from a user (audit MS-L3). Same class as SEC-1/SEC-2, reachable only
+// through the Go API.
+//
+// An empty Direction keeps its previous meaning of ASC, which is what the zero
+// value has always produced.
+func aggDirection(d SortDir) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(string(d))) {
+	case "", "asc":
+		return "ASC", nil
+	case "desc":
+		return "DESC", nil
+	}
+	return "", fmt.Errorf("maniflex: OrderBy direction %q is not valid (use asc or desc)", d)
 }
 
 // aggQuote wraps an identifier in double quotes and escapes any embedded

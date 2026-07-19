@@ -17,6 +17,15 @@ const (
 	RecursiveAncestors RecursiveDirection = "ancestors"
 )
 
+// DefaultRecursiveMaxDepth bounds a RecursiveQuery whose MaxDepth is left at
+// the zero value. Before v0.2.5 the zero value meant unlimited, which made an
+// unbounded traversal the default rather than a deliberate choice.
+const DefaultRecursiveMaxDepth = 100
+
+// recursivePathCol is the CTE column carrying the ids visited so far, used for
+// cycle detection. It is stripped from the returned rows.
+const recursivePathCol = "_path"
+
 // RecursiveQuery is the input to ctx.RecursiveQuery.
 type RecursiveQuery struct {
 	// RootID is the id of the starting node. Required.
@@ -24,8 +33,12 @@ type RecursiveQuery struct {
 	// ParentField is the DB column that holds the parent's id.
 	// e.g. "parent_id", "manager_id". Required; must be a registered column.
 	ParentField string
-	// MaxDepth limits how many levels to traverse. 0 means unlimited.
-	// MaxDepth=1 returns the root plus its immediate children/parent only.
+	// MaxDepth limits how many levels to traverse. MaxDepth=1 returns the root
+	// plus its immediate children/parent only.
+	//
+	// 0 (the zero value) applies DefaultRecursiveMaxDepth. A negative value
+	// means genuinely unlimited — say so explicitly if you want it, because an
+	// unbounded traversal of a large hierarchy is a request that never ends.
 	MaxDepth int
 	// Direction controls descent (Descendants, default) or ascent (Ancestors).
 	Direction RecursiveDirection
@@ -79,15 +92,18 @@ func (c *ServerContext) RecursiveQuery(modelName string, q RecursiveQuery) ([]Ro
 	}
 
 	joinCond := rqJoinCond(dir, table, q.ParentField)
+	id := rqIDText(table)
 
 	query := fmt.Sprintf(
 		"WITH RECURSIVE _cte AS ("+
-			"SELECT %s.*, 0 AS _depth FROM %s%s"+
+			"SELECT %s.*, 0 AS _depth, '/' || %s || '/' AS %s FROM %s%s"+
 			" UNION ALL "+
-			"SELECT %s.*, _cte._depth + 1 AS _depth FROM %s JOIN _cte ON %s%s"+
+			"SELECT %s.*, _cte._depth + 1 AS _depth, _cte.%s || %s || '/' AS %s"+
+			" FROM %s JOIN _cte ON %s%s"+
 			") SELECT * FROM _cte ORDER BY _depth",
-		table, table, anchorWhere,
-		table, table, joinCond, recursiveWhere,
+		table, id, recursivePathCol, table, anchorWhere,
+		table, recursivePathCol, id, recursivePathCol,
+		table, joinCond, recursiveWhere,
 	)
 
 	// rawQuery: the scope guard above has already had its say on this call.
@@ -95,10 +111,35 @@ func (c *ServerContext) RecursiveQuery(modelName string, q RecursiveQuery) ([]Ro
 	if err != nil {
 		return nil, err
 	}
+	for _, r := range rows {
+		delete(r, recursivePathCol)
+	}
 	if rows == nil {
 		return []map[string]any{}, nil
 	}
 	return rows, nil
+}
+
+// rqIDText renders the row's id as text, for building the visited-path string.
+func rqIDText(tableQuoted string) string {
+	return "CAST(" + tableQuoted + "." + aggQuote("id") + " AS TEXT)"
+}
+
+// rqCycleCond returns a predicate that admits a row only when its id is not
+// already on the path walked to reach it, which is what stops a cyclic parent
+// chain (a row that is its own ancestor) from looping forever.
+//
+// The test is an exact substring search rather than LIKE: an id is application
+// data and may legitimately contain '%' or '_', which LIKE would treat as
+// wildcards — '_' in particular would silently prune a real subtree by matching
+// an unrelated id of the same length.
+func rqCycleCond(tableQuoted string, driver DriverType) string {
+	needle := "'/' || " + rqIDText(tableQuoted) + " || '/'"
+	fn := "instr"
+	if driver == Postgres {
+		fn = "strpos"
+	}
+	return fn + "(_cte." + recursivePathCol + ", " + needle + ") = 0"
 }
 
 // rqValidate checks required fields and returns the resolved ModelMeta.
@@ -150,9 +191,10 @@ func rqBuildWhere(meta *ModelMeta, q RecursiveQuery, table string, driver Driver
 	} else if filterSQL != "" {
 		recursiveConds = append(recursiveConds, strings.TrimPrefix(filterSQL, " WHERE "))
 	}
-	if q.MaxDepth > 0 {
-		// Allow depths 0…MaxDepth inclusive: add a child only when parent depth < MaxDepth.
-		recursiveConds = append(recursiveConds, "_cte._depth < "+pb.add(q.MaxDepth))
+	recursiveConds = append(recursiveConds, rqCycleCond(table, driver))
+	if depth := rqEffectiveDepth(q.MaxDepth); depth > 0 {
+		// Allow depths 0…depth inclusive: add a child only when parent depth < depth.
+		recursiveConds = append(recursiveConds, "_cte._depth < "+pb.add(depth))
 	}
 
 	anchorWhere = " WHERE " + strings.Join(anchorConds, " AND ")
@@ -160,6 +202,18 @@ func rqBuildWhere(meta *ModelMeta, q RecursiveQuery, table string, driver Driver
 		recursiveWhere = " WHERE " + strings.Join(recursiveConds, " AND ")
 	}
 	return anchorWhere, recursiveWhere, nil
+}
+
+// rqEffectiveDepth resolves the caller's MaxDepth: 0 takes the default cap,
+// negative means unlimited (reported as 0, which emits no depth guard).
+func rqEffectiveDepth(maxDepth int) int {
+	switch {
+	case maxDepth == 0:
+		return DefaultRecursiveMaxDepth
+	case maxDepth < 0:
+		return 0
+	}
+	return maxDepth
 }
 
 // rqJoinCond returns the ON expression for the recursive member JOIN.

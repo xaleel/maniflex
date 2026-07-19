@@ -180,7 +180,7 @@ ascending.
 | `RootID` | `string` | yes | — | Primary key of the starting node |
 | `ParentField` | `string` | yes | — | DB column that holds the parent's ID, e.g. `"parent_id"` |
 | `Direction` | `RecursiveDirection` | no | `RecursiveDescendants` | Walk downward (`RecursiveDescendants`) or upward (`RecursiveAncestors`) |
-| `MaxDepth` | `int` | no | `0` (unlimited) | Stop after this many levels; `0` means traverse the whole subtree |
+| `MaxDepth` | `int` | no | `0` → `DefaultRecursiveMaxDepth` (100) | Stop after this many levels; negative means unlimited |
 | `Where` | `[]*FilterExpr` | no | nil | Additional filters applied in both the anchor and recursive members |
 
 ### Descendant vs. ancestor traversal
@@ -219,6 +219,38 @@ rows, err := ctx.RecursiveQuery("Category", maniflex.RecursiveQuery{
     MaxDepth:    1, // depth 0 (root) + depth 1 (children)
 })
 ```
+
+Left at its zero value, `MaxDepth` applies `maniflex.DefaultRecursiveMaxDepth`
+(100) rather than running unbounded. Pass a negative value for a genuinely
+unlimited traversal:
+
+```go
+MaxDepth: -1, // the whole hierarchy, however deep
+```
+
+> Before v0.2.5, `0` meant unlimited. If you relied on that for a hierarchy
+> deeper than 100 levels, set `MaxDepth: -1` explicitly.
+
+### Cyclic data
+
+A parent chain that loops — a row that is its own ancestor, whether directly
+(`parent_id` pointing at itself) or through a chain — is not an error. The
+traversal tracks the ids it has visited and stops at the repeat, so each node is
+returned once:
+
+```
+A.parent_id = B, B.parent_id = A, root = A
+→ A (_depth 0), B (_depth 1)
+```
+
+This holds in both directions. It matters because such data is not exotic: a
+category tree with no application-level guard against re-parenting a node under
+its own descendant will produce one eventually, and before v0.2.5 a single such
+request looped until it exhausted the process.
+
+Note that a cycle is the only pathology here. Because the traversal follows one
+scalar `ParentField`, every node has exactly one parent and so exactly one path
+from the root — the same node cannot be reached twice by different routes.
 
 ### Filtering nodes
 

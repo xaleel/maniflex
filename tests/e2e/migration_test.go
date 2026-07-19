@@ -76,7 +76,16 @@ type productV4 struct {
 	Status string `json:"status"   db:"status"   mfx:"filterable,sortable,default:active"`
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// productV5 adds a *nullable* column carrying an explicit mfx:"default:X".
+// Separate from productV4 because the DEFAULT clause used to be emitted only in
+// the NOT NULL branch, so a pointer field's default: tag was silently dropped.
+type productV5 struct {
+	maniflex.BaseModel
+	Name  string `json:"name"  db:"name"  mfx:"required,filterable,sortable"`
+	Score *int   `json:"score" db:"score" mfx:"filterable,default:7"`
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
 // tempDB opens a real file-backed SQLite DB for migration tests. File-backed is
 // required because we need to open two separate Maniflex instances against the same
@@ -295,6 +304,44 @@ func TestAutoMigrate(t *testing.T) {
 		data := ts2.GET("/products/" + id).Data()
 		testutil.AssertEqual(t, "status has explicit default",
 			testutil.Field(t, data, "status"), "active")
+	})
+
+	// ── Explicit default on a nullable (pointer) column ───────────────────────
+
+	t.Run("adds_nullable_column_with_explicit_default", func(t *testing.T) {
+		t.Parallel()
+		path, cleanup := tempDB(t)
+		defer cleanup()
+
+		s1 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
+		s1.MustRegister(productV1{}, maniflex.ModelConfig{TableName: "products"})
+		a1 := openAdapter(t, path, s1.Registry())
+		if err := a1.AutoMigrate(context.Background(), s1.Registry()); err != nil {
+			t.Fatalf("v1 migrate: %v", err)
+		}
+
+		// Migrate to V5, which ADDs the nullable score column with default:7.
+		// This exercises addColumn, not the CREATE TABLE column builder — the two
+		// are separate code paths and each dropped the tag independently.
+		s2 := maniflex.New(maniflex.Config{PathPrefix: "/api", DisableAutoMigrate: true})
+		s2.MustRegister(productV5{}, maniflex.ModelConfig{TableName: "products"})
+		a2 := openAdapter(t, path, s2.Registry())
+		if err := a2.AutoMigrate(context.Background(), s2.Registry()); err != nil {
+			t.Fatalf("v5 migrate: %v", err)
+		}
+
+		ts := testutil.NewServer(t, testutil.Options{
+			Models:      []any{productV5{}, maniflex.ModelConfig{TableName: "products"}},
+			DBPath:      path,
+			AutoMigrate: testutil.Ptr(false),
+		})
+		// A row created without a score must pick up the column default rather
+		// than NULL. Nullable columns need no default to migrate cleanly, but an
+		// explicit tag is a request, and dropping it silently is the bug.
+		id := ts.MustID(ts.POST("/products", map[string]any{"name": "Widget"}))
+		data := ts.GET("/products/" + id).Data()
+		testutil.AssertEqual(t, "nullable column honours explicit default",
+			testutil.Field(t, data, "score"), float64(7))
 	})
 
 	// ── Re-run is idempotent ───────────────────────────────────────────────────

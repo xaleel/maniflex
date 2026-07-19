@@ -64,6 +64,33 @@ Status   string `json:"status"   mfx:"required,enum:draft|published|archived"`
 Priority int    `json:"priority" mfx:"min:1,max:5,default:3"`
 ```
 
+### How `default:` is applied
+
+`default:V` becomes a SQL `DEFAULT` clause on the column. Nothing applies it in
+Go — it fires because the `INSERT` omits the column, so it takes effect whenever
+a write does not name the field. That holds for both doors into a model:
+
+| Create path | Column omitted when |
+|---|---|
+| `POST /:model` | the request body has no such key |
+| `maniflex.Create[T]` | the struct field is at its Go zero value |
+
+The Go zero is the only signal a struct can give, so a defaulted column cannot
+be given an explicit zero through `Create[T]` — `Priority: 0` against
+`default:3` stores 3. Make the field a pointer when that distinction matters:
+
+```go
+Priority *int `json:"priority" mfx:"default:3"` // nil → 3, new(int) → 0
+```
+
+Only defaulted columns behave this way. A zero on a field with no `default:`
+tag is written as that zero, on both paths.
+
+> Before v0.2.5, `Create[T]` wrote every column at its Go value and a `default:`
+> never fired — the same model created over HTTP and in Go disagreed. In the
+> same release, `default:` on a pointer field started reaching the schema at all;
+> it was previously emitted only for `NOT NULL` columns and silently dropped.
+
 ## Write-access directives
 
 These govern whether a field can be set by a client, and when.

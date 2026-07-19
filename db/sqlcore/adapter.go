@@ -592,17 +592,26 @@ func (a *Adapter) addColumn(ctx context.Context, exec sqlExec, table string, f m
 		col += " NULL"
 	} else {
 		col += " NOT NULL"
-		// Build the DEFAULT clause: explicit mfx:"default:X" tag takes priority
-		// (treated as a raw user value and quoted appropriately); otherwise we
-		// synthesise the SQL zero-value literal for the Go type so that the ALTER
-		// TABLE succeeds on a table that already has rows.
-		if f.Tags.Default != "" {
-			// User-supplied raw value → quote it for the SQL type.
-			col += fmt.Sprintf(" DEFAULT %s", a.quotedDefault(f.Tags.Default, sqlType))
-		} else if lit := a.zeroDefaultSQL(f.Type, sqlType); lit != "" {
-			// Pre-formatted SQL literal (already quoted where needed) → embed directly.
-			col += " DEFAULT " + lit
-		}
+	}
+	// Build the DEFAULT clause: an explicit mfx:"default:X" tag takes priority
+	// (treated as a raw user value and quoted appropriately); otherwise we
+	// synthesise the SQL zero-value literal for the Go type so that the ALTER
+	// TABLE succeeds on a table that already has rows.
+	//
+	// The explicit tag applies to nullable columns too. It used to sit inside
+	// the NOT NULL branch, so mfx:"default:7" on a *int was discarded without a
+	// word — found while fixing audit MS-13, which relies on a pointer field
+	// being the way to store an explicit zero in a defaulted column. The
+	// synthesised zero literal stays NOT NULL-only: it exists solely so the
+	// ALTER succeeds against existing rows, which a NULL column does not need,
+	// and defaulting a nullable column to zero would be a claim the model never
+	// made.
+	if f.Tags.Default != "" {
+		// User-supplied raw value → quote it for the SQL type.
+		col += fmt.Sprintf(" DEFAULT %s", a.quotedDefault(f.Tags.Default, sqlType))
+	} else if lit := a.zeroDefaultSQL(f.Type, sqlType); lit != "" && !isPtr {
+		// Pre-formatted SQL literal (already quoted where needed) → embed directly.
+		col += " DEFAULT " + lit
 	}
 
 	// Postgres supports IF NOT EXISTS (avoiding a race if two instances start up
@@ -765,16 +774,20 @@ func (a *Adapter) columnDef(f maniflex.FieldMeta) string {
 	if f.Tags.DBName == "id" {
 		col += " PRIMARY KEY"
 	} else {
-		if f.Type.Kind() == reflect.Pointer {
+		isPtr := f.Type.Kind() == reflect.Pointer
+		if isPtr {
 			col += " NULL"
 		} else {
 			col += " NOT NULL"
-			if f.Tags.Default != "" {
-				col += fmt.Sprintf(" DEFAULT %s", a.quotedDefault(f.Tags.Default, sqlType))
-			} else if lit := a.zeroDefaultSQL(f.Type, sqlType); lit != "" && !f.Tags.Required {
-				// 			    			don't default-zero required fields ^
-				col += " DEFAULT " + lit
-			}
+		}
+		// Mirrors addColumn: an explicit default: tag applies whether or not the
+		// column is nullable, while the synthesised zero literal is NOT NULL-only.
+		// See the note there — the tag used to be dropped for pointer fields.
+		if f.Tags.Default != "" {
+			col += fmt.Sprintf(" DEFAULT %s", a.quotedDefault(f.Tags.Default, sqlType))
+		} else if lit := a.zeroDefaultSQL(f.Type, sqlType); lit != "" && !f.Tags.Required && !isPtr {
+			// 			    			don't default-zero required fields ^
+			col += " DEFAULT " + lit
 		}
 	}
 

@@ -53,6 +53,57 @@ func encryptedWriteRecord[T any](ctx *ServerContext, meta *ModelMeta, record *T)
 	return mapToRecord(meta, data)
 }
 
+// createPresent lists the columns a typed Create writes. That is every column,
+// minus those left at their Go zero *and* carrying an mfx:"default:" tag.
+//
+// A default: tag becomes a SQL DEFAULT clause on the column and nothing more —
+// there is no Go-side application of it — so a default fires only when the
+// INSERT omits the column. The HTTP create path omits whatever the request body
+// did not send, and got defaults for free; Create[T] passed no present set at
+// all, which the builder reads as "write every column", so the same model
+// created through the two doors disagreed: status "active"/priority 5 over
+// HTTP, ""/0 in Go (audit MS-13). Pointer fields were no escape — a nil *string
+// was written as an explicit NULL, which also beats the DEFAULT.
+//
+// Only defaulted columns are skipped, not every zero-valued one. Widening it
+// would mean a false, an empty string or a 0 stops meaning "this value" on
+// every column in every model, so a deliberate zero would silently become NULL
+// or some DB default the model never declared. The narrow rule leaves
+// full-struct semantics intact everywhere a default was not asked for.
+//
+// The cost is that a defaulted non-pointer column cannot be given an explicit
+// zero — Priority: 0 against default:5 stores 5. Make the field a pointer when
+// that distinction matters: nil takes the default, new(int) writes 0.
+func createPresent[T any](meta *ModelMeta, record *T) map[string]struct{} {
+	rv := reflect.ValueOf(record).Elem()
+	present := make(map[string]struct{}, len(meta.Fields))
+	for i := range meta.Fields {
+		f := &meta.Fields[i]
+		if f.Tags.Default != "" && rv.FieldByIndex(f.Index).IsZero() {
+			continue
+		}
+		present[f.Tags.DBName] = struct{}{}
+	}
+	// No *_hmac companions here, unlike updatablePresent: those are not model
+	// fields. encryptForWrite adds them to the map after recordToMap has already
+	// filtered by this set, and mapToRecord then rebuilds the present set from
+	// the map's own keys.
+	return present
+}
+
+// swapPresent installs present on a record carrier and returns a func restoring
+// the previous value. Create mutates the caller's record rather than a copy so
+// that the id buildInsertSQL generates still lands on it, which callers can see.
+func swapPresent(record any, present map[string]struct{}) func() {
+	rm, ok := record.(recordMeta)
+	if !ok {
+		return func() {}
+	}
+	old := rm.mfxPresent()
+	rm.mfxSetPresent(present)
+	return func() { rm.mfxSetPresent(old) }
+}
+
 // updatablePresent lists the columns a typed Update may write: every column
 // except id, minus the ones the model marks readonly or immutable.
 //
@@ -241,6 +292,9 @@ func Create[T any](ctx *ServerContext, record *T) (*T, error) {
 	if err := stampScope(ctx, meta, record); err != nil {
 		return nil, err
 	}
+	// Declared before the encryption branch so both write paths inherit it:
+	// recordToMap (inside encryptedWriteRecord) filters the map by this same set.
+	defer swapPresent(record, createPresent(meta, record))()
 	// Encrypted models write through the map bridge so mfx:"encrypted" fields are
 	// encrypted (and *_hmac companions written) instead of stored as plaintext by
 	// the struct fast-path. Unencrypted models keep the direct struct write.

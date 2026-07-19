@@ -16,7 +16,6 @@ package maniflex
 import (
 	"fmt"
 	"reflect"
-	"strings"
 )
 
 // decryptTypedResult converts an adapter result (*T) to plaintext when the model
@@ -42,25 +41,52 @@ func decryptTypedResult[T any](ctx *ServerContext, meta *ModelMeta, v any) (*T, 
 
 // encryptedWriteRecord builds a bridge record from a *T for an encrypted model,
 // with its mfx:"encrypted" fields encrypted (and {field}_hmac companions filled).
-// present receives every written column (including the hmac companions).
-func encryptedWriteRecord[T any](ctx *ServerContext, meta *ModelMeta, record *T) (any, map[string]struct{}, error) {
+//
+// It returns no present map: a create writes every column and needs none, and an
+// update builds its own through updatablePresent, which is where the readonly and
+// immutable columns are excluded (audit MS-5).
+func encryptedWriteRecord[T any](ctx *ServerContext, meta *ModelMeta, record *T) (any, error) {
 	data := recordToMap(meta, record)
 	if err := encryptForWrite(ctx.Ctx, ctx.keyProvider, meta, data); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	present := make(map[string]struct{}, len(meta.Fields)+len(data))
+	return mapToRecord(meta, data)
+}
+
+// updatablePresent lists the columns a typed Update may write: every column
+// except id, minus the ones the model marks readonly or immutable.
+//
+// Update[T] is a full-record write — an omitted field is deliberately blanked,
+// which is documented and pinned by test — but "every column except id" also
+// swept in created_at. It is mfx:"readonly" and framework-managed, so a caller
+// building a fresh struct to change one field stamped the zero time over the
+// row's real creation date (audit MS-5). readonly and immutable were enforced
+// only by the Validate step, which no typed helper runs, so the tags protected
+// the HTTP surface alone and any readonly column was silently zeroed the same
+// way. Excluding them here rather than in the adapter's buildUpdateSQL is
+// deliberate: that builder is shared with the scheduled sweep, key rotation and
+// the jobs mount, which each write a named column that an app may well have
+// marked readonly precisely so clients cannot.
+//
+// To write such a column on purpose, use ctx.GetModel(name).Update with an
+// explicit present map — an explicit list is a different statement of intent
+// from a struct that happens to carry a zero value.
+func updatablePresent(meta *ModelMeta) map[string]struct{} {
+	present := make(map[string]struct{}, len(meta.Fields))
 	for i := range meta.Fields {
-		if col := meta.Fields[i].Tags.DBName; col != "id" {
-			present[col] = struct{}{}
+		f := &meta.Fields[i]
+		if f.Tags.DBName == "id" || f.Tags.Readonly || f.Tags.Immutable {
+			continue
+		}
+		present[f.Tags.DBName] = struct{}{}
+		// The hmac companion is derived from the field's value, so it travels
+		// with it — and is skipped with it when the field is not written, since
+		// a stale hmac is worse than an absent one.
+		if f.Tags.Encrypted {
+			present[f.Tags.DBName+"_hmac"] = struct{}{}
 		}
 	}
-	for k := range data {
-		if strings.HasSuffix(k, "_hmac") {
-			present[k] = struct{}{}
-		}
-	}
-	rec, err := mapToRecord(meta, data)
-	return rec, present, err
+	return present
 }
 
 // modelExec resolves the model meta for T and the adapter/tx to route through,
@@ -220,7 +246,7 @@ func Create[T any](ctx *ServerContext, record *T) (*T, error) {
 	// the struct fast-path. Unencrypted models keep the direct struct write.
 	var write any = record
 	if meta.HasEncryptedFields() {
-		if write, _, err = encryptedWriteRecord(ctx, meta, record); err != nil {
+		if write, err = encryptedWriteRecord(ctx, meta, record); err != nil {
 			return nil, err
 		}
 	}
@@ -239,22 +265,22 @@ func Create[T any](ctx *ServerContext, record *T) (*T, error) {
 }
 
 // Update writes record (a *T) over the row identified by id. It is a full-record
-// update: every column (except id) is written. For partial/PATCH writes use the
-// pipeline (HTTP PATCH) or ctx.GetModel(name).Update with a present map.
+// update: every writable column is written, so a field left at its zero value
+// overwrites the stored one. For partial/PATCH writes use the pipeline (HTTP
+// PATCH) or ctx.GetModel(name).Update with a present map.
+//
+// Not written: id, and any column the model marks mfx:"readonly" or
+// mfx:"immutable" — which includes the framework-managed created_at. See
+// updatablePresent. updated_at is still stamped by the adapter.
 func Update[T any](ctx *ServerContext, id string, record *T) (*T, error) {
 	meta, a, tx, err := modelExec[T](ctx)
 	if err != nil {
 		return nil, err
 	}
 	var write any = record
-	present := make(map[string]struct{}, len(meta.Fields))
-	for i := range meta.Fields {
-		if col := meta.Fields[i].Tags.DBName; col != "id" {
-			present[col] = struct{}{}
-		}
-	}
+	present := updatablePresent(meta)
 	if meta.HasEncryptedFields() {
-		if write, present, err = encryptedWriteRecord(ctx, meta, record); err != nil {
+		if write, err = encryptedWriteRecord(ctx, meta, record); err != nil {
 			return nil, err
 		}
 	}

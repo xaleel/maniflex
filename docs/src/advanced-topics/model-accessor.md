@@ -206,9 +206,24 @@ These route through `ctx.Tx`, honour per-model adapters, and return the same
 its typed counterpart, not a separate code path.
 
 One difference is significant: **`maniflex.Update[T]` performs a full-record
-update.** Every column except `id` is written from the supplied struct, so any
-zero-valued field overwrites the stored value. For a partial patch — only the
-specified keys — use the map-based `ctx.GetModel(name).Update(id, data)` instead.
+update.** Every writable column except `id` is written from the supplied struct,
+so any zero-valued field overwrites the stored value. For a partial patch — only
+the specified keys — use the map-based `ctx.GetModel(name).Update(id, data)`
+instead.
+
+Columns the model marks `mfx:"readonly"` or `mfx:"immutable"` are **not** among
+them, and neither are `id`, `created_at` and `updated_at`. Those tags used to be
+enforced only by the Validate step, which no typed helper runs, so a caller
+building a fresh struct to change one field stamped the zero time over the row's
+real `created_at` and blanked every readonly column along with it. To write such
+a column deliberately, name it:
+
+```go
+ctx.GetModel("User").Update(id, map[string]any{"origin": "import"})
+```
+
+An explicit key is a different statement of intent from a struct that happens to
+carry a zero value — which is the whole distinction the two accessors draw.
 
 ## Choosing between the accessors
 

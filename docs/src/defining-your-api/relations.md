@@ -195,6 +195,40 @@ When the related model uses soft delete, rows whose deleted marker is set are
 omitted from `?include=` results — the same filter the framework applies to
 list endpoints. See [Soft Delete](soft-delete.md).
 
+## Scoping and `?include=`
+
+A request's **forced filters** — the scope imposed by `db.Tenancy` or
+`db.ForceFilter` — are applied to included rows as well as to the primary read,
+for every relation kind, wherever the related model carries the filtered column.
+
+This matters because the foreign key is the client's to set. Without it, a
+caller who can write an FK (or a many-to-many junction row) puts their own row
+inside another tenant's `?include=`, and an attach pulls another tenant's record
+into their own response. The framework does not validate junction writes, so the
+include is where the scope has to hold.
+
+```go
+// Tenancy on both models; the include is scoped by the same filter.
+server.Pipeline.DB.Register(
+    db.Tenancy("org_id", orgOf),
+    maniflex.ForModel("Order", "OrderLine"),
+)
+```
+
+**What is not covered.** Be precise about this, because the gap is narrow but
+real:
+
+- A related model with **no such column** is not scoped. That is the right
+  answer for the case that produces it — a shared lookup table (currencies,
+  categories, statuses) is not tenant-partitioned and has nothing to scope by —
+  but if a model *is* partitioned by something the filter cannot name, its
+  includes are unscoped and the FK write is yours to validate.
+- **Relation-path filters** (`db.ForceFilterVia`) are skipped: they are written
+  against the primary model's relations and mean nothing on the related table.
+- The scope applies to the **rows returned**, not to the junction. A row that
+  should never have been attached is now invisible rather than absent; clean it
+  up at the write.
+
 ## Quick reference
 
 | Goal | Declaration |

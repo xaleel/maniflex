@@ -122,7 +122,7 @@ func (t *txAdapter) FindByID(ctx context.Context, model *maniflex.ModelMeta, id 
 	if len(recs) == 0 {
 		return nil, maniflex.ErrNotFound
 	}
-	if err := populateIncludesTyped(ctx, t.tx, t.reg, t.driver, model, recs, qp.Includes); err != nil {
+	if err := populateIncludesTyped(ctx, t.tx, t.reg, t.driver, model, recs, qp); err != nil {
 		return nil, err
 	}
 	return recs[0], nil
@@ -165,7 +165,7 @@ func (t *txAdapter) findByIDMap(ctx context.Context, model *maniflex.ModelMeta, 
 	}
 
 	result := results[0]
-	if err := populateIncludes(ctx, t.tx, t.reg, t.driver, model, []map[string]any{result}, qp.Includes); err != nil {
+	if err := populateIncludes(ctx, t.tx, t.reg, t.driver, model, []map[string]any{result}, qp); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -281,7 +281,7 @@ func (t *txAdapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp 
 			return m[qp.Cursor.Field], fmt.Sprint(m["id"])
 		})]
 	}
-	if err := populateIncludesTyped(ctx, t.tx, t.reg, t.driver, model, recs, qp.Includes); err != nil {
+	if err := populateIncludesTyped(ctx, t.tx, t.reg, t.driver, model, recs, qp); err != nil {
 		return nil, 0, err
 	}
 	return recs, total, nil
@@ -337,7 +337,7 @@ func (t *txAdapter) findManyMap(ctx context.Context, model *maniflex.ModelMeta, 
 		})]
 	}
 
-	if err := populateIncludes(ctx, t.tx, t.reg, t.driver, model, results, qp.Includes); err != nil {
+	if err := populateIncludes(ctx, t.tx, t.reg, t.driver, model, results, qp); err != nil {
 		return nil, 0, err
 	}
 

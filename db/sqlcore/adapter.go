@@ -941,7 +941,7 @@ func (a *Adapter) FindByID(ctx context.Context, model *maniflex.ModelMeta, id st
 	if len(recs) == 0 {
 		return nil, maniflex.ErrNotFound
 	}
-	if err := populateIncludesTyped(ctx, a.readDb, a.reg, a.driver, model, recs, qp.Includes); err != nil {
+	if err := populateIncludesTyped(ctx, a.readDb, a.reg, a.driver, model, recs, qp); err != nil {
 		return nil, err
 	}
 	return recs[0], nil
@@ -984,7 +984,7 @@ func (a *Adapter) findByIDMap(ctx context.Context, model *maniflex.ModelMeta, id
 	}
 
 	result := results[0]
-	if err := populateIncludes(ctx, a.readDb, a.reg, a.driver, model, []map[string]any{result}, qp.Includes); err != nil {
+	if err := populateIncludes(ctx, a.readDb, a.reg, a.driver, model, []map[string]any{result}, qp); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -1117,7 +1117,7 @@ func (a *Adapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp *m
 			return m[qp.Cursor.Field], fmt.Sprint(m["id"])
 		})]
 	}
-	if err := populateIncludesTyped(ctx, a.readDb, a.reg, a.driver, model, recs, qp.Includes); err != nil {
+	if err := populateIncludesTyped(ctx, a.readDb, a.reg, a.driver, model, recs, qp); err != nil {
 		return nil, 0, err
 	}
 	return recs, total, nil
@@ -1169,7 +1169,7 @@ func (a *Adapter) findManyMap(ctx context.Context, model *maniflex.ModelMeta, qp
 			return results[i][qp.Cursor.Field], fmt.Sprint(results[i]["id"])
 		})]
 	}
-	if err := populateIncludes(ctx, a.readDb, a.reg, a.driver, model, results, qp.Includes); err != nil {
+	if err := populateIncludes(ctx, a.readDb, a.reg, a.driver, model, results, qp); err != nil {
 		return nil, 0, err
 	}
 	return results, total, nil
@@ -1179,15 +1179,15 @@ func (a *Adapter) findManyMap(ctx context.Context, model *maniflex.ModelMeta, qp
 // transient map view of the scanned records, then copies the populated relation
 // keys onto each record's extra carrier (where marshalRecord reads them). For
 // the common no-include path it does nothing.
-func populateIncludesTyped(ctx context.Context, runner queryRunner, reg maniflex.RegistryAccessor, driver maniflex.DriverType, model *maniflex.ModelMeta, recs []any, includes []string) error {
-	if len(includes) == 0 || len(recs) == 0 {
+func populateIncludesTyped(ctx context.Context, runner queryRunner, reg maniflex.RegistryAccessor, driver maniflex.DriverType, model *maniflex.ModelMeta, recs []any, qp *maniflex.QueryParams) error {
+	if qp == nil || len(qp.Includes) == 0 || len(recs) == 0 {
 		return nil
 	}
 	maps := make([]map[string]any, len(recs))
 	for i, r := range recs {
 		maps[i] = maniflex.RecordToMap(model, r)
 	}
-	if err := populateIncludes(ctx, runner, reg, driver, model, maps, includes); err != nil {
+	if err := populateIncludes(ctx, runner, reg, driver, model, maps, qp); err != nil {
 		return err
 	}
 	for i, r := range recs {
@@ -1995,11 +1995,12 @@ func softDeleteCond(model *maniflex.ModelMeta, tableAlias string, driver manifle
 
 // ── Include population ────────────────────────────────────────────────────────
 
-func populateIncludes(ctx context.Context, runner queryRunner, reg maniflex.RegistryAccessor, driver maniflex.DriverType, model *maniflex.ModelMeta, rows []map[string]any, includes []string) error {
-	if len(rows) == 0 || len(includes) == 0 || reg == nil {
+func populateIncludes(ctx context.Context, runner queryRunner, reg maniflex.RegistryAccessor, driver maniflex.DriverType, model *maniflex.ModelMeta, rows []map[string]any, qp *maniflex.QueryParams) error {
+	if qp == nil || len(rows) == 0 || len(qp.Includes) == 0 || reg == nil {
 		return nil
 	}
-	for _, key := range includes {
+	scope := forcedScope(qp)
+	for _, key := range qp.Includes {
 		rel := model.RelationByKey(key)
 		if rel == nil {
 			continue
@@ -2010,15 +2011,15 @@ func populateIncludes(ctx context.Context, runner queryRunner, reg maniflex.Regi
 		}
 		switch rel.Kind {
 		case maniflex.BelongsTo:
-			if err := populateBelongsTo(ctx, runner, driver, relMeta, rel, rows); err != nil {
+			if err := populateBelongsTo(ctx, runner, driver, relMeta, rel, rows, scope); err != nil {
 				return err
 			}
 		case maniflex.HasMany:
-			if err := populateHasMany(ctx, runner, driver, relMeta, rel, rows); err != nil {
+			if err := populateHasMany(ctx, runner, driver, relMeta, rel, rows, scope); err != nil {
 				return err
 			}
 		case maniflex.ManyToMany:
-			if err := populateManyToMany(ctx, runner, driver, relMeta, rel, rows); err != nil {
+			if err := populateManyToMany(ctx, runner, driver, relMeta, rel, rows, scope); err != nil {
 				return err
 			}
 		}
@@ -2026,7 +2027,7 @@ func populateIncludes(ctx context.Context, runner queryRunner, reg maniflex.Regi
 	return nil
 }
 
-func populateBelongsTo(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta, rows []map[string]any) error {
+func populateBelongsTo(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta, rows []map[string]any, scope []*maniflex.FilterExpr) error {
 	fkSet := map[string]bool{}
 	for _, row := range rows {
 		if v := row[rel.FKColumn]; v != nil {
@@ -2036,7 +2037,7 @@ func populateBelongsTo(ctx context.Context, runner queryRunner, driver maniflex.
 	if len(fkSet) == 0 {
 		return nil
 	}
-	relRows, err := fetchByIDs(ctx, runner, driver, relMeta, fkSet)
+	relRows, err := fetchByIDs(ctx, runner, driver, relMeta, fkSet, scope)
 	if err != nil {
 		return fmt.Errorf("include %s: %w", rel.RelationKey, err)
 	}
@@ -2056,7 +2057,7 @@ func populateBelongsTo(ctx context.Context, runner queryRunner, driver maniflex.
 	return nil
 }
 
-func populateHasMany(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta, rows []map[string]any) error {
+func populateHasMany(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta, rows []map[string]any, scope []*maniflex.FilterExpr) error {
 	parentIDs := map[string]bool{}
 	for _, row := range rows {
 		if id := fmt.Sprint(row["id"]); id != "" {
@@ -2079,6 +2080,9 @@ func populateHasMany(ctx context.Context, runner queryRunner, driver maniflex.Dr
 	}
 	conditions = append(conditions,
 		fmt.Sprintf("%s.%s IN (%s)", q(relMeta.TableName), q(rel.FKColumn), strings.Join(ids, ", ")))
+	if c := includeScopeCond(relMeta, scope, driver, p); c != "" {
+		conditions = append(conditions, c)
+	}
 
 	query := fmt.Sprintf(
 		"SELECT * FROM %s WHERE %s",
@@ -2118,7 +2122,7 @@ func populateHasMany(ctx context.Context, runner queryRunner, driver maniflex.Dr
 //
 // Junction payload columns (everything except the two FK columns and "id") are
 // surfaced as a "_through" sub-object on each included child.
-func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta, rows []map[string]any) error {
+func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta, rows []map[string]any, scope []*maniflex.FilterExpr) error {
 	if rel.ThroughTable == "" {
 		return nil // unresolved stub — skip silently
 	}
@@ -2197,7 +2201,7 @@ func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex
 	}
 
 	// Step 3: batch-fetch related model rows
-	relRows, err := fetchByIDs(ctx, runner, driver, relMeta, remoteIDSet)
+	relRows, err := fetchByIDs(ctx, runner, driver, relMeta, remoteIDSet, scope)
 	if err != nil {
 		return fmt.Errorf("include %s (remote fetch): %w", rel.RelationKey, err)
 	}
@@ -2230,7 +2234,66 @@ func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex
 	return nil
 }
 
-func fetchByIDs(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, idSet map[string]bool) ([]map[string]any, error) {
+// forcedScope returns the server-imposed filters on a request — the tenancy and
+// force-filter scope — which the include loaders re-apply to the related model
+// (audit MS-9).
+func forcedScope(qp *maniflex.QueryParams) []*maniflex.FilterExpr {
+	if qp == nil {
+		return nil
+	}
+	var out []*maniflex.FilterExpr
+	for _, f := range qp.Filters {
+		if f != nil && f.Forced {
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// includeScopeCond renders the part of a request's scope that also applies to an
+// included model: every forced filter whose column that model actually has.
+//
+// Includes used to be fetched with the soft-delete condition and nothing else,
+// so a tenancy filter constrained the primary read and stopped at the relation
+// boundary. That is not merely an omission — it is exploitable in both
+// directions: a caller who can set a foreign key (or write a junction row) puts
+// their record inside another tenant's ?include=, and a many-to-many attach
+// pulls another tenant's record into their own response. Verified for MS-9: a
+// child row belonging to tenant-b appeared inside tenant-a's include.
+//
+// Only filters naming a column the related model carries are applied. A related
+// model with no such column is left unscoped, which is the right answer for the
+// case that produces it — a shared lookup table (currencies, categories) is not
+// tenant-partitioned and has no column to scope by. The cost of that choice is
+// that a model which *is* partitioned by something this scope cannot express
+// stays unscoped; scoping such a relation is the application's job, as it always
+// was for the junction write itself.
+//
+// Nested (relation-path) filters are skipped: they are written against the
+// primary model's relations and mean nothing on the related table.
+func includeScopeCond(relMeta *maniflex.ModelMeta, scope []*maniflex.FilterExpr,
+	driver maniflex.DriverType, p *ph,
+) string {
+	if len(scope) == 0 {
+		return ""
+	}
+	applicable := make([]*maniflex.FilterExpr, 0, len(scope))
+	for _, f := range scope {
+		if f.IsNested || f.IsLocale {
+			continue
+		}
+		if relMeta.FieldByDBName(f.Field) == nil {
+			continue
+		}
+		applicable = append(applicable, f)
+	}
+	if len(applicable) == 0 {
+		return ""
+	}
+	return filterConds(relMeta, applicable, driver, p)
+}
+
+func fetchByIDs(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, idSet map[string]bool, scope []*maniflex.FilterExpr) ([]map[string]any, error) {
 	p := &ph{driver: driver}
 	phs := make([]string, 0, len(idSet))
 	for id := range idSet {
@@ -2243,6 +2306,9 @@ func fetchByIDs(ctx context.Context, runner queryRunner, driver maniflex.DriverT
 	}
 	conditions = append(conditions,
 		fmt.Sprintf("%s.%s IN (%s)", q(relMeta.TableName), q("id"), strings.Join(phs, ", ")))
+	if c := includeScopeCond(relMeta, scope, driver, p); c != "" {
+		conditions = append(conditions, c)
+	}
 
 	query := fmt.Sprintf(
 		"SELECT * FROM %s WHERE %s",

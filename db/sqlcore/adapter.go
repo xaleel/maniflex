@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -1650,6 +1651,48 @@ func restoreScopeCond(model *maniflex.ModelMeta, qp *maniflex.QueryParams,
 	joinSQL := buildJoins(model, qp.Filters, nil)
 	return fmt.Sprintf("%s IN (SELECT %s.%s FROM %s%s WHERE %s)",
 		q("id"), q(model.TableName), q("id"), q(model.TableName), joinSQL, conds)
+}
+
+// existsInScopeStmt renders the existence probe behind maniflex.ScopeChecker:
+// does a row with this id exist and satisfy the forced filters, counting
+// soft-deleted rows as present?
+//
+// It omits softDeleteCond on purpose — a soft-deleted record's history must stay
+// readable by whoever could read the record, and the delete entry is usually the
+// one being looked for. The scope filters are applied in full, so "deleted" never
+// means "unscoped": a caller still cannot see another tenant's row this way.
+//
+// Selecting a literal keeps the contract honest at the SQL level too: this
+// statement cannot return a soft-deleted row's contents even by accident.
+func existsInScopeStmt(model *maniflex.ModelMeta, id string,
+	filters []*maniflex.FilterExpr, driver maniflex.DriverType,
+) (string, []any) {
+	p := &ph{driver: driver}
+	conds := []string{fmt.Sprintf("%s.%s = %s", q(model.TableName), q("id"), p.add(id))}
+	if len(filters) > 0 {
+		if extra := filterConds(model, filters, driver, p); extra != "" {
+			conds = append(conds, extra)
+		}
+	}
+	joinSQL := buildJoins(model, filters, nil)
+	return fmt.Sprintf("SELECT 1 FROM %s%s WHERE %s LIMIT 1",
+		q(model.TableName), joinSQL, strings.Join(conds, " AND ")), p.args
+}
+
+// ExistsInScope implements maniflex.ScopeChecker.
+func (a *Adapter) ExistsInScope(ctx context.Context, model *maniflex.ModelMeta, id string,
+	filters []*maniflex.FilterExpr,
+) (bool, error) {
+	query, args := existsInScopeStmt(model, id, filters, a.driver)
+	var one int
+	err := a.readDb.QueryRowContext(ctx, query, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("ExistsInScope query: %w", err)
+	}
+	return true, nil
 }
 
 // uniqueIndexFailure builds the migration error for a UNIQUE index that could

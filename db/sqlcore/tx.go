@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -588,6 +589,24 @@ func (t *txAdapter) Restore(ctx context.Context, model *maniflex.ModelMeta, id s
 	// its own — but it does need a non-nil QueryParams, which FindByID
 	// dereferences.
 	return t.FindByID(ctx, model, id, &maniflex.QueryParams{})
+}
+
+// ExistsInScope implements maniflex.ScopeChecker on the transaction, sharing the
+// statement with the adapter so the two cannot drift apart on what "in scope"
+// means. Inside a transaction it also sees the request's own uncommitted writes.
+func (t *txAdapter) ExistsInScope(ctx context.Context, model *maniflex.ModelMeta, id string,
+	filters []*maniflex.FilterExpr,
+) (bool, error) {
+	query, args := existsInScopeStmt(model, id, filters, t.driver)
+	var one int
+	err := t.tx.QueryRowContext(ctx, query, args...).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("tx ExistsInScope query: %w", err)
+	}
+	return true, nil
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

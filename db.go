@@ -198,6 +198,34 @@ type Restorer interface {
 	Restore(ctx context.Context, model *ModelMeta, id string, q *QueryParams) (any, error)
 }
 
+// ScopeChecker is an optional DBAdapter/Tx capability: it answers whether a row
+// exists and satisfies a scope, counting soft-deleted rows as present.
+//
+// It exists for the history endpoint (audit MS-4), which authorises a request by
+// the parent record. Every ordinary read applies the adapter's soft-delete
+// condition unconditionally, so once a record is soft-deleted its history would
+// become unreachable — including the delete entry, which is usually the one an
+// audit is looking for. A soft-deleted row still exists and still carries its
+// tenant and owner columns, so gating on it is exactly as sound as gating on a
+// live one.
+//
+// It deliberately returns only a bool, never the row. A method that returned
+// soft-deleted records would be a general bypass of the soft-delete condition,
+// and would eventually be used as one; this one can authorise a request and
+// nothing else.
+//
+// An adapter that does not implement it still works — the history endpoint falls
+// back to a normal scoped read, and a deleted record's history 404s.
+type ScopeChecker interface {
+	// ExistsInScope reports whether a row with this id exists and satisfies
+	// filters, including when the row is soft-deleted.
+	//
+	// filters carries the request's forced filters — the server-imposed scope
+	// from db.Tenancy or db.ForceFilter — and is nil when nothing is scoped. A
+	// client's own ?filter= is not included, as with every other scope check.
+	ExistsInScope(ctx context.Context, model *ModelMeta, id string, filters []*FilterExpr) (bool, error)
+}
+
 // DBAdapter is the interface all database backends must implement.
 // Methods receive a *ModelMeta describing the target model and a *QueryParams
 // carrying pagination, filters, sorts, and relation includes.

@@ -1770,6 +1770,9 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 			ctx.DBResult = &ListResult{Items: items, Total: total, Query: q}
 		}
 
+	case OpReadHistory:
+		dbErr = s.readHistory(ctx, exec, model)
+
 	case OpRead, OpReadAttachment:
 		var rec any
 		rec, dbErr = exec.findByIDTyped(ctx.Ctx, model, ctx.ResourceID, ctx.Query)
@@ -2024,6 +2027,18 @@ func (s *defaultSteps) restoreRow(ctx *ServerContext, exec dbExec, model *ModelM
 // restorer reports the Restorer behind this exec — the transaction when the
 // request runs in one, else the adapter — and whether it supports restoring at
 // all.
+// scopeChecker reports the ScopeChecker behind this exec — the transaction when
+// the request runs in one, else the adapter — and whether it supports the
+// soft-delete-inclusive scope probe at all.
+func (e dbExec) scopeChecker() (ScopeChecker, bool) {
+	if e.tx != nil {
+		s, ok := e.tx.(ScopeChecker)
+		return s, ok
+	}
+	s, ok := e.adapter.(ScopeChecker)
+	return s, ok
+}
+
 func (e dbExec) restorer() (Restorer, bool) {
 	if e.tx != nil {
 		r, ok := e.tx.(Restorer)
@@ -2214,6 +2229,16 @@ func (s *defaultSteps) response(ctx *ServerContext, next func() error) error {
 		s.recordResponse(ctx, model, http.StatusCreated)
 	case OpList:
 		s.listResponse(ctx, model)
+	case OpReadHistory:
+		// The rows are history rows, so they must be projected through the
+		// history model's fields — marshalling them against the parent would
+		// match almost nothing and emit empty objects. ctx.Model stays the
+		// parent throughout, because that is what every middleware is scoped to.
+		if hist, ok := s.reg.Get(model.Name + "History"); ok {
+			s.listResponse(ctx, hist)
+		} else {
+			s.listResponse(ctx, model)
+		}
 	default: // OpRead, OpUpdate
 		s.recordResponse(ctx, model, http.StatusOK)
 	}

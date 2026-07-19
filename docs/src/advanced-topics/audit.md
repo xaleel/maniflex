@@ -228,7 +228,7 @@ read:
 | Storage | external sink | same DB, sibling table |
 | Per-record reconstruction | no | yes (snapshot) |
 | Compliance archive | yes | possible but awkward |
-| Forensic forensics across the whole system | yes | per-model only |
+| Forensics across the whole system | yes | no — history is read one record at a time, through `GET /:model/{id}/history` |
 | Cost | sink-dependent | one extra INSERT per write |
 
 In a production system both are common: audit log feeds a SIEM for

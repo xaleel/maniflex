@@ -1,7 +1,6 @@
 package e2e_test
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -22,12 +21,16 @@ import (
 
 // HistSecret is versioned with snapshots on (the default) and carries one field
 // of each kind the history table must not record in the clear.
+// It soft-deletes so the delete case below can still read its history — the
+// history endpoint authorises through the parent record, and a hard-deleted
+// record has none (audit MS-4).
 type HistSecret struct {
 	maniflex.BaseModel `mfx:"versioned"`
-	Title              string `json:"title"    db:"title"`
-	SSN                string `json:"ssn"      db:"ssn"      mfx:"encrypted"`
-	Password           string `json:"password" db:"password" mfx:"writeonly"`
-	Internal           string `json:"internal" db:"internal" mfx:"hidden,writeonly"`
+	maniflex.WithDeletedAt
+	Title    string `json:"title"    db:"title"`
+	SSN      string `json:"ssn"      db:"ssn"      mfx:"encrypted"`
+	Password string `json:"password" db:"password" mfx:"writeonly"`
+	Internal string `json:"internal" db:"internal" mfx:"hidden,writeonly"`
 }
 
 // The secret values, distinct so a leak names which field leaked.
@@ -52,10 +55,11 @@ func histSecretServer(t *testing.T) *testutil.Server {
 // the point: a leak is a leak whatever shape it is stored in.
 func snapshotsFor(t *testing.T, srv *testutil.Server, id string) []string {
 	t.Helper()
-	items := srv.GET(fmt.Sprintf(
-		"/hist_secret_history?filter=record_id:eq:%s&sort=version", id)).DataList()
+	// Newest first, so reverse into version order.
+	items := srv.GET("/hist_secrets/" + id + "/history").DataList()
 	out := make([]string, 0, len(items))
-	for _, it := range items {
+	for i := len(items) - 1; i >= 0; i-- {
+		it := items[i]
 		row, ok := it.(map[string]any)
 		if !ok {
 			t.Fatalf("history row is %T, want map", it)

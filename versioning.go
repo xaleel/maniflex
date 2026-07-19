@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"time"
 
@@ -63,7 +64,15 @@ func synthesizeHistoryMeta(source *ModelMeta) *ModelMeta {
 		Name:      histName,
 		TableName: histTable,
 		Fields:    fields,
-		Config:    ModelConfig{},
+		// Headless (audit MS-4): the history model is registered and migrated
+		// like any other, but mounts no REST routes of its own. It used to mount
+		// the full read surface at /{model}_history, and because per-model
+		// middleware is registered ForModel(parent) — not ForModel(parentHistory)
+		// — an app that protected Invoice with ModelConfig.Middleware.Auth left
+		// GET /invoice_history unauthenticated and unscoped: every tenant's
+		// history, readable by anyone. History is now reached only through
+		// GET /:model/{id}/history, which runs the parent's read pipeline first.
+		Config: ModelConfig{Headless: true},
 		Indices: []IndexSpec{{
 			// UNIQUE protects against the (record_id, version) duplicate that
 			// could happen when two concurrent writes to the same record both
@@ -159,6 +168,113 @@ func (c *Server) registerVersioningFor(meta *ModelMeta) error {
 		)
 	}
 	return nil
+}
+
+// ── History read (GET /:model/{id}/history) ──────────────────────────────────
+
+// defaultHistoryPageSize bounds a history page when the request names no limit.
+// History is monotonic and a long-lived record accumulates rows without bound,
+// so an unpaginated read is a slow query waiting to happen.
+const defaultHistoryPageSize = 20
+
+// readHistory serves OpReadHistory: the version history of one record.
+//
+// Order matters here, and it is the security property (audit MS-4). The parent
+// record is read **first**, through the same scoped query a GET of that record
+// would use, so a caller who may not see the record cannot see its history
+// either — they get the same 404 the record itself would give them, which is
+// also what stops the endpoint becoming an existence oracle. Only then are the
+// history rows fetched, filtered to that record id.
+//
+// The alternative — filtering the history table by tenant — is not available at
+// any price: the table holds id, record_id, version, operation, actor_id,
+// timestamp, request_id, diff and snapshot, and none of those is the parent's
+// tenant or owner column. Scoping has to borrow the parent's.
+func (s *defaultSteps) readHistory(ctx *ServerContext, exec dbExec, model *ModelMeta) error {
+	histMeta, ok := s.reg.Get(model.Name + "History")
+	if !ok {
+		// Versioned is set but registerVersioningFor never ran — a wiring bug,
+		// not a client error.
+		ctx.Abort(http.StatusInternalServerError, "HISTORY_UNAVAILABLE",
+			"history model is not registered for "+model.Name)
+		return nil
+	}
+
+	// Gate on the parent, carrying only the scope the server imposed. The
+	// request's own filters and sorts are meant for the history list below;
+	// applying them to the parent would 404 on any filter naming a column the
+	// parent does not share.
+	var scope []*FilterExpr
+	if ctx.Query != nil {
+		scope = forcedFilters(ctx.Query.Filters)
+	}
+	if err := gateOnParent(ctx, exec, model, scope); err != nil {
+		return err // ErrNotFound → 404, exactly as a read of the record would
+	}
+
+	page, limit := 1, defaultHistoryPageSize
+	if ctx.Query != nil {
+		if ctx.Query.Page > 0 {
+			page = ctx.Query.Page
+		}
+		if ctx.Query.Limit > 0 {
+			limit = ctx.Query.Limit
+		}
+	}
+
+	rows, total, err := exec.FindMany(ctx.Ctx, histMeta, &QueryParams{
+		Page:  page,
+		Limit: limit,
+		// Forced: the caller asked for this record's history and must not be
+		// able to widen it to another record's by sending a filter of their own.
+		Filters: []*FilterExpr{{
+			Field: "record_id", Operator: OpEq, Value: ctx.ResourceID,
+			Group: -1, Forced: true,
+		}},
+		// Newest first — the question a history endpoint is usually asked.
+		Sorts: []SortExpr{{DBName: "version", Direction: SortDesc}},
+	})
+	if err != nil {
+		return err
+	}
+
+	items := make([]any, len(rows))
+	for i, row := range rows {
+		items[i] = row
+	}
+	ctx.DBResult = &ListResult{Items: items, Total: total, Query: ctx.Query}
+	return nil
+}
+
+// gateOnParent decides whether the caller may see this record's history, by
+// asking whether they may see the record. Returns ErrNotFound when they may not
+// — the same answer the record itself would give, so the endpoint cannot be used
+// to learn that an id exists in someone else's tenant.
+//
+// A soft-deleted record still has history worth reading, and the delete entry is
+// usually the one being looked for, so the gate prefers the adapter's
+// ScopeChecker, which counts soft-deleted rows as present while applying the
+// scope in full. An adapter that does not implement it falls back to a normal
+// scoped read; the only difference is that a soft-deleted record's history 404s.
+//
+// A hard-deleted record's history is unreachable either way. There is no row left
+// to authorise against, and answering from the history table alone would mean
+// choosing between leaking it to everyone and denying it to everyone.
+func gateOnParent(ctx *ServerContext, exec dbExec, model *ModelMeta, scope []*FilterExpr) error {
+	if sc, ok := exec.scopeChecker(); ok {
+		found, err := sc.ExistsInScope(ctx.Ctx, model, ctx.ResourceID, scope)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return ErrNotFound
+		}
+		return nil
+	}
+	_, err := exec.FindByID(ctx.Ctx, model, ctx.ResourceID, &QueryParams{
+		Page: 1, Limit: 1, Filters: scope,
+	})
+	return err
 }
 
 // ── History row writer ────────────────────────────────────────────────────────

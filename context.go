@@ -46,6 +46,21 @@ const (
 	// requests; use ForOperation(OpRead, OpReadAttachment) to apply to both.
 	OpReadAttachment Operation = "read_attachment"
 
+	// OpReadHistory identifies a request for GET /:model/:id/history — the
+	// per-record version history of a ModelConfig.Versioned model (audit MS-4).
+	//
+	// It dispatches against the **parent** model, not the synthesized history
+	// model, and that is the whole point. The history table has none of the
+	// parent's columns — no tenant_id, no owner_id, nothing a scope could filter
+	// on — so it cannot be secured on its own terms. Running the parent's read
+	// pipeline first means the caller must be allowed to read the record before
+	// its history is fetched, and every auth, tenancy and force-filter middleware
+	// already registered ForModel(parent) governs it unchanged.
+	//
+	// Middleware filtered with ForOperation(OpRead) does NOT match history
+	// requests; use ForOperation(OpRead, OpReadHistory) to apply to both.
+	OpReadHistory Operation = "read_history"
+
 	// OpAction identifies a request handled by a custom action registered via
 	// server.Action(). Deserialize, Validate, Service, and DB steps are skipped;
 	// Auth and Response run normally.

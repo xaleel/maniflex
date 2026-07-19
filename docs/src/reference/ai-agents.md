@@ -433,7 +433,9 @@ server.MustRegister(Invoice{}, maniflex.ModelConfig{Versioned: true})
 
 Creates `invoice_history` table (the source name + `_history`, not pluralised) with columns: `id, record_id, version, operation, actor_id, timestamp, request_id, diff, [snapshot]`.
 
-Diff excludes hidden/writeonly/encrypted fields and HMAC companions. History table is read-only (writes return 405).
+Both the diff **and** the snapshot exclude hidden/writeonly/encrypted fields and HMAC companions — a history row is built from the decrypted record, so anything left in would be stored as plaintext (audit MS-3).
+
+Read history at `GET /invoices/{id}/history` — newest first, `?page=`/`?limit=` (default 20). The history model is `Headless`: there is **no** `/invoice_history` endpoint. It runs the parent's read pipeline, so a caller who cannot read the record gets the same `404` for its history; scope with `ForOperation(maniflex.OpRead, maniflex.OpReadHistory)`. A soft-deleted record keeps readable history; a hard-deleted one does not (nothing left to authorise against).
 
 ## Scheduled runner
 

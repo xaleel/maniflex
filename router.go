@@ -257,6 +257,15 @@ func mountModel(r chi.Router, meta *ModelMeta, h *handlers, storageConfigured bo
 				r.Post("/restore", h.Restore(meta))
 			}
 
+			// Per-record version history (audit MS-4). The synthesized history
+			// model is Headless, so this is the only way in — and it reuses the
+			// parent's read pipeline, so the parent's auth and tenancy decide
+			// who may see it. Scoping the history table directly is not possible:
+			// it holds none of the parent's columns.
+			if meta.Config.Versioned {
+				r.Get("/history", h.History(meta))
+			}
+
 			// Per-model attachment route (3B.3a). One GET per file field on
 			// the model, using the field's JSON name as the URL segment. Only
 			// mounted when FileStorage is configured — otherwise the route

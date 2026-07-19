@@ -325,6 +325,20 @@ func (h *handlers) Restore(meta *ModelMeta) http.HandlerFunc {
 	}
 }
 
+// History returns a handler for GET /resource/{id}/history, mounted for every
+// ModelConfig.Versioned model (audit MS-4).
+//
+// It dispatches against the parent model so the parent's read pipeline runs
+// first: the caller must be permitted to read the record before the DB step
+// will fetch its history rows. That is what makes the endpoint scoped, since
+// the history table carries none of the parent's columns and so cannot be
+// filtered by tenant or owner on its own.
+func (h *handlers) History(meta *ModelMeta) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		h.dispatch(w, r, meta, OpReadHistory)
+	}
+}
+
 // SingletonRead returns a handler for GET /resource on a ModelConfig.Singleton
 // model. There is no {id} in the URL, so it pins ResourceID to SingletonID; the
 // DB step provisions that row on first access (see ensureSingletonRow).

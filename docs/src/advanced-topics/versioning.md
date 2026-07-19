@@ -96,7 +96,8 @@ By default each history row carries both the `diff` and the full
 like on date X?" queries:
 
 ```bash
-curl 'localhost:8080/api/invoice_history?filter=record_id:eq:abc123&sort=version:desc&limit=1'
+# The newest history row for one invoice.
+curl 'localhost:8080/api/invoices/abc123/history?limit=1'
 ```
 
 For high-write models the snapshot is the largest column by far.
@@ -118,29 +119,113 @@ point-in-time recovery, keep the snapshot.
 
 ## Reading history
 
-The history model is a normal registered model. The standard list and
-read endpoints work:
+History is read **through the record it belongs to**:
 
 ```bash
-# All history rows for one invoice, newest first.
-curl 'localhost:8080/api/invoice_history
-     ?filter=record_id:eq:abc123
-     &sort=version:desc'
+# One invoice's history, newest first.
+curl 'localhost:8080/api/invoices/abc123/history'
 
-# Recent activity by an actor.
-curl 'localhost:8080/api/invoice_history
-     ?filter=actor_id:eq:user-alice
-     &sort=timestamp:desc
-     &limit=50'
+# Paginated.
+curl 'localhost:8080/api/invoices/abc123/history?page=2&limit=50'
 ```
 
-`record_id`, `operation`, and `actor_id` are filterable; `version` and
-`timestamp` are sortable. `request_id` is stored but not filterable. Write operations (`POST`,
-`PATCH`, `DELETE`) on the history endpoint return `405 METHOD_NOT_ALLOWED`
-— the history is append-only by construction.
+The response is the standard list envelope. Rows come back newest-first
+(descending `version`); `page` and `limit` are honoured, and the default
+page size is 20.
 
-The history rows participate in OpenAPI generation, so `/openapi.json`
-documents the endpoint alongside everything else.
+### Why not a flat `/invoice_history` endpoint?
+
+There used to be one, and it was a security hole (audit MS-4). The
+synthesized history model mounted the full read surface, but per-model
+middleware is registered against the **parent's** name — an app that
+wrote:
+
+```go
+server.MustRegister(Invoice{}, maniflex.ModelConfig{
+    Versioned:  true,
+    Middleware: &maniflex.ModelMiddleware{Auth: []maniflex.MiddlewareFunc{requireLogin}},
+})
+```
+
+protected `GET /invoices` and left `GET /invoice_history` open to
+anyone. `db.Tenancy("org_id", …)` scoped with `ForModel("Invoice")` had
+the same gap, so any caller could read every tenant's history.
+
+Copying the parent's middleware onto the history model does not fix it.
+The history table has none of the parent's columns — it holds `id`,
+`record_id`, `version`, `operation`, `actor_id`, `timestamp`,
+`request_id`, `diff` and `snapshot` — so a tenancy filter on `org_id`
+has nothing to filter. It would look scoped and enforce nothing.
+
+So the history model is now `Headless` (registered and migrated, no
+routes of its own) and reached only through the parent. The request runs
+the parent's read pipeline first: **if you cannot read the record, you
+cannot read its history**, and you get the same `404` the record itself
+would give you rather than a `403` that confirms it exists. Every auth,
+tenancy and force-filter middleware you already registered applies, with
+nothing new to configure.
+
+Middleware scoped with `ForOperation(OpRead)` does not match these
+requests. Use `ForOperation(maniflex.OpRead, maniflex.OpReadHistory)` to
+cover both.
+
+### Deleted records
+
+A **soft-deleted** record keeps its history, including the delete entry.
+The gate uses the adapter's `ScopeChecker` capability, which counts
+soft-deleted rows as present while still applying your scope — so a
+deleted record's history is visible to exactly the callers who could see
+the record, and to nobody else.
+
+A **hard-deleted** record's history is not reachable over HTTP. The row
+that said who was allowed to read it is gone, and answering from the
+history table alone would mean showing it either to everyone or to no
+one. The rows remain in `{model}_history` for an admin query or an
+offline audit. If you need history to outlive deletion, use soft-delete
+(`maniflex.WithDeletedAt`).
+
+#### Custom adapters
+
+`ScopeChecker` is optional. An adapter that does not implement it — a
+third-party one written against the `DBAdapter` interface — keeps
+working, and the endpoint stays **exactly as scoped**: the gate falls
+back to an ordinary scoped read, so tenancy and force filters apply as
+they always did. The one thing it gives up is the soft-delete case: that
+read applies the soft-delete condition, so a soft-deleted record's
+history 404s, the same as a hard-deleted one.
+
+There is no warning at startup, because nothing is misconfigured — you
+did not ask for a capability and fail to get it. To gain it, implement:
+
+```go
+func (a *MyAdapter) ExistsInScope(
+    ctx context.Context, model *maniflex.ModelMeta, id string,
+    filters []*maniflex.FilterExpr,
+) (bool, error)
+```
+
+Report whether a row with that id exists and satisfies `filters`,
+**including when it is soft-deleted**. Apply the filters in full —
+"deleted" must not become "unscoped" — and return only the boolean, never
+the row: a method that returned soft-deleted records would be a general
+bypass of the soft-delete condition, and this one is deliberately unable
+to serve as one. Implementing it on your `Tx` type as well lets a
+history read inside a transaction see the request's own uncommitted
+writes.
+
+### Filtering
+
+Query parameters are parsed against the **parent** model, so
+`?filter=operation:eq:update` is rejected — `operation` is not a field
+of `Invoice`. Filtering within a record's history is not currently
+supported; a record's history is bounded by that record's edit count,
+and pagination covers it. For cross-record queries ("everything alice
+changed this week"), use [audit logging](audit.md), which is built for
+exactly that question.
+
+The history model is `Headless`, so it contributes a schema to
+`/openapi.json` but no paths; the `/{id}/history` route is documented on
+the parent.
 
 ## Transactions and history
 

@@ -411,6 +411,42 @@ func buildModelPaths(spec *OpenAPISpec, m *ModelMeta, cfg *Config) {
 			}
 		}
 	}
+
+	// Per-record version history (audit MS-4). The history model itself is
+	// Headless and contributes no paths of its own, so without this the route
+	// the router mounts would be missing from the spec entirely.
+	if m.Config.Versioned {
+		spec.Paths[itemPath+"/history"] = PathItem{
+			Get: &OASOperation{
+				OperationID: "get" + m.Name + "History",
+				Summary:     "Get the change history of a " + m.Name,
+				Description: "Returns this record's version history, newest first. Runs the " +
+					"same Auth pipeline as GET " + itemPath + ": a caller who cannot read the " +
+					"record cannot read its history, and receives the same 404.",
+				Tags: []string{tag},
+				Parameters: []OASParameter{
+					idParam,
+					{
+						Name: "page", In: "query",
+						Description: "Page number (1-based)",
+						Schema:      &OASSchema{Type: "integer", Minimum: float64ptr(1)},
+					},
+					{
+						Name: "limit", In: "query",
+						Description: "Rows per page (default 20)",
+						Schema:      &OASSchema{Type: "integer", Minimum: float64ptr(1)},
+					},
+				},
+				Responses: map[string]OASResponse{
+					"200": {
+						Description: "History rows, newest first",
+						Content:     jsonContent(ref(m.Name + "HistoryListResponse")),
+					},
+					"404": errResponse(m.Name + " not found"),
+				},
+			},
+		}
+	}
 }
 
 // buildSingletonPaths registers the GET + PATCH operations for a

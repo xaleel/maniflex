@@ -390,6 +390,21 @@ func (s *defaultSteps) parseMultipartBuffered(ctx *ServerContext) error {
 // Enforces mfx struct-tag rules against ctx.ParsedBody.
 // Runs only for create and update operations.
 
+// fieldAcceptsNull reports whether a JSON null can be stored in this field.
+//
+// It mirrors the migrator's column rule exactly — a pointer field gets a NULL
+// column, everything else gets NOT NULL (see buildColumnDef) — because the two
+// must not drift: validation that accepted a null the schema then refused would
+// hand the client the database's own constraint error, which is how audit MS-7
+// presented in the first place.
+//
+// So the answer is the Go type alone, not the tags. A slice, map or
+// sql.Scanner-implementing field is still NOT NULL when it is not a pointer, and
+// a null for it is refused on the same terms.
+func fieldAcceptsNull(f FieldMeta) bool {
+	return f.Type != nil && f.Type.Kind() == reflect.Pointer
+}
+
 func (s *defaultSteps) validate(ctx *ServerContext, next func() error) error {
 	if ctx.Operation != OpCreate && ctx.Operation != OpUpdate {
 		return next()
@@ -450,6 +465,30 @@ func (s *defaultSteps) validate(ctx *ServerContext, next func() error) error {
 				})
 				continue
 			}
+		}
+
+		// An explicit JSON null is refused for a field whose Go type cannot hold
+		// one (audit MS-7). It used to depend on which source the write was read
+		// from: the record path took json.Unmarshal's collapse of null into the
+		// Go zero value and stored "" with a 200, while the map path carried the
+		// nil through to a NOT NULL column and surfaced the database's own
+		// constraint violation as a 422. Same request, two answers, decided by
+		// whether a middleware had left the body and the typed record's present
+		// set disagreeing.
+		//
+		// Refusing here settles it before either path runs, and refusing is the
+		// honest answer rather than a choice between them: the column is NOT NULL
+		// precisely because the field is not a pointer, so there is no null for
+		// it to store, and silently writing "" would answer a different request
+		// from the one that was sent. Nullability is spelled *T.
+		if val, present := body.Get(jn); present && val == nil && !fieldAcceptsNull(field) {
+			errs = append(errs, map[string]string{
+				"field": jn,
+				"message": fmt.Sprintf(
+					"field %q cannot be null; its type has no null value — "+
+						"send a value, omit the field, or make it a pointer to allow null", jn),
+			})
+			continue
 		}
 
 		// Enum validation (if value is present and enum list is non-empty).

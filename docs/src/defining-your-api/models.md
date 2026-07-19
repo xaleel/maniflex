@@ -71,6 +71,43 @@ The `mfx` tag is the largest of the three and has its own reference in
 a `UserID` foreign key — are interpreted as relations; see
 [Relations](relations.md).
 
+### Nullability is the Go type
+
+A **pointer** field gets a `NULL` column; everything else gets `NOT NULL`. No
+tag controls this — the type is the whole declaration:
+
+```go
+type Note struct {
+    maniflex.BaseModel
+    Title string  `json:"title"`  // NOT NULL — cannot be null
+    Body  *string `json:"body"`   // NULL     — may be null
+}
+```
+
+That decides what a request may send. `{"body": null}` stores SQL `NULL`;
+`{"title": null}` is refused with `422` naming the field, because the column has
+no null to store:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "details": [{
+      "field": "title",
+      "message": "field \"title\" cannot be null; its type has no null value — send a value, omit the field, or make it a pointer to allow null"
+    }]
+  }
+}
+```
+
+Three things are distinct and stay distinct: `null` (refused unless the field is
+a pointer), `""` (a value, stored as written), and **omitting the key** (leaves
+the stored value alone on a `PATCH`).
+
+If you need to tell "empty" from "not set", make the field a pointer. A
+non-pointer field genuinely cannot represent the difference — it reads back as
+the zero value either way.
+
 ## Table names
 
 By default the table name is the struct name converted to snake_case and

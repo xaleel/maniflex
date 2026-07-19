@@ -2,6 +2,7 @@ package maniflex
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -280,35 +281,81 @@ func resolveLocaleString(m map[string]string, chain []string) string {
 // Handles string (JSON TEXT), []byte, and map[string]any (Postgres JSONB).
 // Returns nil when the value cannot be parsed.
 func localeStringToMap(v any) map[string]string {
+	m, _ := localeValueToMap(v)
+	return m
+}
+
+// localeValueToMap is localeStringToMap plus whether the value had to be folded
+// from a bare JSON scalar. Callers with a logger report that: the row is
+// readable but the column is corrupt, and silently normalising it would hide
+// data that still needs fixing.
+func localeValueToMap(v any) (m map[string]string, folded bool) {
 	if v == nil {
-		return nil
+		return nil, false
 	}
 	switch s := v.(type) {
 	case LocaleString:
 		// A scanStruct-populated locale field arrives as the named type.
-		return map[string]string(s)
+		return map[string]string(s), false
 	case map[string]string:
-		return s
+		return s, false
 	case map[string]any:
-		m := make(map[string]string, len(s))
+		out := make(map[string]string, len(s))
 		for k, val := range s {
 			if str, ok := val.(string); ok {
-				m[k] = str
+				out[k] = str
 			}
 		}
-		return m
+		return out, false
 	case string:
-		var m map[string]string
-		if err := json.Unmarshal([]byte(s), &m); err != nil {
-			return nil
-		}
-		return m
+		return localeTextToMap([]byte(s))
 	case []byte:
-		var m map[string]string
-		if err := json.Unmarshal(s, &m); err != nil {
-			return nil
-		}
-		return m
+		return localeTextToMap(s)
 	}
-	return nil
+	return nil, false
+}
+
+// localeTextToMap parses stored locale JSON, falling back to FoldLocaleScalar
+// when the column holds a bare JSON scalar rather than an object.
+func localeTextToMap(raw []byte) (map[string]string, bool) {
+	var m map[string]string
+	if err := json.Unmarshal(raw, &m); err == nil {
+		return m, false
+	}
+	if folded, ok := FoldLocaleScalar(raw); ok {
+		return folded, true
+	}
+	return nil, false
+}
+
+// FoldLocaleScalar reads a locale column that holds a bare JSON scalar —
+// "Cardiology" rather than {"en":"Cardiology"} — and returns it as a one-key
+// map so the value stays readable.
+//
+// Such a column is corrupt: nothing writes this shape any more (see
+// localeWriteValue), but rows written before v0.2.5 carry it, and a hard scan
+// error made them unrecoverable through the API — a 500 on the record and, since
+// one bad row fails the list scan, on the whole collection endpoint. Degrading
+// keeps the endpoint up and the row editable, which is what lets an operator fix
+// it by PATCHing a proper map.
+//
+// The key is "en", matching effectiveLocaleChain's own hard fallback. Which key
+// it is barely matters for display: resolveLocaleString falls back to any
+// non-empty value when no chain key matches, so the value surfaces under every
+// requested locale either way.
+//
+// Reported by the caller as a warning, not swallowed — see the "locale field
+// held a bare scalar" log in toJSONMap/marshalRecord.
+func FoldLocaleScalar(raw []byte) (map[string]string, bool) {
+	var scalar any
+	if err := json.Unmarshal(raw, &scalar); err != nil {
+		return nil, false
+	}
+	switch x := scalar.(type) {
+	case string:
+		return map[string]string{"en": x}, true
+	case float64, bool:
+		return map[string]string{"en": fmt.Sprint(x)}, true
+	}
+	return nil, false
 }

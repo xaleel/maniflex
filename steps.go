@@ -1730,7 +1730,7 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 	if recordSourcedWrite(ctx, model) {
 		dbData = recordToMap(model, ctx.Record)
 	} else {
-		dbData = toDBMap(ctx.ParsedBody, model)
+		dbData = toDBMap(ctx, ctx.ParsedBody, model)
 	}
 
 	// Encryption: guard writes and encrypt field values before they reach the adapter.
@@ -2535,24 +2535,71 @@ func bodyColumnsMatch(b *RequestBody, model *ModelMeta, present map[string]struc
 // toDBMap converts a JSON-keyed body map to a DB-column-keyed map.
 // Only fields present in the model are included. LocaleString fields are
 // marshalled to a JSON string so database/sql can store them as TEXT/JSONB.
-func toDBMap(b *RequestBody, model *ModelMeta) map[string]any {
+func toDBMap(ctx *ServerContext, b *RequestBody, model *ModelMeta) map[string]any {
 	raw := b.raw()
 	if raw == nil {
 		return map[string]any{}
 	}
 	out := make(map[string]any, len(raw))
-	for _, f := range model.Fields {
-		if v, ok := b.Get(f.Tags.JSONName); ok {
-			if f.Tags.Locale {
+	for i := range model.Fields {
+		f := &model.Fields[i]
+		if f.Tags.Locale {
+			if v, ok := localeWriteValue(ctx, f, model, b); ok {
 				if encoded, err := json.Marshal(v); err == nil {
 					out[f.Tags.DBName] = string(encoded)
 				}
-			} else {
-				out[f.Tags.DBName] = v
 			}
+			continue
+		}
+		if v, ok := b.Get(f.Tags.JSONName); ok {
+			out[f.Tags.DBName] = v
 		}
 	}
 	return out
+}
+
+// localeWriteValue picks what a locale column should be written from, given a
+// request body that may carry either shape split mode emits.
+//
+// Split mode — the default — answers a read with "name": the resolved string
+// for one locale, plus "name_i18n": the full map. Nothing consumed either on
+// the way back in: the bare string was marshalled straight into the column as a
+// JSON scalar, so the next read could not unmarshal it into map[string]string
+// (audit MS-14). That is not a niche path; echoing a response back is what a
+// generic edit form does, and one such PATCH left the row unreadable — a 500 on
+// the record *and* on the whole collection endpoint, since one bad row fails the
+// list scan.
+//
+// So both shapes are now understood, companion first:
+//
+//   - "name_i18n" present and parseable → that map wins. It is the complete
+//     value, where the bare field is one locale's rendering of it, so an echoed
+//     response round-trips without losing the translations it did not show.
+//   - "name" holding a bare string → folded into the effective locale's key.
+//     This replaces the column rather than merging into the stored map, which is
+//     what a map write already does — a locale write has never been a per-key
+//     patch, and inventing merge semantics here would make the two shapes behave
+//     differently.
+//   - anything else → passed through unchanged, as before.
+func localeWriteValue(ctx *ServerContext, f *FieldMeta, model *ModelMeta, b *RequestBody) (any, bool) {
+	suffix := "_i18n"
+	if ctx != nil && ctx.SplitSuffix != "" {
+		suffix = ctx.SplitSuffix
+	}
+	if v, ok := b.Get(f.Tags.JSONName + suffix); ok {
+		if m := localeStringToMap(v); m != nil {
+			return m, true
+		}
+	}
+	v, ok := b.Get(f.Tags.JSONName)
+	if !ok {
+		return nil, false
+	}
+	if s, isString := v.(string); isString {
+		// effectiveLocaleChain ends in a hard "en", so there is always a key.
+		return map[string]string{effectiveLocaleChain(ctx, f, model)[0]: s}, true
+	}
+	return v, true
 }
 
 // marshalRecord builds the JSON-keyed response map directly from a typed record
@@ -2606,10 +2653,17 @@ func (s *defaultSteps) marshalRecord(model *ModelMeta, record any, ctx *ServerCo
 			continue
 		}
 
-		m := localeStringToMap(v)
-		if m == nil && v != nil {
-			if ctx != nil {
+		m, folded := localeValueToMap(v)
+		if v != nil && ctx != nil {
+			switch {
+			case m == nil:
 				ctx.Logger().Warn("locale field has unparseable DB value",
+					slog.String("model", model.Name),
+					slog.String("field", f.Tags.DBName))
+			case folded:
+				// Readable, but the column is corrupt: it holds a bare scalar,
+				// not a locale object. Surfaced rather than silently normalised.
+				ctx.Logger().Warn("locale field held a bare scalar, folded to a single locale",
 					slog.String("model", model.Name),
 					slog.String("field", f.Tags.DBName))
 			}
@@ -2721,10 +2775,17 @@ func (s *defaultSteps) toJSONMap(dbMap map[string]any, model *ModelMeta, ctx *Se
 			continue
 		}
 
-		m := localeStringToMap(v)
-		if m == nil && v != nil {
-			if ctx != nil {
+		m, folded := localeValueToMap(v)
+		if v != nil && ctx != nil {
+			switch {
+			case m == nil:
 				ctx.Logger().Warn("locale field has unparseable DB value",
+					slog.String("model", model.Name),
+					slog.String("field", f.Tags.DBName))
+			case folded:
+				// Readable, but the column is corrupt: it holds a bare scalar,
+				// not a locale object. Surfaced rather than silently normalised.
+				ctx.Logger().Warn("locale field held a bare scalar, folded to a single locale",
 					slog.String("model", model.Name),
 					slog.String("field", f.Tags.DBName))
 			}

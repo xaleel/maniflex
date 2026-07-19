@@ -60,11 +60,38 @@ Two keys are emitted in the response:
 
 The resolved string gives display code a stable `string` type; the companion
 `_i18n` map gives the editor everything it needs to build a translation form.
-The `_i18n` field is **read-only** — values sent in the request body under
-that key are silently ignored.
 
 The companion suffix defaults to `"_i18n"` and is configurable via
 `LocaleOptions.SplitSuffix`.
+
+#### Writing a split-mode field back
+
+Both keys are understood on write, so a client can PATCH the object it just
+GETed without special-casing localized fields:
+
+| Body | Stored |
+|---|---|
+| `"name_i18n": {"en":"Finance","ar":"مالية"}` | that map, verbatim — the companion wins |
+| `"name": "Finance"` (a bare string) | `{"<effective locale>": "Finance"}` |
+| `"name": {"en":"Finance"}` (a map) | that map |
+
+The companion takes precedence because it is the complete value, while `name`
+is one locale's rendering of it. That is what makes an echoed response lossless:
+the translations the response did not show still come back in `_i18n`.
+
+A **bare string replaces the column** rather than merging into the stored map —
+the same as a map write, which has never been a per-key patch. So sending only
+`"name": "Finance"` with `?locale=en` leaves the field as `{"en": "Finance"}`
+and drops any other translations. Send the `_i18n` map when you mean to keep
+them.
+
+> Before v0.2.5 the `_i18n` key was ignored on write and a bare string was
+> stored as a JSON scalar, which the next read could not parse — a GET→PATCH
+> round-trip through a generic edit form left the record unreadable, returning
+> 500 for that record *and* for the whole collection, since one bad row fails
+> the list scan. A column still holding a scalar from that era now resolves to
+> its value and logs a warning instead of erroring, so the row can be repaired
+> with an ordinary PATCH.
 
 ### `resolve`
 

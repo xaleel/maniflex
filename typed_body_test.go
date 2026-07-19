@@ -71,7 +71,7 @@ func TestSetField_TypeMismatchClearsPresentFlag(t *testing.T) {
 	if recordSourcedWrite(ctx, meta) {
 		t.Errorf("recordSourcedWrite still true; the write must fall back to ParsedBody after the mismatch")
 	}
-	if got := toDBMap(ctx.ParsedBody, meta)[ageDB]; got != "not-a-number" {
+	if got := toDBMap(ctx, ctx.ParsedBody, meta)[ageDB]; got != "not-a-number" {
 		t.Errorf("write fallback age = %v, want \"not-a-number\" (SetField value, not the stale record value)", got)
 	}
 }
@@ -95,7 +95,7 @@ func TestSetField_TypeMismatchAbsentKeyPersistsViaParsedBody(t *testing.T) {
 	if recordSourcedWrite(ctx, meta) {
 		t.Errorf("recordSourcedWrite true; body carries a key the record never bound")
 	}
-	if got := toDBMap(ctx.ParsedBody, meta)[ageDB]; got != "not-a-number" {
+	if got := toDBMap(ctx, ctx.ParsedBody, meta)[ageDB]; got != "not-a-number" {
 		t.Errorf("write fallback age = %v, want \"not-a-number\"", got)
 	}
 }

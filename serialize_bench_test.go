@@ -208,7 +208,7 @@ func BenchmarkSerialize_ToDBMap(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		benchSink = toDBMap(NewRequestBody(body), meta)
+		benchSink = toDBMap(nil, NewRequestBody(body), meta)
 	}
 }
 

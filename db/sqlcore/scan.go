@@ -272,8 +272,8 @@ func assignStruct(sv reflect.Value, steps []columnStep, holders []any) error {
 			if !h.Valid || h.String == "" {
 				continue
 			}
-			m := maniflex.LocaleString{}
-			if err := json.Unmarshal([]byte(h.String), &m); err != nil {
+			m, err := localeScanValue(h.String)
+			if err != nil {
 				return fmt.Errorf("sqlcore: locale field %s: %w", f.Type(), err)
 			}
 			if tgt, ok := scanScalarTarget(f, st.ptr, true); ok {
@@ -282,6 +282,24 @@ func assignStruct(sv reflect.Value, steps []columnStep, holders []any) error {
 		}
 	}
 	return nil
+}
+
+// localeScanValue parses a locale column's stored text. A bare JSON scalar —
+// the shape a pre-v0.2.5 round-trip through split mode could store — folds to a
+// one-key map instead of failing the scan, because the failure was not confined
+// to the field: it aborted the row, so one corrupt row 500'd the whole list
+// endpoint and left the record unfixable through the API. See
+// maniflex.FoldLocaleScalar.
+func localeScanValue(s string) (maniflex.LocaleString, error) {
+	m := maniflex.LocaleString{}
+	if err := json.Unmarshal([]byte(s), &m); err == nil {
+		return m, nil
+	}
+	folded, ok := maniflex.FoldLocaleScalar([]byte(s))
+	if !ok {
+		return nil, fmt.Errorf("value is neither an object nor a scalar: %q", s)
+	}
+	return folded, nil
 }
 
 // scanScalarTarget returns the reflect.Value a scalar should be written into.

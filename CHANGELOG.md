@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2.4
+## v0.2.4 (2026-07-19)
 
 - **Bugfix:** a panicking computed field no longer crashes the process. List rows resolve in worker goroutines, which `PanicRecoverer` does not wrap, so an unchecked `row["id"].(string)` on a null id killed the server from any client on any multi-row page — while the same field on a single-row read merely returned `500`. A panic is now logged and its field omitted, as an error already was, per-row and batch alike.
 - **Bugfix:** `maniflex.Update[T]` no longer overwrites `created_at`, nor any other `mfx:"readonly"` or `mfx:"immutable"` column. It writes the whole record, so a caller building a fresh struct to change one field stamped the zero time (`0001-01-01`) over the row's real creation date — those tags were enforced only by the Validate step, which no typed helper runs. Unset ordinary fields are still blanked: it remains a full replace.

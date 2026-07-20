@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.1
+## v0.3.1 (2026-07-20)
 
 - **Breaking / Feature:** `events/nats` honours `Subscription.Group` as a JetStream queue group, so replicas sharing a group share the work — what `Group` already meant on Kafka and Redis. It bound a durable with no queue group, which accepts exactly one subscription, so a **second replica was refused** with "consumer is already bound". Existing durables are not reused; see below.
 - **Breaking / Bugfix:** `events/nats` durable names are unique. They were `{group}-{sanitised subject}`, and sanitising maps `.` to `_` and `>` to `all`, so `invoice.*` and `invoice.all` produced one name — the second subscription refused with `ErrSubjectMismatch`. Now `{group}-{subject}-{hash}`. **Old durables are orphaned:** drain and remove them; new ones start at the stream's default policy.

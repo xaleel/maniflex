@@ -385,11 +385,6 @@ func (c *Server) StartWithContext(ctx context.Context) error {
 	// after starting services — so a misconfigured application discovered it only
 	// once the schema had already been altered. A configuration error should cost
 	// nothing to find. It is cached, so the Handler call below is a lookup.
-	// Validate and assemble the router FIRST, before anything with a side effect
-	// (10.1). This used to happen at the Handler call below, after migrating and
-	// after starting services — so a misconfigured application discovered it only
-	// once the schema had already been altered. A configuration error should cost
-	// nothing to find. It is cached, so the Handler call below is a lookup.
 	handler, err := c.handler()
 	if err != nil {
 		c.abortGoroutines()

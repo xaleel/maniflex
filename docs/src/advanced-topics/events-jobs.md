@@ -172,6 +172,14 @@ Available adapters: `events/redis`, `events/kafka`, `events/nats`,
 `events/rabbitmq`. The in-process adapter (`inproc.New()` from
 `github.com/xaleel/maniflex/events/inproc`) ships in the core module for tests.
 
+> **`events/redis` reclaims abandoned messages.** A consumer that dies
+> mid-delivery leaves its messages pending; each consumer runs a periodic
+> `XAUTOCLAIM` sweep to take them over. Tune `Options.ClaimMinIdle` (default 5m)
+> above your slowest handler including retries — a message becomes claimable
+> while its original consumer may still be working on it, so claiming early
+> means delivering twice. `Options.ConsumerName` (default hostname+pid) must be
+> stable across restarts: Redis never removes consumers from a group.
+
 > **`events/rabbitmq` does not reconnect.** It is handed an `*amqp.Connection`
 > it does not own, and amqp091-go connections do not self-heal, so a connection
 > or channel drop ends every subscription on it permanently while the process

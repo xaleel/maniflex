@@ -22,6 +22,22 @@
 // Options.ConsumerName must be stable across restarts — Redis never removes
 // consumers from a group, so a name that changes each start adds a permanent
 // entry every deploy. The default derives from hostname and pid.
+//
+// # Retention
+//
+// Each stream is capped at Options.MaxLen entries (default 100,000). Streams
+// are not queues — an entry stays after it is read — so an uncapped stream
+// grows until Redis runs out of memory.
+//
+// The cap costs events rather than memory. Trimming deletes the oldest entries
+// and does not consult consumer groups, so an entry a consumer has read but not
+// yet acknowledged is dropped along with the rest: no error reaches the
+// publisher and no consumer learns it existed. Size MaxLen against how far
+// behind you are willing to let a consumer fall, not against throughput, or
+// set MaxLenUnlimited and bound growth some other way.
+//
+// Each event is written to two streams — its own and the hub — in one
+// MULTI/EXEC transaction, so the two cannot disagree about whether it happened.
 package redis
 
 import (
@@ -45,7 +61,20 @@ import (
 const (
 	defaultClaimMinIdle  = 5 * time.Minute
 	defaultClaimInterval = 30 * time.Second
+
+	// defaultMaxLen caps each stream. Streams are not queues: entries stay
+	// after they are read, so an uncapped stream grows for as long as the
+	// process publishes and eventually exhausts Redis's memory.
+	defaultMaxLen = 100_000
 )
+
+// MaxLenUnlimited disables stream trimming when assigned to Options.MaxLen.
+//
+// Nothing then bounds stream growth, so pair it with a Redis `maxmemory`
+// policy or an external trim. It exists because the alternative — trimming —
+// deletes events, and which of the two is acceptable is not a decision this
+// package can make for you.
+const MaxLenUnlimited = -1
 
 // Options customises the Bus. All fields are optional.
 type Options struct {
@@ -69,6 +98,22 @@ type Options struct {
 	// ClaimInterval is how often to scan for reclaimable messages.
 	// Default: 30s.
 	ClaimInterval time.Duration
+
+	// MaxLen caps the number of entries retained per stream. Default: 100_000.
+	// Set MaxLenUnlimited to disable trimming.
+	//
+	// Trimming drops the OLDEST entries, and it does not consult consumer
+	// groups: an entry still pending in a group's PEL — read but not yet
+	// acknowledged — is deleted along with everything else that aged out. The
+	// event is then gone, no error is returned to the publisher, and no
+	// consumer learns it existed. This is the failure mode of a consumer that
+	// falls more than MaxLen behind, so size it against how far behind you are
+	// willing to let one fall rather than against steady-state throughput.
+	//
+	// Trimming is approximate (Redis's `~`), which trims at radix-tree node
+	// boundaries: the stream retains at least MaxLen, usually somewhat more.
+	// It is much cheaper than exact trimming and errs toward keeping data.
+	MaxLen int64
 }
 
 // Bus is a Redis Streams event bus.
@@ -97,6 +142,12 @@ func New(client *goredis.Client, prefix string, opts ...Options) *Bus {
 	}
 	if o.ClaimInterval <= 0 {
 		o.ClaimInterval = defaultClaimInterval
+	}
+	// Only the zero value takes the default: a negative MaxLen is an explicit
+	// MaxLenUnlimited and must survive, which is why this is not the `<= 0`
+	// test the options above use.
+	if o.MaxLen == 0 {
+		o.MaxLen = defaultMaxLen
 	}
 	return &Bus{
 		client: client,
@@ -128,7 +179,31 @@ func (b *Bus) key(eventType string) string {
 // hubKey is the fan-out stream that receives every event for wildcard consumers.
 func (b *Bus) hubKey() string { return b.key("*") }
 
+// xaddArgs builds the XADD for one stream, applying the configured trim.
+//
+// A MaxLen of zero leaves XAddArgs.MaxLen unset, which omits the MAXLEN clause
+// entirely — that is how MaxLenUnlimited takes effect.
+func (b *Bus) xaddArgs(stream string, values map[string]any) *goredis.XAddArgs {
+	args := &goredis.XAddArgs{Stream: stream, Values: values}
+	if b.opts.MaxLen > 0 {
+		args.MaxLen = b.opts.MaxLen
+		args.Approx = true
+	}
+	return args
+}
+
+// streams returns the two streams every event is written to: its own typed
+// stream, and the hub that wildcard subscribers read.
+func (b *Bus) streams(eventType string) []string {
+	return []string{b.key(eventType), b.hubKey()}
+}
+
 // Publish adds e to its typed stream and the hub stream.
+//
+// Both writes go out as one MULTI/EXEC transaction. A plain pipeline only
+// batches — it does not make the writes atomic — so a connection lost between
+// them left the event on one stream and not the other, and the two subscriber
+// kinds disagreed permanently about whether it happened (audit EV-14).
 func (b *Bus) Publish(ctx context.Context, e events.Event) error {
 	payload, err := json.Marshal(e)
 	if err != nil {
@@ -136,35 +211,32 @@ func (b *Bus) Publish(ctx context.Context, e events.Event) error {
 	}
 	values := map[string]any{"id": e.ID, "payload": string(payload)}
 
-	pipe := b.client.Pipeline()
-	for _, stream := range []string{b.key(e.Type), b.hubKey()} {
-		pipe.XAdd(ctx, &goredis.XAddArgs{
-			Stream: stream,
-			MaxLen: 100_000,
-			Approx: true,
-			Values: values,
-		})
+	pipe := b.client.TxPipeline()
+	for _, stream := range b.streams(e.Type) {
+		pipe.XAdd(ctx, b.xaddArgs(stream, values))
 	}
 	_, err = pipe.Exec(ctx)
 	return err
 }
 
-// PublishBatch publishes all events in a single pipelined command.
+// PublishBatch publishes all events in a single transaction, so a batch either
+// lands whole or not at all — including each event's typed/hub pair.
 func (b *Bus) PublishBatch(ctx context.Context, es []events.Event) error {
 	if len(es) == 0 {
 		return nil
 	}
-	pipe := b.client.Pipeline()
+	pipe := b.client.TxPipeline()
 	for _, e := range es {
-		payload, _ := json.Marshal(e)
+		// The error was discarded here, publishing an empty payload that no
+		// subscriber can decode — a poison entry manufactured out of a
+		// reportable failure. Publish always checked; this did not.
+		payload, err := json.Marshal(e)
+		if err != nil {
+			return fmt.Errorf("redis: marshal event %q: %w", e.ID, err)
+		}
 		values := map[string]any{"id": e.ID, "payload": string(payload)}
-		for _, stream := range []string{b.key(e.Type), b.hubKey()} {
-			pipe.XAdd(ctx, &goredis.XAddArgs{
-				Stream: stream,
-				MaxLen: 100_000,
-				Approx: true,
-				Values: values,
-			})
+		for _, stream := range b.streams(e.Type) {
+			pipe.XAdd(ctx, b.xaddArgs(stream, values))
 		}
 	}
 	_, err := pipe.Exec(ctx)

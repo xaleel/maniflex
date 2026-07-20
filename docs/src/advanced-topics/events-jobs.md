@@ -260,6 +260,18 @@ Available adapters: `events/redis`, `events/kafka`, `events/nats`,
 > means delivering twice. `Options.ConsumerName` (default hostname+pid) must be
 > stable across restarts: Redis never removes consumers from a group.
 
+> **`events/redis` trims its streams, and trimming loses events.** Each stream
+> is capped at `Options.MaxLen` (default 100,000). Streams are not queues — an
+> entry stays after it is read — so an uncapped stream grows until Redis runs
+> out of memory. But the cap is paid in events: trimming deletes the oldest
+> entries without consulting consumer groups, so an entry a consumer has read
+> but not yet acknowledged goes with them. The publisher gets no error and the
+> consumer never learns it existed. Size `MaxLen` against how far behind you
+> are willing to let a consumer fall, not against throughput; `MaxLenUnlimited`
+> disables trimming if you would rather bound growth with a Redis `maxmemory`
+> policy. Each event's two writes — its own stream and the hub — go out as one
+> `MULTI`/`EXEC`, so the two can never disagree about whether it happened.
+
 > **`events/rabbitmq` does not reconnect.** It is handed an `*amqp.Connection`
 > it does not own, and amqp091-go connections do not self-heal, so a connection
 > or channel drop ends every subscription on it permanently while the process

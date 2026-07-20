@@ -291,6 +291,23 @@ Available adapters: `events/redis`, `events/kafka`, `events/nats`,
 > a shared stream, or consume from the owning service's stream. Create the stream
 > yourself (scoped to your business subjects, not `">"`); `New` does not create it.
 
+> **NATS durable names changed, and `Group` now works.** `Subscription.Group`
+> becomes a JetStream queue group, so replicas sharing a `Group` share the work
+> and each event is handled once by the group — what `Group` already meant on
+> Kafka and Redis. Previously the adapter bound a durable with no queue group,
+> which accepts exactly one subscription, so a **second replica was refused**
+> outright. Durable names also gained a hash suffix (`{group}-{subject}-{hash}`)
+> because the old form was not unique: `.` renders as `_` and `>` as `all`, so
+> `invoice.*` and `invoice.all` produced the same name and the second
+> subscription was rejected with `ErrSubjectMismatch`.
+>
+> **Both are breaking for existing deployments.** Consumers created by an
+> earlier version are not reused: the old durables keep their position and go
+> unconsumed, and the new ones start at the stream's default delivery policy —
+> which may replay retained events. Drain the old consumers before upgrading a
+> busy deployment, then remove them (`nats consumer ls <stream>`, `nats consumer
+> rm`).
+
 ---
 
 ## Job queue

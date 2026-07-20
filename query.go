@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -46,6 +47,17 @@ type SortExpr struct {
 	NestedField   string // DB column on the related table, e.g. "name"
 }
 
+// MaxIncludeDepth is the number of dot-separated segments ?include= accepts:
+// "author" is depth 1, "author.company" is depth 2, and "author.company.owner"
+// is refused.
+//
+// Capped because the tree is client-supplied and each level multiplies work: the
+// includes are batched per level, so a request costs one query per node, and an
+// uncapped tree would let a caller pick that number. Two levels covers what
+// nesting is actually for — reaching the thing your thing belongs to — without
+// making the cost of a request a matter of opinion.
+const MaxIncludeDepth = 2
+
 // QueryParams holds all URL query parameters parsed for a list request.
 type QueryParams struct {
 	Page     int
@@ -54,6 +66,17 @@ type QueryParams struct {
 	Sorts    []SortExpr
 	Includes []string // relation keys to load inline
 	Fields   []string // DB column names to SELECT; empty = SELECT table.*
+
+	// NestedIncludes maps a relation key in Includes to relation keys on *that*
+	// model, loaded one level further down — what ?include=author.company asks
+	// for. Nil for the flat case, which is why Includes keeps its meaning and
+	// existing readers of it are unaffected.
+	//
+	// One level only. Depth is capped at parse time (MaxIncludeDepth) because
+	// each level multiplies the number of queries and the tree is client-supplied.
+	// A key here is always present in Includes too: the parent is what the child
+	// hangs off, so asking for a.b implies a.
+	NestedIncludes map[string][]string
 
 	// Search holds the trimmed ?q= full-text search query, "" when absent. When
 	// non-empty the DB step adds the driver's native FTS predicate over the
@@ -198,15 +221,8 @@ func ParseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor) (
 
 	// ── includes ─────────────────────────────────────────────────────────────
 	if inc := query.Get("include"); inc != "" {
-		for _, key := range strings.Split(inc, ",") {
-			key = strings.TrimSpace(key)
-			if key == "" {
-				continue
-			}
-			if model.RelationByKey(key) == nil {
-				return nil, fmt.Errorf("include %q is not a relation on model %s", key, model.Name)
-			}
-			q.Includes = append(q.Includes, key)
+		if err := parseIncludes(q, inc, model, reg); err != nil {
+			return nil, err
 		}
 	}
 
@@ -269,4 +285,62 @@ func ParseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor) (
 	}
 
 	return q, nil
+}
+
+// parseIncludes fills q.Includes and q.NestedIncludes from a raw ?include=
+// value: a comma-separated list whose entries may carry one dot, naming a
+// relation on the related model ("author.company").
+//
+// Every segment is resolved against a real relation and a bad one is an error,
+// not an omission. An include the server quietly ignores looks to the client
+// exactly like a relation that happens to be empty, which is the failure mode
+// mfx tag validation was tightened to end (MS-L11).
+func parseIncludes(q *QueryParams, raw string, model *ModelMeta, reg RegistryAccessor) error {
+	seen := make(map[string]bool)
+	for _, entry := range strings.Split(raw, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		segs := strings.Split(entry, ".")
+		if len(segs) > MaxIncludeDepth {
+			return fmt.Errorf(
+				"include %q is too deep: at most %d levels are supported (a.b), got %d",
+				entry, MaxIncludeDepth, len(segs))
+		}
+
+		root := strings.TrimSpace(segs[0])
+		rel := model.RelationByKey(root)
+		if rel == nil {
+			return fmt.Errorf("include %q is not a relation on model %s", root, model.Name)
+		}
+		// Asking for a.b implies a: the parent is what the child hangs off.
+		if !seen[root] {
+			seen[root] = true
+			q.Includes = append(q.Includes, root)
+		}
+		if len(segs) == 1 {
+			continue
+		}
+
+		child := strings.TrimSpace(segs[1])
+		if reg == nil {
+			return fmt.Errorf("include %q: nested includes need the registry", entry)
+		}
+		relModel, ok := reg.Get(rel.RelatedModel)
+		if !ok {
+			return fmt.Errorf("include %q: model %s is not registered", entry, rel.RelatedModel)
+		}
+		if relModel.RelationByKey(child) == nil {
+			return fmt.Errorf("include %q: %q is not a relation on model %s",
+				entry, child, relModel.Name)
+		}
+		if q.NestedIncludes == nil {
+			q.NestedIncludes = make(map[string][]string, 1)
+		}
+		if !slices.Contains(q.NestedIncludes[root], child) {
+			q.NestedIncludes[root] = append(q.NestedIncludes[root], child)
+		}
+	}
+	return nil
 }

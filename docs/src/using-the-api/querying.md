@@ -248,6 +248,33 @@ relation keys are derived.
 Includes are populated by separate queries after the main query — they do not
 multiply rows or affect pagination.
 
+### One level of nesting
+
+A key may carry a single dot to load a relation of the related model:
+
+```
+?include=author.company
+?include=author.company,comments
+```
+
+`?include=author.company` implies `author` — the parent is what the child hangs
+off — so you do not need to name both.
+
+**Two segments is the limit.** `?include=a.b.c` is refused with `400
+INVALID_QUERY`. Each level is one more batched query, and the tree comes from the
+client, so leaving it uncapped would let a caller choose how much work a request
+costs.
+
+Every segment must name a real relation; a typo is a `400`, not a silently
+missing key. Nested rows are scoped, decrypted and field-filtered exactly as the
+first level is — a forced filter (`db.Tenancy`, `db.ForceFilter`) applies at every
+level, and `hidden` / `writeonly` fields on the nested model stay out.
+
+> **Go callers:** nesting applies to the JSON response. The typed relation
+> structs (`post.Author`) are still populated one level deep, so
+> `post.Author.Company` is not filled in by a typed read. Use the JSON path, or a
+> second `maniflex.Read`.
+
 ## `select`
 
 Request a subset of fields instead of the full row. Useful for wide tables

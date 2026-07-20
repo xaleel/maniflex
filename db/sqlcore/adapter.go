@@ -2050,8 +2050,29 @@ func populateIncludes(ctx context.Context, runner queryRunner, reg maniflex.Regi
 	if qp == nil || len(rows) == 0 || len(qp.Includes) == 0 || reg == nil {
 		return nil
 	}
-	scope := forcedScope(qp)
-	for _, key := range qp.Includes {
+	return populateIncludeLevel(ctx, runner, reg, driver, model, rows,
+		qp.Includes, qp.NestedIncludes, forcedScope(qp))
+}
+
+// populateIncludeLevel loads one level of relations onto rows, then recurses
+// into whatever nested names each one carries (?include=a.b — see
+// maniflex.MaxIncludeDepth).
+//
+// Each level stays batched: the relations are loaded across every row at once,
+// so the cost is one query per node of the include tree rather than per row.
+// Recursion is safe to do in place because the nested values are maps and slices
+// of maps — reference types — so populating a child level mutates the objects
+// already embedded in the parent rows.
+//
+// scope is threaded down unchanged. It is the request's forced filters, and
+// includeScopeCond drops the ones a given model has no column for, so a nested
+// model is scoped by whatever applies to it and a shared lookup table stays
+// unscoped — the same rule the first level follows.
+func populateIncludeLevel(ctx context.Context, runner queryRunner, reg maniflex.RegistryAccessor,
+	driver maniflex.DriverType, model *maniflex.ModelMeta, rows []map[string]any,
+	includes []string, nested map[string][]string, scope []*maniflex.FilterExpr,
+) error {
+	for _, key := range includes {
 		rel := model.RelationByKey(key)
 		if rel == nil {
 			continue
@@ -2074,8 +2095,45 @@ func populateIncludes(ctx context.Context, runner queryRunner, reg maniflex.Regi
 				return err
 			}
 		}
+
+		sub := nested[key]
+		if len(sub) == 0 {
+			continue
+		}
+		child := collectNestedRows(rows, rel.RelationKey)
+		if len(child) == 0 {
+			continue
+		}
+		// nil for the nested map: depth is capped at two, so this level has no
+		// children of its own to recurse into.
+		if err := populateIncludeLevel(ctx, runner, reg, driver, relMeta, child, sub, nil, scope); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// collectNestedRows flattens the relation values populated onto rows under key
+// into one slice, so the next level can be loaded for all of them in a single
+// batch. The maps are the same ones embedded in rows, not copies, so populating
+// them is what puts the nested data in the response.
+func collectNestedRows(rows []map[string]any, key string) []map[string]any {
+	var out []map[string]any
+	for _, row := range rows {
+		switch v := row[key].(type) {
+		case map[string]any: // BelongsTo
+			if v != nil {
+				out = append(out, v)
+			}
+		case []map[string]any: // HasMany / ManyToMany
+			for _, r := range v {
+				if r != nil {
+					out = append(out, r)
+				}
+			}
+		}
+	}
+	return out
 }
 
 func populateBelongsTo(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta, rows []map[string]any, scope []*maniflex.FilterExpr) error {

@@ -3,6 +3,7 @@ package maniflex
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 )
 
@@ -20,6 +21,63 @@ type txContextKey struct{}
 func TxFromContext(ctx context.Context) Tx {
 	tx, _ := ctx.Value(txContextKey{}).(Tx)
 	return tx
+}
+
+// AfterCommit registers fn to run once the request's transaction has committed
+// successfully. If the transaction rolls back, fn is never called.
+//
+// Use it for side effects that must not become visible before the write they
+// describe is durable — publishing to a broker, enqueuing a job, calling a
+// webhook. Without it, a side effect fired from inside the transaction is
+// announcing a write that may still be rolled back, and a subscriber that reads
+// the record straight back races the commit and finds nothing (audit EV-3).
+//
+// fn runs synchronously, after the commit and before the request returns; keep
+// it short, or have it start its own goroutine.
+//
+// AfterCommit reports whether fn was deferred. It returns false — having already
+// called fn inline — when there is no transaction to wait for, or when the
+// transaction was opened by something that does not run commit hooks. Deferring
+// into a queue nobody drains would lose the side effect entirely, which is worse
+// than performing it early, so the fallback is to run it. Callers that only need
+// the side effect to happen can ignore the result:
+//
+//	ctx.AfterCommit(func() { bus.Publish(bgCtx, e) })
+//
+// WithTransaction is the middleware that drains the queue.
+func (c *ServerContext) AfterCommit(fn func()) bool {
+	if fn == nil {
+		return false
+	}
+	if c.Tx == nil || !c.commitDrainer {
+		fn()
+		return false
+	}
+	c.commitHooks = append(c.commitHooks, fn)
+	return true
+}
+
+// runCommitHooks fires the queued hooks in registration order and clears the
+// queue, so a second transaction in the same request starts clean.
+func (c *ServerContext) runCommitHooks() {
+	hooks := c.commitHooks
+	c.commitHooks = nil
+	for _, fn := range hooks {
+		fn()
+	}
+}
+
+// dropCommitHooks discards the queue after a rollback. The count is logged
+// rather than the hooks being run: their whole purpose is not to fire for a
+// write that did not happen, but silence would make a dropped publish
+// indistinguishable from one that was never registered.
+func (c *ServerContext) dropCommitHooks() {
+	if len(c.commitHooks) == 0 {
+		return
+	}
+	c.Logger().Debug("transaction rolled back; after-commit hooks dropped",
+		slog.Int("hooks", len(c.commitHooks)))
+	c.commitHooks = nil
 }
 
 // WithTransaction wraps the pipeline's DB step in a database transaction.
@@ -63,11 +121,23 @@ func WithTransaction(opts *TxOptions) MiddlewareFunc {
 			return nil
 		}
 
+		// Take responsibility for the after-commit queue while this transaction
+		// is in force, so AfterCommit defers instead of running inline. Restore
+		// the previous value rather than clearing it: an outer WithTransaction
+		// that already owns the queue must keep owning it.
+		prevDrainer := ctx.commitDrainer
+		ctx.commitDrainer = true
+
 		// Rollback is always deferred. After Commit it becomes a no-op.
 		defer func() {
 			// Rollback after a successful commit returns sql.ErrTxDone
 			// from database/sql, which we silently discard.
 			_ = tx.Rollback()
+
+			// Anything still queued belongs to a transaction that did not
+			// commit — every commit path below drains the queue itself.
+			ctx.dropCommitHooks()
+			ctx.commitDrainer = prevDrainer
 
 			// The transaction is finished either way by the time this returns.
 			// Clear both handles on it — ctx.Tx and the context value — so a
@@ -104,6 +174,11 @@ func WithTransaction(opts *TxOptions) MiddlewareFunc {
 				fmt.Sprintf("failed to commit transaction: %v", err))
 			return nil
 		}
+
+		// Durable now, so the side effects that were waiting on it may fire.
+		// A commit that failed above falls through to the deferred drop: the
+		// write did not happen and neither may its announcements.
+		ctx.runCommitHooks()
 		return nil
 	}
 }

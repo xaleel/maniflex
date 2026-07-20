@@ -202,11 +202,14 @@ call). It checks:
 - `next()` returned nil → no pipeline error.
 - `ctx.Response == nil` or `< 400` → no aborted step.
 - Calls `tx.Commit()`. The deferred `Rollback` is now a no-op.
+- Runs any callbacks registered with `ctx.AfterCommit` — the write is
+  durable, so the side effects that were waiting on it may fire.
 - Clears `ctx.Tx` so any post-commit code uses the bare adapter.
 
 If `next()` had returned an error, or if any step had set `ctx.Response`
 to a status `>= 400`, `Commit` would have been skipped and the deferred
-`Rollback` would have fired.
+`Rollback` would have fired — and the `AfterCommit` callbacks would have
+been dropped rather than run, since the write they announce did not happen.
 
 ### 8. The Response step runs
 

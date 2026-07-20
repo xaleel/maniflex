@@ -389,6 +389,14 @@ type ServerContext struct {
 	// one row at a time.
 	redactedFields []string
 
+	// commitHooks are run after the request's transaction commits, and dropped
+	// if it rolls back. See AfterCommit. commitDrainer records that a
+	// transaction-owning middleware has promised to run them — without one there
+	// is nobody to fire the hook, so AfterCommit runs the callback inline
+	// instead of queuing it into a void.
+	commitHooks   []func()
+	commitDrainer bool
+
 	// maxBody overrides the default JSON body size limit for this request; zero
 	// means maxBodyBytes. Set through SetMaxBodySize (body.MaxBodySize).
 	maxBody int64

@@ -143,12 +143,18 @@ func Emit(pub Publisher, cfgs ...EmitConfig) maniflex.MiddlewareFunc {
 			return txp.PublishWithExecer(ctx.Ctx, ex, e)
 		}
 
-		// Non-transactional: fire-and-forget in a goroutine.
-		go func() {
-			bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = pub.Publish(bgCtx, e)
-		}()
+		// Fire-and-forget. Deferred until the transaction commits when there is
+		// one: a direct broker bus is not a TxPublisher, so without this the
+		// publish raced ahead of the commit and a rollback left subscribers
+		// holding an event for a write that never happened (audit EV-3).
+		// AfterCommit runs it inline when there is no transaction to wait for.
+		ctx.AfterCommit(func() {
+			go func() {
+				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = pub.Publish(bgCtx, e)
+			}()
+		})
 		return nil
 	}
 }

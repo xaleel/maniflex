@@ -31,6 +31,32 @@ server.Pipeline.DB.Register(
 )
 ```
 
+### Publishing under a transaction
+
+`Emit` never publishes before the write is durable. Which mechanism it uses
+depends on the bus:
+
+| Bus | Under `WithTransaction` |
+|---|---|
+| `outbox.Bus` (a `TxPublisher`) | the event row is INSERTed **inside** the transaction, so event and write commit or roll back together |
+| a direct broker bus (redis, kafka, nats, rabbitmq) | the publish is deferred to after the commit, and dropped if the transaction rolls back |
+
+The second row is the weaker guarantee of the two: the commit can succeed and the
+broker still be unreachable, and there is no record left to retry from. Use an
+`outbox.Bus` when losing an event is worse than storing one — see
+[Example 3](example-3.md) for the pattern end to end.
+
+If you register your own side effect from a middleware — a webhook, a cache
+invalidation — reach for `ctx.AfterCommit` rather than firing it inline:
+
+```go
+ctx.AfterCommit(func() { go notify(orderID) })
+```
+
+It runs the callback immediately when no transaction is active, so it is safe to
+use unconditionally. It runs synchronously after the commit, so start a goroutine
+for anything slow.
+
 Subscribers register a `Subscription`:
 
 ```go

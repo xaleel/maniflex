@@ -37,6 +37,7 @@ import (
 	"log/slog"
 	"maps"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/xaleel/maniflex/events"
@@ -64,16 +65,37 @@ func Migrate(ctx context.Context, db events.SQLExecer, driver string) error {
 			lease_until     %s,
 			lease_id        TEXT,
 			attempts        INTEGER NOT NULL DEFAULT 0,
-			last_error      TEXT
+			last_error      TEXT,
+			ordering_key    TEXT
 		)`, payloadType, tsType, tsType, tsType, tsType))
 	if err != nil {
 		return err
+	}
+	// Added separately so an existing table gains the column. Both drivers
+	// reject a duplicate ADD COLUMN, and there is no portable IF NOT EXISTS for
+	// it on SQLite, so the error is inspected rather than assumed: swallowing
+	// every error here would hide a genuine migration failure.
+	if _, err := db.ExecContext(ctx,
+		`ALTER TABLE event_outbox ADD COLUMN ordering_key TEXT`); err != nil &&
+		!isDuplicateColumn(err) {
+		return fmt.Errorf("outbox: add ordering_key: %w", err)
 	}
 	_, err = db.ExecContext(ctx, `
 		CREATE INDEX IF NOT EXISTS event_outbox_unshipped
 		ON event_outbox (created_at)
 		WHERE shipped_at IS NULL`)
 	return err
+}
+
+// isDuplicateColumn reports whether err is the "column already exists" response
+// to an ADD COLUMN, which is the expected outcome on every start after the
+// first. Matched on message text because neither driver is imported here and
+// both phrase it differently: SQLite says "duplicate column name", Postgres
+// "column ... already exists" (SQLSTATE 42701).
+func isDuplicateColumn(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "duplicate column") ||
+		strings.Contains(msg, "already exists")
 }
 
 // Bus is a transactional outbox publisher. It writes events to event_outbox
@@ -130,9 +152,19 @@ func (b *Bus) insert(ctx context.Context, ex events.SQLExecer, e events.Event) e
 		return fmt.Errorf("outbox: marshal: %w", err)
 	}
 	q := fmt.Sprintf(
-		`INSERT INTO event_outbox (id, type, payload, created_at) VALUES (%s, %s, %s, %s)`,
-		b.ph(1), b.ph(2), b.ph(3), b.ph(4))
-	if _, err := ex.ExecContext(ctx, q, e.ID, e.Type, string(payload), time.Now().UTC()); err != nil {
+		`INSERT INTO event_outbox (id, type, payload, created_at, ordering_key) VALUES (%s, %s, %s, %s, %s)`,
+		b.ph(1), b.ph(2), b.ph(3), b.ph(4), b.ph(5))
+	// Subject is the aggregate this event is about ("invoice/abc123") — the same
+	// value the Kafka adapter already uses as its partition key. Stored as its
+	// own column because RelayOptions.OrderedByKey has to compare it in SQL;
+	// digging it out of the JSON payload would need a driver-specific expression.
+	// NULL rather than "" when unset, so keyless rows do not all collapse into
+	// one implicit bucket and serialise against each other.
+	var key any
+	if e.Subject != "" {
+		key = e.Subject
+	}
+	if _, err := ex.ExecContext(ctx, q, e.ID, e.Type, string(payload), time.Now().UTC(), key); err != nil {
 		return fmt.Errorf("outbox: insert: %w", err)
 	}
 	return nil
@@ -163,6 +195,23 @@ type RelayOptions struct {
 	// Rows with shipped_at older than this duration are deleted periodically.
 	// Default: 0 (keep forever). The sweep runs every max(PollInterval×60, 1m).
 	RetainShipped time.Duration
+
+	// OrderedByKey preserves per-aggregate ordering: a row is not claimed while
+	// an older unshipped row shares its ordering key (the event's Subject).
+	// Default: false.
+	//
+	// Without it, a row that fails delivery has next_attempt_at pushed out by
+	// the backoff while later rows keep shipping — so for one aggregate, event 2
+	// can reach the broker before the retried event 1, and the older state is
+	// applied last (audit EV-10). Ordering is only ever disturbed by a retry;
+	// a batch that succeeds is already delivered in created_at order.
+	//
+	// The trade-off is head-of-line blocking, which is why this is opt-in: while
+	// one row for an aggregate is failing, every later row for that aggregate
+	// waits with it, up to MaxAttempts and its backoff. Other aggregates are
+	// unaffected, and rows with no Subject are never held — they name no
+	// aggregate, so there is nothing to order them against.
+	OrderedByKey bool
 }
 
 // Relayer polls event_outbox and ships unshipped rows to the downstream Publisher.
@@ -267,11 +316,11 @@ func (r *Relayer) claimBatch(ctx context.Context, leaseID string, leaseUntil, no
 	if b.driver == "postgres" {
 		q = `
 			WITH claimed AS (
-				SELECT id FROM event_outbox
+				SELECT id FROM event_outbox o
 				WHERE shipped_at IS NULL
 				  AND (lease_until IS NULL OR lease_until < $1)
 				  AND (next_attempt_at IS NULL OR next_attempt_at <= $2)
-				  AND attempts < $3
+				  AND attempts < $3` + r.orderGuard("o") + `
 				ORDER BY created_at
 				LIMIT $4
 				FOR UPDATE SKIP LOCKED
@@ -282,17 +331,45 @@ func (r *Relayer) claimBatch(ctx context.Context, leaseID string, leaseUntil, no
 	} else {
 		q = `UPDATE event_outbox SET lease_until = ?, lease_id = ?
 			WHERE id IN (
-				SELECT id FROM event_outbox
+				SELECT id FROM event_outbox o
 				WHERE shipped_at IS NULL
 				  AND (lease_until IS NULL OR lease_until < ?)
 				  AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-				  AND attempts < ?
+				  AND attempts < ?` + r.orderGuard("o") + `
 				ORDER BY created_at LIMIT ?
 			)`
 		args = []any{leaseUntil, leaseID, now, now, r.opts.MaxAttempts, r.opts.BatchSize}
 	}
 	_, err := b.db.ExecContext(ctx, q, args...)
 	return err
+}
+
+// orderGuard returns the predicate that holds a row back while an older
+// unshipped row shares its ordering key, or "" when OrderedByKey is off.
+//
+// It carries no placeholders, so it can be spliced into either driver's query
+// without disturbing their different numbering — the alias is the only thing
+// that varies. The subquery is correlated on ordering_key and created_at, so a
+// row waits only behind its own aggregate's backlog.
+//
+// Rows with no Subject name no aggregate and are never held. The explicit
+// `ordering_key IS NULL` arm is **redundant** — SQL's NULL = NULL is NULL, so
+// the correlated comparison can never match for a keyless row and NOT EXISTS is
+// already satisfied. Removing it passes every test. It is kept because relying
+// on three-valued logic to produce the right answer, silently, is how the next
+// person introduces a bug here; the tests cannot tell the difference, so this
+// comment is the only thing recording that.
+func (r *Relayer) orderGuard(alias string) string {
+	if !r.opts.OrderedByKey {
+		return ""
+	}
+	return `
+			  AND (` + alias + `.ordering_key IS NULL OR NOT EXISTS (
+				SELECT 1 FROM event_outbox older
+				WHERE older.ordering_key = ` + alias + `.ordering_key
+				  AND older.shipped_at IS NULL
+				  AND older.created_at < ` + alias + `.created_at
+			  ))`
 }
 
 // processRow delivers one pending row to the downstream publisher and updates

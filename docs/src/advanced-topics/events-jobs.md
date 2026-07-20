@@ -96,6 +96,39 @@ the at-rest guarantee everywhere downstream at once.
 an event by hand (see the custom-action note below) or serialize `ctx.DBResult`
 in your own middleware.
 
+### Ordering
+
+**Event order is not guaranteed by default.** Two events are delivered in the
+order they were produced only while nothing fails: a delivery that fails is
+retried after a backoff, and later events keep flowing past it in the meantime.
+For one record that means an update can be applied before the create it follows,
+or an older state can overwrite a newer one.
+
+The outbox can preserve order per aggregate:
+
+```go
+bus.Relay(outbox.RelayOptions{OrderedByKey: true})
+```
+
+A row is then held back while an older unshipped row shares its **ordering key**,
+which is the event's `Subject` (`"invoice/abc123"` by default — the same value
+the Kafka adapter uses as its partition key). Ordering is per key, so an
+aggregate that is stuck holds up only its own events. Events with no `Subject`
+are never held: they name no aggregate, so there is nothing to order them
+against.
+
+It is opt-in because it costs head-of-line blocking — while one row for an
+aggregate is failing, every later row for that aggregate waits with it, up to
+`MaxAttempts` and its backoff. Enabling it adds an `ordering_key` column;
+`Migrate` adds it to an existing table.
+
+> **This covers the outbox only.** No broker adapter serialises per key on the
+> consumer side, so with `Subscription.Concurrency` above 1 two events for one
+> record can be handled concurrently whatever order they arrived in. Kafka's
+> partition key gives per-partition ordering on the wire, not in the handler.
+> Make handlers idempotent and safe to apply out of order, or set `Concurrency:
+> 1`.
+
 ### Idempotent delivery
 
 Every broker adapter here is at-least-once, so a handler can see the same event

@@ -16,6 +16,19 @@ import (
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+// openRawDB opens an empty database without running Migrate, for tests that
+// need to control the starting schema.
+func openRawDB(t *testing.T) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "outbox.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { db.Close() })
+	return db
+}
+
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	// A file in the test's temp dir, not ":memory:".

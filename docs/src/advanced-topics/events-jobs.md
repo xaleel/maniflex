@@ -144,9 +144,20 @@ the same broker. Both paths produce the same payload:
 Everything else is copied unchanged, so the dead-letter carries the same `Data`,
 `Model`, `RecordID` and `TenantID` as the event it came from.
 
-A DLQ publish that itself fails is logged and the event is then lost — the DLQ
-rides the same broker that was already failing, so a persistent outage takes the
-dead-letters with it.
+A DLQ publish that itself fails is logged. For a `Subscription.DLQ` the event is
+then gone — there is nothing holding a copy.
+
+**The outbox relayer keeps its row instead.** The DLQ rides the same broker that
+just failed every delivery attempt, so "the dead-letter failed too" is the
+ordinary shape of an outage rather than an edge case. The row is retained and
+stays claimable, and each later poll retries delivery and then the dead-letter,
+until one is accepted. During a long outage the table therefore grows and drains
+again on recovery; that is the trade an outbox makes, and losing the event is the
+alternative. `last_error` records what happened, and retries back off to
+`relayBackoff(MaxAttempts)` so a dead broker is not hammered.
+
+Setting no `DLQType` is still an opt-out: dead-lettering is disabled and the row
+is dropped once its attempts are spent, as documented on `RelayOptions.DLQType`.
 
 **An outbox row whose payload will not decode is dead-lettered immediately**,
 without consuming its retry budget: decoding is deterministic, so a retry parses

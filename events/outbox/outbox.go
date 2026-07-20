@@ -306,12 +306,51 @@ func (r *Relayer) processRow(ctx context.Context, p pending) {
 	if err := r.bus.downstream.Publish(ctx, e); err != nil {
 		r.markError(ctx, p.id, err.Error(), p.attempts)
 		if p.attempts+1 >= r.opts.MaxAttempts {
-			r.routeToDLQ(ctx, e)
-			r.markShipped(ctx, p.id)
+			r.finishExhausted(ctx, p, e)
 		}
 		return
 	}
 	r.markShipped(ctx, p.id)
+}
+
+// finishExhausted closes out a row that has run out of delivery attempts.
+//
+// The row is discarded only once its event is somewhere else — in the DLQ, or
+// nowhere by explicit configuration. It used to be marked shipped
+// unconditionally, right after a routeToDLQ whose result nobody looked at; and
+// because the DLQ rides the same broker that just failed MaxAttempts times, "the
+// dead-letter failed too" is not an edge case but the ordinary shape of an
+// outage. The event was then swept away with no record anywhere, which is the
+// one thing an outbox exists to prevent (audit EV-9).
+func (r *Relayer) finishExhausted(ctx context.Context, p pending, e events.Event) {
+	if r.routeToDLQ(ctx, e) {
+		r.markShipped(ctx, p.id)
+		return
+	}
+	// The dead-letter did not land. Hold the row and retry the whole cycle —
+	// delivery first, then the dead-letter — on a later poll.
+	r.holdForRetry(ctx, p.id, "dead-letter publish failed; row retained for retry")
+}
+
+// holdForRetry keeps an exhausted row eligible for a future poll.
+//
+// claimBatch selects on "attempts < MaxAttempts", so a row sitting at the cap is
+// never picked up again. Leaving it merely unshipped would therefore be no
+// better than dropping it: unshipped, unretried, unswept and invisible — the
+// EV-8 poison-row shape arriving by a different route. Winding attempts back to
+// one below the cap keeps it claimable, so the next poll retries delivery and,
+// if that fails again, the dead-letter with it.
+func (r *Relayer) holdForRetry(ctx context.Context, id, reason string) {
+	b := r.bus
+	hold := r.opts.MaxAttempts - 1
+	if hold < 0 {
+		hold = 0
+	}
+	next := time.Now().UTC().Add(relayBackoff(r.opts.MaxAttempts))
+	q := fmt.Sprintf(
+		`UPDATE event_outbox SET attempts = %s, last_error = %s, next_attempt_at = %s, lease_until = NULL, lease_id = NULL WHERE id = %s`,
+		b.ph(1), b.ph(2), b.ph(3), b.ph(4))
+	_, _ = b.db.ExecContext(ctx, q, hold, reason, next, id)
 }
 
 // handlePoison resolves a row whose payload will not decode.
@@ -337,12 +376,21 @@ func (r *Relayer) handlePoison(ctx context.Context, p pending, decodeErr error) 
 	// there is no Event to copy provenance from. The raw bytes ride along as
 	// Data because they are the only remaining evidence of what was written,
 	// and DataType says plainly that they are not to be trusted as JSON.
-	r.routeToDLQ(ctx, events.Event{
+	landed := r.routeToDLQ(ctx, events.Event{
 		ID:       p.id,
 		Type:     p.eventType,
 		DataType: "application/octet-stream",
 		Data:     json.RawMessage(strconv.Quote(p.payload)),
 	})
+	if !landed {
+		// Same rule as finishExhausted: the row is discarded only once its
+		// contents are somewhere else. The payload will never decode, so there
+		// is nothing to retry but the dead-letter itself — and holding the row
+		// is what makes that retry possible (audit EV-9).
+		r.holdForRetry(ctx, p.id,
+			"undecodable payload and dead-letter publish failed; row retained for retry")
+		return
+	}
 
 	// Recorded before the row is closed out, so an operator reading the table
 	// sees why it was resolved rather than an unexplained shipped row.
@@ -370,9 +418,15 @@ func (r *Relayer) markLastError(ctx context.Context, id, errMsg string) {
 // published under that ID, so any downstream deduper treats the dead-letter as a
 // duplicate and drops it. The failure would then be dead-lettered into nothing,
 // which is the one outcome a DLQ exists to prevent.
-func (r *Relayer) routeToDLQ(ctx context.Context, e events.Event) {
+//
+// It reports whether the event is now somewhere the caller no longer has to
+// hold it. With no DLQ configured that is true by configuration — DLQType's
+// godoc says dead-lettering is disabled and the row dropped — and a caller that
+// treated the opt-out as a failure would retain every exhausted row forever.
+// A publish that fails returns false, so the caller keeps the row (audit EV-9).
+func (r *Relayer) routeToDLQ(ctx context.Context, e events.Event) bool {
 	if r.opts.DLQType == "" {
-		return
+		return true
 	}
 	dlq := e
 	dlq.ID = events.NewID() // fresh ID so downstream dedupers see a new event
@@ -383,14 +437,18 @@ func (r *Relayer) routeToDLQ(ctx context.Context, e events.Event) {
 	newHeaders["original_id"] = e.ID
 	dlq.Headers = newHeaders
 	if err := r.bus.downstream.Publish(ctx, dlq); err != nil {
-		// Logged, not swallowed: this is the last chance to record the event
-		// before it is marked shipped and forgotten.
-		slog.Default().Error("outbox: DLQ publish failed, event lost",
+		// Logged at WARN, not ERROR: the event is not lost any more. The caller
+		// keeps the row and retries, so this is an outage in progress rather
+		// than a final outcome — which is what it used to be, when the row was
+		// marked shipped immediately after.
+		slog.Default().Warn("outbox: DLQ publish failed, row retained for retry",
 			slog.String("dlq_type", r.opts.DLQType),
 			slog.String("original_type", e.Type),
 			slog.String("original_id", e.ID),
 			slog.String("error", err.Error()))
+		return false
 	}
+	return true
 }
 
 func (r *Relayer) markShipped(ctx context.Context, id string) {

@@ -177,9 +177,16 @@ func (q *Queue) enqueueAt(ctx context.Context, j jobs.Job, at time.Time) (string
 
 // ── Source (consumer) ─────────────────────────────────────────────────────────
 
-// Dequeue claims up to n ready jobs. For Postgres it uses SELECT FOR UPDATE
-// SKIP LOCKED; for SQLite it uses a subquery UPDATE with the implicit
-// database-level write lock.
+// claimedColumns is what Dequeue reads back from the rows it claimed. Shared by
+// both drivers so the two claim statements cannot drift apart.
+const claimedColumns = `"id","type","payload","trace_id","actor_id","tenant_id","max_retry","priority","not_before","group_key","headers","attempts"`
+
+// Dequeue claims up to n ready jobs.
+//
+// Both drivers claim and return in a single statement, so the rows a caller
+// receives are exactly the rows it stamped. Postgres additionally needs FOR
+// UPDATE SKIP LOCKED to keep concurrent claimers off each other's candidates;
+// SQLite's database-level write lock already serialises the statement.
 func (q *Queue) Dequeue(ctx context.Context, n int) ([]jobs.Job, error) {
 	if n <= 0 {
 		return nil, nil
@@ -213,7 +220,7 @@ WITH candidates AS (
 UPDATE "job_queue"
 SET "status" = 'running', "lease_until" = %s, "attempts" = "attempts" + 1, "updated_at" = %s
 WHERE "id" IN (SELECT "id" FROM candidates)
-RETURNING "id","type","payload","trace_id","actor_id","tenant_id","max_retry","priority","not_before","group_key","headers","attempts"`,
+RETURNING `+claimedColumns,
 		p.Add(nowStr), p.Add(nowStr), p.Add(n),
 		p.Add(leaseUntil), p.Add(nowStr),
 	)
@@ -225,10 +232,30 @@ RETURNING "id","type","payload","trace_id","actor_id","tenant_id","max_retry","p
 	return q.scanJobs(rows)
 }
 
+// dequeueSQLite claims and returns in one statement.
+//
+// It used to be two: an UPDATE that stamped lease_until, then a SELECT that
+// re-found "the rows we just claimed" with WHERE lease_until = <that string>.
+// SQLite's write lock serialises the UPDATE but does not span the pair, and
+// lease_until is derived from time.Now() — so any two claims whose clock reads
+// agree share a lease string, and each one's SELECT matches the other's rows.
+// That is not exotic: Windows' system clock granularity is coarse, and
+// RFC3339Nano drops trailing zeros, so back-to-back calls routinely render the
+// same string. It produced three failures at once (audit JB-1):
+//
+//   - the same job returned to several workers, so it ran several times;
+//   - the same job returned by successive calls on a single worker, with no
+//     concurrency involved at all;
+//   - rows stamped running with attempts incremented that no caller ever
+//     received, which then sat until the lease expired having burned a retry
+//     without executing — and eventually dead-lettered without ever running.
+//
+// RETURNING removes the identification step entirely: the statement hands back
+// precisely the rows it updated, so there is nothing to match on and no window
+// to interleave in. Requires SQLite 3.35 (2021).
 func (q *Queue) dequeueSQLite(ctx context.Context, n int, nowStr, leaseUntil string) ([]jobs.Job, error) {
 	p := q.newPH()
-	// SQLite write lock serialises concurrent workers; no SKIP LOCKED needed.
-	updateQ := fmt.Sprintf(`
+	query := fmt.Sprintf(`
 UPDATE "job_queue"
 SET "status" = 'running', "lease_until" = %s, "attempts" = "attempts" + 1, "updated_at" = %s
 WHERE "id" IN (
@@ -242,28 +269,15 @@ WHERE "id" IN (
       ))
     ORDER BY "priority" DESC, "created_at" ASC
     LIMIT %s
-)`,
+)
+RETURNING `+claimedColumns,
 		p.Add(leaseUntil), p.Add(nowStr),
 		p.Add(nowStr), p.Add(nowStr),
 		p.Add(n),
 	)
-	if _, err := q.db.ExecContext(ctx, q.q(updateQ), p.Args()...); err != nil {
-		return nil, fmt.Errorf("jobs/sql: dequeue update: %w", err)
-	}
-
-	// Fetch the rows we just claimed.
-	p2 := q.newPH()
-	selectQ := fmt.Sprintf(`
-SELECT "id","type","payload","trace_id","actor_id","tenant_id","max_retry","priority","not_before","group_key","headers","attempts"
-FROM "job_queue"
-WHERE "status" = 'running' AND "lease_until" = %s
-ORDER BY "priority" DESC, "created_at" ASC
-LIMIT %s`,
-		p2.Add(leaseUntil), p2.Add(n),
-	)
-	rows, err := q.db.QueryContext(ctx, q.q(selectQ), p2.Args()...)
+	rows, err := q.db.QueryContext(ctx, q.q(query), p.Args()...)
 	if err != nil {
-		return nil, fmt.Errorf("jobs/sql: dequeue select: %w", err)
+		return nil, fmt.Errorf("jobs/sql: dequeue: %w", err)
 	}
 	defer rows.Close()
 	return q.scanJobs(rows)

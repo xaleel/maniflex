@@ -326,6 +326,15 @@ routing, and optional status persistence through the REST layer.
 All three share the same `jobs.Queue` and `jobs.Source` interfaces so swapping
 adapters is a one-line change.
 
+> **`jobs/sql` on SQLite needs SQLite 3.35 or newer** (March 2021 — both common
+> Go drivers bundle something far newer). The claim is one `UPDATE … RETURNING`,
+> so a worker receives exactly the rows it stamped. It was previously an `UPDATE`
+> followed by a `SELECT` that re-found those rows by their `lease_until`
+> timestamp — which is not a unique identifier, so two claims taken in the same
+> clock tick each matched the other's rows. That handed one job to several
+> workers, and stranded others as `running` with an attempt already spent that
+> no worker had ever received.
+
 ### Defining and enqueueing a job
 
 ```go

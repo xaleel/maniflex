@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.2
+
+- **Bugfix:** `jobs/sql` on SQLite no longer hands one job to several workers. The claim was an `UPDATE` stamping `lease_until`, then a `SELECT` re-finding those rows by that timestamp — not a unique identifier, so two claims in the same clock tick each matched the other's rows. Now one `UPDATE … RETURNING` (SQLite 3.35+). It also stranded jobs as `running` with an attempt spent that nothing ran.
+
 ## v0.3.1 (2026-07-20)
 
 - **Breaking / Feature:** `events/nats` honours `Subscription.Group` as a JetStream queue group, so replicas sharing a group share the work — what `Group` already meant on Kafka and Redis. It bound a durable with no queue group, which accepts exactly one subscription, so a **second replica was refused** with "consumer is already bound". Existing durables are not reused; see below.

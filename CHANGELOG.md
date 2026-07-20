@@ -2,6 +2,7 @@
 
 ## v0.3.1
 
+- **Bugfix:** `events.Dedupe` no longer loses an event on a transient handler failure. `Seen` records the ID on handler _entry_, so the retry was dropped as a duplicate and delivery reported success — never processed, never dead-lettered. The claim is now released when the handler errors, via new optional `events.DedupeReleaser` (both bundled stores implement it). Concurrent dupes still dropped.
 - **Security:** `events.Emit` no longer publishes hidden, write-only or encrypted fields. It marshalled the already-decrypted `ctx.DBResult` into `Data`, so every subscriber, broker topic, WS/SSE client and stored `event_outbox.payload` row got password hashes and encrypted plaintext. New `maniflex.RedactRecord` applies the exclusion set and now backs the versioning snapshot too. Keys unchanged.
 
 ## v0.3.0 (2026-07-20)

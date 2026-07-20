@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -16,6 +17,26 @@ type DedupeStore interface {
 	Seen(ctx context.Context, id string) (bool, error)
 }
 
+// DedupeReleaser is an optional interface a DedupeStore may implement to undo a
+// claim that did not result in successful processing.
+//
+// Seen is a check-and-record in one atomic step, which is what makes a store
+// safe when two workers are handed the same event at once — but it means the ID
+// is recorded on handler *entry*, before the outcome is known. Without Release,
+// a handler that returns a transient error has already marked the event as
+// processed, so DeliverWithRetry's next attempt is dropped as a duplicate and
+// the delivery reports success: the event is never processed and never
+// dead-lettered (audit EV-2).
+//
+// Both bundled stores implement this. A store that does not gets a warning from
+// Dedupe when it is wrapped, because there is no correct fallback: the claim
+// cannot be undone, so a transient failure still loses the event.
+type DedupeReleaser interface {
+	// Release removes a previously recorded id so it can be processed again.
+	// Releasing an id that is not recorded is not an error.
+	Release(ctx context.Context, id string) error
+}
+
 // Dedupe wraps a Handler with idempotent delivery semantics.
 // Events whose ID is already recorded in store are silently dropped.
 // Recommended with every at-least-once broker adapter:
@@ -23,7 +44,19 @@ type DedupeStore interface {
 //	bus.Subscribe(ctx, events.Subscription{
 //	    Handler: events.Dedupe(store)(myHandler),
 //	})
+//
+// The ID is claimed before the handler runs, so a concurrent delivery of the
+// same event is dropped rather than processed twice. If the handler then fails,
+// the claim is released so the retry can re-process it — see DedupeReleaser for
+// what happens with a store that cannot release.
 func Dedupe(store DedupeStore) func(Handler) Handler {
+	releaser, canRelease := store.(DedupeReleaser)
+	if !canRelease {
+		slog.Default().Warn("events: dedupe store cannot release claims; "+
+			"a handler that fails transiently will drop the event instead of retrying it",
+			slog.String("store", fmt.Sprintf("%T", store)),
+			slog.String("fix", "implement events.DedupeReleaser"))
+	}
 	return func(next Handler) Handler {
 		return func(ctx context.Context, e Event) error {
 			seen, err := store.Seen(ctx, e.ID)
@@ -33,7 +66,20 @@ func Dedupe(store DedupeStore) func(Handler) Handler {
 			if seen {
 				return nil
 			}
-			return next(ctx, e)
+			handlerErr := next(ctx, e)
+			if handlerErr != nil && canRelease {
+				// The claim was taken on entry but the event was not processed.
+				// Release it so the caller's retry is not mistaken for a
+				// duplicate. A failure to release is logged, not returned: the
+				// handler's own error is the one worth propagating.
+				if relErr := releaser.Release(ctx, e.ID); relErr != nil {
+					slog.Default().Error("events: dedupe claim release failed; "+
+						"the event will be treated as processed and its retry dropped",
+						slog.String("id", e.ID),
+						slog.String("error", relErr.Error()))
+				}
+			}
+			return handlerErr
 		}
 	}
 }
@@ -88,6 +134,14 @@ func (s *InMemoryDedupeStore) Seen(_ context.Context, id string) (bool, error) {
 	return false, nil
 }
 
+// Release drops id, so a later delivery is treated as new. See DedupeReleaser.
+func (s *InMemoryDedupeStore) Release(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.seen, id)
+	return nil
+}
+
 // SQLDedupeStore is a *sql.DB-backed dedupe store.
 // Call Migrate to create the required table before use.
 type SQLDedupeStore struct {
@@ -124,4 +178,17 @@ func (s *SQLDedupeStore) Seen(ctx context.Context, id string) (bool, error) {
 	}
 	n, _ := res.RowsAffected()
 	return n == 0, nil // 0 rows affected → row already existed → duplicate
+}
+
+// Release deletes id's row, so a later delivery is treated as new.
+// Deleting a row that is not there is not an error. See DedupeReleaser.
+func (s *SQLDedupeStore) Release(ctx context.Context, id string) error {
+	q := `DELETE FROM event_dedupe WHERE id = ?`
+	if s.driver == "postgres" {
+		q = `DELETE FROM event_dedupe WHERE id = $1`
+	}
+	if _, err := s.db.ExecContext(ctx, q, id); err != nil {
+		return fmt.Errorf("dedupe release: %w", err)
+	}
+	return nil
 }

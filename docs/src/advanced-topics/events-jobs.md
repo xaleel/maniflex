@@ -70,6 +70,36 @@ the at-rest guarantee everywhere downstream at once.
 an event by hand (see the custom-action note below) or serialize `ctx.DBResult`
 in your own middleware.
 
+### Idempotent delivery
+
+Every broker adapter here is at-least-once, so a handler can see the same event
+twice. `events.Dedupe` wraps a handler to suppress the repeat:
+
+```go
+store := events.NewSQLDedupeStore(db, "sqlite") // or NewInMemoryDedupeStore
+store.Migrate(ctx)
+
+bus.Subscribe(ctx, events.Subscription{
+    Patterns: []string{"order.*"},
+    Handler:  events.Dedupe(store)(myHandler),
+})
+```
+
+The ID is **claimed before the handler runs**, so two workers handed the same
+event concurrently do not both process it. If the handler then returns an error,
+the claim is released, so the retry is not mistaken for a duplicate — a
+transient failure retries normally and only a genuine redelivery is dropped.
+
+Releasing is an optional capability: a custom `DedupeStore` may also implement
+`events.DedupeReleaser`. Both bundled stores do. A store that does not cannot
+undo its claim, so a handler that fails transiently loses the event rather than
+retrying it — `Dedupe` logs a warning naming the store when you wrap one.
+
+> A claim outlives a process crash mid-handler: the ID stays recorded and the
+> event is not reprocessed. `InMemoryDedupeStore` bounds this with its TTL;
+> for `SQLDedupeStore`, prune `event_dedupe` on whatever window you can
+> tolerate replaying.
+
 ### Dead-lettering
 
 Set `Subscription.DLQ` (or `RelayOptions.DLQType` on the outbox relayer) to

@@ -82,17 +82,17 @@ type ModelConfig struct {
 	// to have two foreign keys — Order{customer_id, shipping_address_id} — which
 	// this turns off (audit MS-L9). Explicit mfx:"through:" relations are
 	// unaffected.
-	DisableAutoJunction bool
-
-	// Junction marks this model as a many-to-many join table. Set by embedding
-	// maniflex.JunctionModel; settable here for a model whose struct you do not
-	// control. See JunctionModel for what it implies.
-	Junction bool
-	// JunctionUnique adds a UNIQUE index over the junction's two key columns and
-	// lets includes collapse duplicate links. Set by mfx:"unique" on the
-	// JunctionModel embed. Off by default — a junction carrying its own columns
-	// may legitimately repeat a pair.
-	JunctionUnique bool
+	DisableAutoJunction bool
+
+	// Junction marks this model as a many-to-many join table. Set by embedding
+	// maniflex.JunctionModel; settable here for a model whose struct you do not
+	// control. See JunctionModel for what it implies.
+	Junction bool
+	// JunctionUnique adds a UNIQUE index over the junction's two key columns and
+	// lets includes collapse duplicate links. Set by mfx:"unique" on the
+	// JunctionModel embed. Off by default — a junction carrying its own columns
+	// may legitimately repeat a pair.
+	JunctionUnique bool
 
 	// Indices declares extra DB indexes to create during AutoMigrate. Use this
 	// to pre-declare indexes that the framework would otherwise auto-generate
@@ -560,10 +560,14 @@ type Config struct {
 // All output is at DEBUG level; set Config.Logger to a handler that accepts
 // DEBUG records to see it.
 type PipelineTrace struct {
-	// Enabled is a shorthand that activates Steps, Timings, and Aborts when set
-	// to true without any sub-flags being explicitly configured.
-	// Bodies and Skips are NOT turned on by Enabled — they are opt-in because
-	// they are high-volume or may expose sensitive request data.
+	// Enabled is a shorthand for the three standard flags — Steps, Timings and
+	// Aborts — and turns them on unless one of those three is already set, in
+	// which case the caller is choosing precisely and the shorthand stays out of
+	// the way.
+	//
+	// Bodies and Skips are NOT among them, and setting one does not suppress the
+	// expansion: they are additive opt-ins, high-volume or capable of exposing
+	// request data, so asking for one cannot be read as declining the rest.
 	Enabled bool
 
 	// Steps logs an "enter" record before each named middleware runs and an
@@ -585,6 +589,26 @@ type PipelineTrace struct {
 	// Skips logs when a registered middleware is skipped because its ForModel or
 	// ForOperation filter did not match the current request.
 	Skips bool
+}
+
+// standardSet reports whether any flag Enabled expands into is already set.
+//
+// ADDING A SUB-FLAG: decide which of the two methods below it belongs to. If
+// Enabled should turn it on, name it here; if it is an additive opt-in like
+// Bodies and Skips, name it only in anySet. Both lists used to be written out at
+// their call sites — three flags in ApplyDefaults, five in traceConfig — so a new
+// field meant remembering two conditions in two places, and forgetting either
+// failed silently: a flag that never activates tracing, or a shorthand that
+// quietly stops expanding (audit 11D.5).
+func (t *PipelineTrace) standardSet() bool {
+	return t.Steps || t.Timings || t.Aborts
+}
+
+// anySet reports whether any flag at all is set — i.e. whether tracing does
+// anything. Enabled is excluded deliberately: it is shorthand, expanded into the
+// standard three by ApplyDefaults, and on its own it selects no output.
+func (t *PipelineTrace) anySet() bool {
+	return t.standardSet() || t.Bodies || t.Skips
 }
 
 func (c *Config) ApplyDefaults() {
@@ -614,8 +638,8 @@ func (c *Config) ApplyDefaults() {
 	if c.PanicLogger == nil {
 		c.PanicLogger = c.Logger // PanicRecoverer accepts nil and uses slog.Default()
 	}
-	// Expand Trace.Enabled into standard sub-flags when none are set explicitly.
-	if c.Trace.Enabled && !c.Trace.Steps && !c.Trace.Timings && !c.Trace.Aborts {
+	// Expand Trace.Enabled into the standard sub-flags when none is set explicitly.
+	if c.Trace.Enabled && !c.Trace.standardSet() {
 		c.Trace.Steps = true
 		c.Trace.Timings = true
 		c.Trace.Aborts = true
@@ -649,7 +673,7 @@ func (c *Config) logger() *slog.Logger {
 // overhead when tracing is disabled.
 func (c *Config) traceConfig() *PipelineTrace {
 	tr := &c.Trace
-	if !tr.Steps && !tr.Timings && !tr.Aborts && !tr.Bodies && !tr.Skips {
+	if !tr.anySet() {
 		return nil
 	}
 	return tr

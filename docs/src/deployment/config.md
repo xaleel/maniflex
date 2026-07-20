@@ -118,6 +118,16 @@ output is at `DEBUG` level through `Logger`, so the handler must accept
 cfg.Trace = maniflex.PipelineTrace{Enabled: true, Skips: true}
 ```
 
+`Enabled` expands into the three standard flags *unless* one of those three is
+already set, in which case it stays out of the way and you get exactly what you
+named. `Bodies` and `Skips` are additive: setting one does not suppress the
+expansion, so the example above gives all four.
+
+```go
+cfg.Trace = maniflex.PipelineTrace{Enabled: true, Steps: true}  // Steps only
+cfg.Trace = maniflex.PipelineTrace{Bodies: true}                // Bodies only
+```
+
 Leave `Bodies` off in production.
 
 ## Lifecycle

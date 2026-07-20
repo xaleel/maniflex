@@ -74,7 +74,12 @@ Every error response uses:
 |---|---|
 | `code` | machine-readable identifier (e.g. `NOT_FOUND`, `CONFLICT`) |
 | `message` | human-readable summary |
-| `details` | optional structured payload — per-field errors, raw driver detail, etc. |
+| `details` | optional structured payload — an **array** of `{field, message}` objects for per-field errors |
+
+`details` is an array wherever it is present, including on a `409 CONFLICT` from
+a unique violation. That one was a bare object until v0.3.0, so a duplicate value
+answered in two shapes depending on whether the database or `validate.UniqueField`
+caught it; a client that ranged over `details` had to type-switch first.
 
 The catalogue of built-in codes is in [Error Handling](../the-request-pipeline/errors.md).
 

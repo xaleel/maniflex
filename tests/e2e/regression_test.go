@@ -242,15 +242,17 @@ func TestCritical_UniqueConstraint(t *testing.T) {
 			t.Fatalf("first create: got %d, want 201", s)
 		}
 
-		// Duplicate: validate.UniqueField must intercept with 422
+		// Duplicate: validate.UniqueField must intercept with 409. It answered
+		// 422 until v0.3.0, which disagreed with the 409 the database's own
+		// constraint produces for the identical error (audit 13.5).
 		s := postJSON(t, ts.URL+"/api/users", map[string]any{
 			"name": "B", "email": "vmw@x.com", "password": "s",
 		})
 		if s == http.StatusCreated {
-			t.Error("duplicate email: validate.UniqueField should have rejected with 422")
+			t.Error("duplicate email: validate.UniqueField should have rejected it")
 		}
-		if s != http.StatusUnprocessableEntity {
-			t.Errorf("expected 422, got %d", s)
+		if s != http.StatusConflict {
+			t.Errorf("expected 409, got %d", s)
 		}
 	})
 }

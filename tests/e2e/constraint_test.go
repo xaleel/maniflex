@@ -2,8 +2,13 @@ package e2e
 
 // constraint_test.go tests that UNIQUE constraint violations from both SQLite
 // and the Postgres wire protocol are converted into 409 Conflict responses with
-// a structured {"error": {"code": "CONFLICT", "details": {"field": "...",
-// "message": "... already taken"}}} body instead of an opaque 500.
+// a structured {"error": {"code": "CONFLICT", "details": [{"field": "...",
+// "message": "... already taken"}]}} body instead of an opaque 500.
+//
+// `details` is an array as of v0.3.0 (audit 13.5). It was a bare object on this
+// one branch while every other error in the framework used an array, so the same
+// duplicate value answered in two shapes depending on whether the database or
+// validate.UniqueField caught it.
 //
 //	go test ./tests/e2e/... -run TestConstraintErrors
 
@@ -14,6 +19,29 @@ import (
 	"github.com/xaleel/maniflex"
 	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
+
+// firstDetail returns error.details[0], failing the test if details is not a
+// non-empty array. Every conflict body in this file goes through it, so the
+// array contract is asserted once rather than restated at each call site.
+func firstDetail(t *testing.T, body map[string]any) map[string]any {
+	t.Helper()
+	errObj, ok := body["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("no error object in %v", body)
+	}
+	details, ok := errObj["details"].([]any)
+	if !ok {
+		t.Fatalf("error.details must be an array, got %T: %v", errObj["details"], errObj["details"])
+	}
+	if len(details) == 0 {
+		t.Fatal("error.details must not be empty")
+	}
+	d, ok := details[0].(map[string]any)
+	if !ok {
+		t.Fatalf("error.details[0] must be an object, got %T", details[0])
+	}
+	return d
+}
 
 func TestConstraintErrors(t *testing.T) {
 	t.Parallel()
@@ -54,10 +82,7 @@ func TestConstraintErrors(t *testing.T) {
 			if errObj["message"] == "" || errObj["message"] == nil {
 				t.Error("error.message must be non-empty")
 			}
-			details, ok := errObj["details"].(map[string]any)
-			if !ok {
-				t.Fatalf("error.details must be an object, got: %T", errObj["details"])
-			}
+			details := firstDetail(t, body)
 			if details["message"] == "" || details["message"] == nil {
 				t.Error("error.details.message must be present")
 			}
@@ -73,11 +98,7 @@ func TestConstraintErrors(t *testing.T) {
 		resp := srv.CreateUser("B", "field@x.com", "viewer")
 		resp.AssertStatus(http.StatusConflict)
 		resp.AssertJSON(func(body map[string]any) {
-			errObj := body["error"].(map[string]any)
-			details, ok := errObj["details"].(map[string]any)
-			if !ok {
-				t.Fatalf("details must be an object")
-			}
+			details := firstDetail(t, body)
 			field, _ := details["field"].(string)
 			if field == "" {
 				t.Error("error.details.field must be present and non-empty for UNIQUE violations")
@@ -93,7 +114,7 @@ func TestConstraintErrors(t *testing.T) {
 		resp := srv.CreateUser("B", "msg@x.com", "viewer")
 		resp.AssertStatus(http.StatusConflict)
 		resp.AssertJSON(func(body map[string]any) {
-			details := body["error"].(map[string]any)["details"].(map[string]any)
+			details := firstDetail(t, body)
 			msg, _ := details["message"].(string)
 			if msg == "" {
 				t.Error("error.details.message must be non-empty")
@@ -157,7 +178,7 @@ func TestConstraintErrors(t *testing.T) {
 		resp := srv.POST("/tags", map[string]any{"name": "alpha", "color": "blue"})
 		resp.AssertStatus(http.StatusConflict)
 		resp.AssertJSON(func(body map[string]any) {
-			details := body["error"].(map[string]any)["details"].(map[string]any)
+			details := firstDetail(t, body)
 			field, _ := details["field"].(string)
 			testutil.AssertEqual(t, "field name for tag.name conflict", field, "name")
 		})

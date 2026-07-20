@@ -727,11 +727,14 @@ func TestMedium_UniqueFieldSelfExclusion(t *testing.T) {
 		s := postJSON(t, base+"/api/users", map[string]any{
 			"name": "B", "email": "uniq@x.com", "password": "s",
 		})
+		// 409 as of v0.3.0 — validate.UniqueField answered 422 while the
+		// database's own constraint answered 409 for the identical error
+		// (audit 13.5).
 		if s == http.StatusCreated {
-			t.Error("duplicate email must be rejected with 422")
+			t.Error("duplicate email must be rejected")
 		}
-		if s != http.StatusUnprocessableEntity {
-			t.Errorf("expected 422, got %d", s)
+		if s != http.StatusConflict {
+			t.Errorf("expected 409, got %d", s)
 		}
 	})
 

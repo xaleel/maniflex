@@ -100,14 +100,21 @@ func UniqueField(db DBQuerier, driver maniflex.DriverType, field string) manifle
 			return nil
 		}
 		if count > 0 {
+			// 409, matching the response the database's own unique constraint
+			// produces byte for byte. This used to answer 422 VALIDATION_ERROR,
+			// so the same duplicate value reported two statuses, two codes and
+			// two messages depending only on which mechanism noticed it first —
+			// and a client guarding a field this way had to handle both (audit
+			// 13.5). A duplicate is a conflict with existing state, not malformed
+			// input, which is why 409 is the one that stayed.
 			ctx.Response = &maniflex.APIResponse{
-				StatusCode: http.StatusUnprocessableEntity,
+				StatusCode: http.StatusConflict,
 				Error: &maniflex.APIError{
-					Code:    "VALIDATION_ERROR",
-					Message: "validation failed",
+					Code:    "CONFLICT",
+					Message: "unique constraint violation",
 					Details: []map[string]string{{
 						"field":   field,
-						"message": fmt.Sprintf("%s is already taken", field),
+						"message": fmt.Sprintf("%s already taken", field),
 					}},
 				},
 			}

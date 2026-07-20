@@ -9,9 +9,11 @@ The exceptions:
   *who is asking*, not on whether the value is valid.
 - `RequireLocale` answers `422 MISSING_LOCALE` — still a 422, but with its own
   code so a missing translation is distinguishable from a plain validation miss.
-- `UniqueField`'s happy path is a `422`, but if the underlying count query itself
-  fails it answers `500 UNIQUE_CHECK_FAILED` rather than letting a duplicate slip
-  through.
+- `UniqueField` answers `409 CONFLICT`, not a `422` — a duplicate is a conflict
+  with existing state rather than malformed input, and this is the same answer
+  the database's own constraint gives for the identical error. If the underlying
+  count query itself fails it answers `500 UNIQUE_CHECK_FAILED` rather than
+  letting a duplicate slip through.
 
 ## `UniqueField`
 
@@ -26,10 +28,15 @@ server.Pipeline.Validate.Register(
 )
 ```
 
-The middleware runs a count query against the underlying database before the
-DB step. Compared with the `mfx:"unique"` schema hint, it produces a structured
-422 with the offending field instead of a 409 from a constraint violation
-later.
+The middleware runs a count query against the underlying database before the DB
+step. It answers the same `409 CONFLICT` the `mfx:"unique"` constraint produces —
+identical status, code, message and `details` — so a client handles one response
+whichever mechanism caught the duplicate. What it buys is *when*: the collision is
+reported before the write is attempted, and named by JSON field.
+
+It is not a substitute for `mfx:"unique"`. Count-then-write is not atomic, so two
+concurrent requests can both pass the count; the database constraint remains the
+actual guarantee.
 
 The `driver` argument selects the placeholder dialect (`maniflex.Postgres` →
 `$N`, `maniflex.SQLite` → `?`) and must match the driver used to open the

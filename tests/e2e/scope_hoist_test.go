@@ -123,9 +123,10 @@ func TestScopeHoist_UniquenessStillEnforcedAcrossScopes(t *testing.T) {
 	if code, body := hoistReq(t, base, "GET", "owner-b", ""); code != http.StatusOK {
 		t.Fatalf("setup b: %d %s", code, body)
 	}
-	// owner-b reaching for owner-a's slug must still be refused.
-	if code, body := hoistReq(t, base, "PATCH", "owner-b", `{"slug":"taken"}`); code != http.StatusUnprocessableEntity {
-		t.Errorf("cross-scope duplicate slug: got %d, want 422 — %s", code, body)
+	// owner-b reaching for owner-a's slug must still be refused. 409, matching
+	// what the database's own constraint returns for the same error (audit 13.5).
+	if code, body := hoistReq(t, base, "PATCH", "owner-b", `{"slug":"taken"}`); code != http.StatusConflict {
+		t.Errorf("cross-scope duplicate slug: got %d, want 409 — %s", code, body)
 	}
 }
 

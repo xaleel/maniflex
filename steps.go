@@ -2001,19 +2001,27 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 				}
 				return nil
 			}
-			details := map[string]string{
-				"message": "value already exists",
-			}
-			if constraintErr.Column != "" {
-				details["field"] = strings.Split(constraintErr.Column, " ")[0]
-				details["message"] = constraintErr.Column + " already taken"
+			// Details is an array here, as it is for every other error the
+			// framework emits — including the required-field 422 just above. It
+			// used to be a bare object only on this branch, so a duplicate value
+			// answered in one shape when the database caught it and another when
+			// validate.UniqueField did (audit 13.5).
+			//
+			// The column is sanitised once and used for both keys. Splitting on a
+			// space strips the extended result code SQLite appends to its message
+			// ("email (2067)") — that was applied to the field and not to the
+			// message, so the driver noise reached the client anyway.
+			detail := map[string]string{"message": "value already exists"}
+			if col := strings.Split(constraintErr.Column, " ")[0]; col != "" {
+				detail["field"] = col
+				detail["message"] = col + " already taken"
 			}
 			ctx.Response = &APIResponse{
 				StatusCode: http.StatusConflict,
 				Error: &APIError{
 					Code:    "CONFLICT",
 					Message: "unique constraint violation",
-					Details: details,
+					Details: []map[string]string{detail},
 				},
 			}
 			return nil

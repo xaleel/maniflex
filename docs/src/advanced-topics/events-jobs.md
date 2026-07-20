@@ -99,7 +99,10 @@ in your own middleware.
 ### Idempotent delivery
 
 Every broker adapter here is at-least-once, so a handler can see the same event
-twice. `events.Dedupe` wraps a handler to suppress the repeat:
+twice. That is by design and not a rare edge: a consumer that crashes with work
+in flight replays it on restart, because the alternative — treating in-flight
+work as consumed — loses it. `events.Dedupe` wraps a handler to suppress the
+repeat:
 
 ```go
 store := events.NewSQLDedupeStore(db, "sqlite") // or NewInMemoryDedupeStore

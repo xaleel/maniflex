@@ -172,6 +172,16 @@ func (b *Bus) runConsumer(ctx context.Context, r *kafkago.Reader, sub events.Sub
 	sem := make(chan struct{}, sub.Concurrency)
 	var wg sync.WaitGroup
 
+	// Commits are cumulative per partition, so a message may only be committed
+	// once every earlier offset on its partition has finished — see
+	// offsetTracker (audit EV-4).
+	tracker := newOffsetTracker()
+	commit := func(msg kafkago.Message) {
+		if next, ok := tracker.complete(msg); ok {
+			_ = r.CommitMessages(ctx, next)
+		}
+	}
+
 	for {
 		msg, err := r.FetchMessage(ctx)
 		if err != nil {
@@ -183,13 +193,19 @@ func (b *Bus) runConsumer(ctx context.Context, r *kafkago.Reader, sub events.Sub
 			continue
 		}
 
+		// Tracked before any commit decision, including the skip paths below:
+		// a skipped message still occupies an offset, and leaving it untracked
+		// would put a permanent hole in its partition's sequence that every
+		// later commit would wait behind.
+		tracker.track(msg)
+
 		var e events.Event
 		if err := json.Unmarshal(msg.Value, &e); err != nil {
-			_ = r.CommitMessages(ctx, msg)
+			commit(msg)
 			continue
 		}
 		if !matchesAny(sub.Patterns, e.Type) {
-			_ = r.CommitMessages(ctx, msg)
+			commit(msg)
 			continue
 		}
 
@@ -201,7 +217,7 @@ func (b *Bus) runConsumer(ctx context.Context, r *kafkago.Reader, sub events.Sub
 				wg.Done()
 			}()
 			events.DeliverWithRetry(ctx, b, sub, e)
-			_ = r.CommitMessages(ctx, msg)
+			commit(msg)
 		}()
 	}
 }

@@ -2006,22 +2006,12 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 			// used to be a bare object only on this branch, so a duplicate value
 			// answered in one shape when the database caught it and another when
 			// validate.UniqueField did (audit 13.5).
-			//
-			// The column is sanitised once and used for both keys. Splitting on a
-			// space strips the extended result code SQLite appends to its message
-			// ("email (2067)") — that was applied to the field and not to the
-			// message, so the driver noise reached the client anyway.
-			detail := map[string]string{"message": "value already exists"}
-			if col := strings.Split(constraintErr.Column, " ")[0]; col != "" {
-				detail["field"] = col
-				detail["message"] = col + " already taken"
-			}
 			ctx.Response = &APIResponse{
 				StatusCode: http.StatusConflict,
 				Error: &APIError{
 					Code:    "CONFLICT",
 					Message: "unique constraint violation",
-					Details: []map[string]string{detail},
+					Details: uniqueConflictDetails(constraintErr),
 				},
 			}
 			return nil
@@ -2913,6 +2903,39 @@ func enrichLocaleQueryParams(q *QueryParams, ctx *ServerContext, model *ModelMet
 			f.LocaleKey = chain[0]
 		}
 	}
+}
+
+// uniqueConflictDetails turns a unique violation into the per-field details of a
+// 409, one entry per column the constraint covers.
+//
+// A composite constraint gets an entry for each of its columns, because none of
+// them is in violation on its own: UNIQUE(phone_number, owner_id) is not broken
+// by the phone number, it is broken by the pair. Reporting only the first — which
+// is all the driver normalisers used to return (audit 11D.1) — highlights the
+// wrong input on a form and asserts something untrue about a value that is fine.
+// The message names the whole combination for the same reason.
+//
+// Falls back to ErrConstraint.Column when Columns is empty, so a normaliser
+// written before Columns existed still produces a named field.
+func uniqueConflictDetails(ce *ErrConstraint) []map[string]string {
+	cols := ce.Columns
+	if len(cols) == 0 && ce.Column != "" {
+		cols = []string{ce.Column}
+	}
+	if len(cols) == 0 {
+		return []map[string]string{{"message": "value already exists"}}
+	}
+	// Single column keeps its original wording; only the composite case, which
+	// previously could not be phrased at all, gets the combination form.
+	msg := cols[0] + " already taken"
+	if len(cols) > 1 {
+		msg = "the combination of " + strings.Join(cols, ", ") + " is already taken"
+	}
+	out := make([]map[string]string, 0, len(cols))
+	for _, col := range cols {
+		out = append(out, map[string]string{"field": col, "message": msg})
+	}
+	return out
 }
 
 // rewriteFileACL replaces storage keys in row with URLs for fields whose

@@ -81,6 +81,20 @@ a unique violation. That one was a bare object until v0.3.0, so a duplicate valu
 answered in two shapes depending on whether the database or `validate.UniqueField`
 caught it; a client that ranged over `details` had to type-switch first.
 
+A **composite** unique constraint contributes one entry per column, so a form can
+highlight every input involved:
+
+```json
+{"error": {"code": "CONFLICT", "message": "unique constraint violation",
+  "details": [
+    {"field": "phone_number", "message": "the combination of phone_number, owner_id is already taken"},
+    {"field": "owner_id",     "message": "the combination of phone_number, owner_id is already taken"}
+  ]}}
+```
+
+The message names the combination rather than a column because neither column is
+in violation on its own — that phone number is fine, the pair is not.
+
 The catalogue of built-in codes is in [Error Handling](../the-request-pipeline/errors.md).
 
 ## Status codes

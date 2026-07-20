@@ -58,7 +58,19 @@ type ErrConstraint struct {
 	Table string
 	// Column is the column name that was violated, if the driver exposes it.
 	// May be empty for drivers that do not provide column-level detail.
+	//
+	// For a composite constraint this is the first column only. Prefer Columns,
+	// which names all of them; Column is kept because it predates it.
 	Column string
+
+	// Columns names every column the violated constraint covers, in the order
+	// the driver reported them. A composite UNIQUE(phone_number, owner_id)
+	// yields both, because neither column is in violation on its own and
+	// reporting one of them blames the wrong field (audit 11D.1).
+	//
+	// Single-column constraints yield one entry, equal to Column. Empty for
+	// drivers or violation kinds that expose no column detail.
+	Columns []string
 	// Detail is the raw driver error message, for logging context.
 	Detail string
 }

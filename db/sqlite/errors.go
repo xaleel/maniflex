@@ -23,19 +23,23 @@ import (
 func NormalizeError(err error, table string) error {
 	msg := err.Error()
 	if strings.Contains(msg, "UNIQUE constraint failed") {
+		cols := extractColumns(msg)
 		return &maniflex.ErrConstraint{
-			Kind:   maniflex.ConstraintUnique,
-			Table:  table,
-			Column: extractColumn(msg),
-			Detail: msg,
+			Kind:    maniflex.ConstraintUnique,
+			Table:   table,
+			Column:  firstOf(cols),
+			Columns: cols,
+			Detail:  msg,
 		}
 	}
 	if strings.Contains(msg, "NOT NULL constraint failed") {
+		cols := extractColumns(msg)
 		return &maniflex.ErrConstraint{
-			Kind:   maniflex.ConstraintNotNull,
-			Table:  table,
-			Column: extractColumn(msg),
-			Detail: msg,
+			Kind:    maniflex.ConstraintNotNull,
+			Table:   table,
+			Column:  firstOf(cols),
+			Columns: cols,
+			Detail:  msg,
 		}
 	}
 	if strings.Contains(msg, "FOREIGN KEY constraint failed") {
@@ -48,19 +52,49 @@ func NormalizeError(err error, table string) error {
 	return err
 }
 
-// extractColumn parses the column name from a SQLite UNIQUE constraint message.
-// "UNIQUE constraint failed: users.email" → "email"
-// "UNIQUE constraint failed: users.email, users.name" → "email" (first only)
-func extractColumn(msg string) string {
-	idx := strings.Index(msg, "failed: ")
+// extractColumns parses every column named by a SQLite constraint message.
+//
+//	"UNIQUE constraint failed: users.email"                → ["email"]
+//	"UNIQUE constraint failed: users.email, users.name"    → ["email", "name"]
+//	"NOT NULL constraint failed: users.note (1299)"        → ["note"]
+//
+// It used to return the first column only, so a violation of
+// UNIQUE(phone_number, owner_id) was reported against phone_number alone —
+// blaming one column for a constraint that neither violates by itself (audit
+// 11D.1). It also handed through the extended result code the driver appends to
+// its message, which reached clients as a field named "note (1299)".
+func extractColumns(msg string) []string {
+	// LastIndex, not Index: the driver wraps its own text, so the message
+	// arrives as "constraint failed: UNIQUE constraint failed: t.a, t.b" and the
+	// first match leaves "UNIQUE constraint failed: t.a" as the first column.
+	idx := strings.LastIndex(msg, "failed: ")
 	if idx < 0 {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(msg[idx+len("failed: "):], ",") {
+		col := strings.TrimSpace(part)
+		// Everything from the first space on is the driver's own trailer, not
+		// part of the name — a column name cannot contain one unquoted.
+		if sp := strings.IndexAny(col, " \t"); sp >= 0 {
+			col = col[:sp]
+		}
+		// Strip the "table." prefix if present.
+		if dot := strings.LastIndex(col, "."); dot >= 0 {
+			col = col[dot+1:]
+		}
+		if col != "" {
+			out = append(out, col)
+		}
+	}
+	return out
+}
+
+// firstOf returns the first column, or "" — what the pre-Columns ErrConstraint.Column
+// field carried, kept so existing consumers read the same value they always did.
+func firstOf(cols []string) string {
+	if len(cols) == 0 {
 		return ""
 	}
-	rest := msg[idx+len("failed: "):]
-	first := strings.TrimSpace(strings.SplitN(rest, ",", 2)[0])
-	// Strip the "table." prefix if present.
-	if dot := strings.Index(first, "."); dot >= 0 {
-		return first[dot+1:]
-	}
-	return first
+	return cols[0]
 }

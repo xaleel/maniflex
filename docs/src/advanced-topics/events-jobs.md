@@ -172,6 +172,14 @@ Available adapters: `events/redis`, `events/kafka`, `events/nats`,
 `events/rabbitmq`. The in-process adapter (`inproc.New()` from
 `github.com/xaleel/maniflex/events/inproc`) ships in the core module for tests.
 
+> **`events/rabbitmq` does not reconnect.** It is handed an `*amqp.Connection`
+> it does not own, and amqp091-go connections do not self-heal, so a connection
+> or channel drop ends every subscription on it permanently while the process
+> keeps serving. A dead subscription logs an ERROR naming the queue and calls
+> `Options.OnSubscriptionClosed`; supervise that callback and rebuild the bus on
+> a fresh connection if consumer downtime matters. Its `Publish` waits for a
+> broker confirm, so a failed publish is reported rather than assumed delivered.
+
 > **Broker adapters are nested modules.** Adapters with heavy dependencies (e.g.
 > NATS) ship as their own Go modules — `go get github.com/xaleel/maniflex/events/nats`
 > — so the core module stays dependency-light. Pin each one explicitly in `go.mod`.

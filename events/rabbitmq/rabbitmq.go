@@ -18,12 +18,25 @@
 // RabbitMQ does NOT provide replay. Teams that need replay should pair this adapter
 // with events/outbox (which keeps the durable log in the application DB) or choose
 // a streaming broker (Redis Streams, NATS JetStream, Kafka).
+//
+// # No reconnection
+//
+// This adapter does not reconnect. New takes a *amqp.Connection it does not own,
+// and amqp091-go connections do not self-heal, so a connection or channel drop
+// ends every subscription running on it permanently — the process keeps serving
+// and the queue silently stops being consumed.
+//
+// A subscription that dies logs an ERROR naming the queue, and Options
+// OnSubscriptionClosed is called so the app can alert or rebuild the bus on a
+// fresh connection. Supervise that callback if consumer downtime matters:
+// nothing below it will bring the subscription back.
 package rabbitmq
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"path"
 	"sync"
 	"time"
@@ -35,18 +48,53 @@ import (
 
 const exchangeName = "maniflex.events"
 
+// defaultConfirmTimeout bounds the wait for a broker confirm, so a wedged or
+// unreachable broker fails the publish instead of blocking the caller forever.
+const defaultConfirmTimeout = 5 * time.Second
+
+// Options customises the Bus. All fields are optional.
+type Options struct {
+	// OnSubscriptionClosed is called when a subscription stops for a reason
+	// other than its Cancel being invoked — a connection or channel drop, or
+	// the queue being deleted from under it.
+	//
+	// This adapter does not reconnect: amqp091-go connections do not self-heal,
+	// and New is handed a connection it does not own and cannot redial. Without
+	// this callback a drop leaves the subscription dead while the process keeps
+	// running and looking healthy, which is the failure this exists to surface.
+	// Use it to alert, or to tear down and re-Subscribe on a fresh connection.
+	//
+	// It is called once per subscription, from the subscription's own goroutine.
+	OnSubscriptionClosed func(queue string, err error)
+
+	// ConfirmTimeout bounds how long Publish waits for the broker to confirm a
+	// message. Default: 5s.
+	ConfirmTimeout time.Duration
+}
+
 // Bus is an AMQP 0.9.1 event bus.
 type Bus struct {
 	conn  *amqp.Connection
+	opts  Options
 	mu    sync.Mutex
 	pubCh *amqp.Channel // shared publish channel (lazy-opened, re-opened on error)
 }
 
 // New creates a RabbitMQ Bus from an existing AMQP connection.
 // The topic exchange "maniflex.events" is declared as durable on first use.
-func New(conn *amqp.Connection) (*Bus, error) {
+//
+// The publish channel runs in confirm mode, so Publish reports whether the
+// broker actually took responsibility for the message rather than only whether
+// it was written to a socket.
+func New(conn *amqp.Connection, opts ...Options) (*Bus, error) {
 	b := &Bus{conn: conn}
-	ch, err := b.openChannel()
+	if len(opts) > 0 {
+		b.opts = opts[0]
+	}
+	if b.opts.ConfirmTimeout <= 0 {
+		b.opts.ConfirmTimeout = defaultConfirmTimeout
+	}
+	ch, err := b.openPublishChannel()
 	if err != nil {
 		return nil, err
 	}
@@ -69,24 +117,60 @@ func (b *Bus) Publish(ctx context.Context, e events.Event) error {
 	ch := b.pubCh
 	b.mu.Unlock()
 
-	err = ch.PublishWithContext(ctx, exchangeName, e.Type, false, false, amqp.Publishing{
-		ContentType:  "application/json",
-		DeliveryMode: amqp.Persistent,
-		MessageId:    e.ID,
-		Timestamp:    e.Time,
-		Body:         payload,
-	})
+	conf, err := ch.PublishWithDeferredConfirmWithContext(ctx, exchangeName, e.Type, false, false,
+		amqp.Publishing{
+			ContentType:  "application/json",
+			DeliveryMode: amqp.Persistent,
+			MessageId:    e.ID,
+			Timestamp:    e.Time,
+			Body:         payload,
+		})
 	if err != nil {
-		// Re-open channel on error (connection drop etc.)
-		b.mu.Lock()
-		newCh, rerr := b.openChannel()
-		if rerr == nil {
-			b.pubCh = newCh
-		}
-		b.mu.Unlock()
+		b.reopenPublishChannel()
 		return fmt.Errorf("rabbitmq: publish: %w", err)
 	}
+
+	// Writing to the socket is not delivery. Without waiting for the confirm,
+	// Publish returned nil for a message the broker never persisted — an
+	// unroutable event, a full disk, a node failing mid-write all looked like
+	// success, and the event was gone with nothing to retry from (audit EV-5).
+	wctx, cancel := context.WithTimeout(ctx, b.opts.ConfirmTimeout)
+	defer cancel()
+	acked, err := conf.WaitContext(wctx)
+	switch {
+	case err != nil:
+		// Timed out or the caller's context ended: the broker's answer is
+		// unknown, so the message may or may not be stored. Reported as a
+		// failure because the safe reading of "unknown" is "not delivered" —
+		// a redelivery is a duplicate, which dedupe handles, while assuming
+		// success loses the event outright.
+		b.reopenPublishChannel()
+		return fmt.Errorf("rabbitmq: publish confirm for %s: %w", e.ID, err)
+	case !acked:
+		// The broker explicitly refused responsibility for the message.
+		return fmt.Errorf("rabbitmq: broker nacked event %s (type %s)", e.ID, e.Type)
+	}
 	return nil
+}
+
+// reopenPublishChannel replaces the shared publish channel after an error on it.
+// A channel is closed by the broker on any protocol error, so the next publish
+// on it would fail too.
+func (b *Bus) reopenPublishChannel() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	newCh, err := b.openPublishChannel()
+	if err != nil {
+		// Leave the old channel in place: the next publish fails against it and
+		// tries again from here. Replacing it with nil would panic instead.
+		slog.Default().Error("rabbitmq: could not reopen publish channel",
+			slog.String("error", err.Error()))
+		return
+	}
+	if b.pubCh != nil {
+		b.pubCh.Close()
+	}
+	b.pubCh = newCh
 }
 
 // PublishBatch publishes all events in es sequentially on the shared channel.
@@ -152,6 +236,11 @@ func (b *Bus) Subscribe(ctx context.Context, sub events.Subscription) (events.Ca
 		return nil, fmt.Errorf("rabbitmq: consume: %w", err)
 	}
 
+	// The broker's reason for closing this channel. Read only after deliveries
+	// closes, by which point amqp091-go has already delivered the error (or
+	// closed the channel, giving nil for a clean shutdown).
+	closeErr := ch.NotifyClose(make(chan *amqp.Error, 1))
+
 	cctx, cancel := context.WithCancel(ctx)
 	sem := make(chan struct{}, sub.Concurrency)
 	var wg sync.WaitGroup
@@ -165,6 +254,15 @@ func (b *Bus) Subscribe(ctx context.Context, sub events.Subscription) (events.Ca
 				return
 			case msg, ok := <-deliveries:
 				if !ok {
+					// The delivery channel closed on us. Any connection or
+					// channel drop lands here, and this adapter does not
+					// reconnect — so the subscription is now dead for the life
+					// of the process while everything else keeps running.
+					// Returning quietly, as this used to, made a total consumer
+					// outage indistinguishable from a healthy idle service
+					// (audit EV-5).
+					wg.Wait()
+					b.reportSubscriptionClosed(cctx, queue, closeErr)
 					return
 				}
 				var e events.Event
@@ -196,6 +294,40 @@ func (b *Bus) Subscribe(ctx context.Context, sub events.Subscription) (events.Ca
 	}, nil
 }
 
+// reportSubscriptionClosed announces that a subscription has stopped consuming.
+//
+// A cancelled context means the caller asked for this, so it is not reported:
+// Cancel closes the delivery channel too, and treating an orderly shutdown as an
+// outage would train operators to ignore the alert that matters.
+func (b *Bus) reportSubscriptionClosed(ctx context.Context, queue string, closeErr <-chan *amqp.Error) {
+	if ctx.Err() != nil {
+		return
+	}
+
+	var err error
+	select {
+	case amqpErr := <-closeErr:
+		if amqpErr != nil {
+			err = amqpErr
+		}
+	default:
+	}
+	if err == nil {
+		// The delivery channel closed without the broker giving a reason —
+		// a basic.cancel (the queue was deleted) reaches us this way.
+		err = fmt.Errorf("delivery channel closed without an error; the queue may have been deleted")
+	}
+
+	slog.Default().Error("rabbitmq: subscription stopped and will not reconnect",
+		slog.String("queue", queue),
+		slog.String("error", err.Error()),
+		slog.String("impact", "events routed to this queue are no longer consumed"))
+
+	if b.opts.OnSubscriptionClosed != nil {
+		b.opts.OnSubscriptionClosed(queue, err)
+	}
+}
+
 // Close closes the underlying AMQP connection.
 func (b *Bus) Close() error {
 	b.mu.Lock()
@@ -210,6 +342,22 @@ func (b *Bus) openChannel() (*amqp.Channel, error) {
 	ch, err := b.conn.Channel()
 	if err != nil {
 		return nil, fmt.Errorf("rabbitmq: open channel: %w", err)
+	}
+	return ch, nil
+}
+
+// openPublishChannel opens a channel in confirm mode. Confirm mode is per
+// channel and cannot be turned on later, so every replacement publish channel
+// must go through here — a plain openChannel would silently downgrade Publish
+// to fire-and-forget after the first reconnect.
+func (b *Bus) openPublishChannel() (*amqp.Channel, error) {
+	ch, err := b.openChannel()
+	if err != nil {
+		return nil, err
+	}
+	if err := ch.Confirm(false); err != nil {
+		ch.Close()
+		return nil, fmt.Errorf("rabbitmq: enable publisher confirms: %w", err)
 	}
 	return ch, nil
 }

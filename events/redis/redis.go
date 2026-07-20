@@ -28,6 +28,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path"
 	"sync"
@@ -237,6 +238,12 @@ func (b *Bus) runConsumer(ctx context.Context, stream string, sub events.Subscri
 		wg.Wait()
 	}()
 
+	// A read loop retries forever — stopping would silently end consumption —
+	// so the pacing is what keeps that affordable. The previous fixed
+	// time.Sleep(time.Second) never grew, never jittered, and ignored ctx
+	// (audit EV-13).
+	var bo events.ReadBackoff
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -247,17 +254,45 @@ func (b *Bus) runConsumer(ctx context.Context, stream string, sub events.Subscri
 		results, err := b.ops.ReadGroup(ctx, stream, sub.Group, consumer,
 			int64(sub.Concurrency*2), time.Second)
 		if err != nil {
+			// goredis.Nil is the block timeout expiring with nothing to read.
+			// That is the idle steady state, not a failure: it must not consume
+			// an attempt or the backoff would grow on a healthy but quiet stream.
 			if err == goredis.Nil || ctx.Err() != nil {
 				continue
 			}
-			time.Sleep(time.Second)
+			attempt, delay, escalate := bo.Next()
+			logReadFailure(stream, attempt, delay, escalate, err)
+			if !bo.Wait(ctx, delay) {
+				return nil
+			}
 			continue
 		}
+		bo.Reset()
 
 		for _, result := range results {
 			b.dispatch(ctx, stream, sub, result.Messages, sem, &wg)
 		}
 	}
+}
+
+// logReadFailure reports a failed stream read. Before audit EV-13 this loop
+// was entirely silent: a consumer that could not reach Redis looked identical
+// to one on an idle stream. escalate is true exactly once, when the backoff
+// first reaches its ceiling, marking the point where a run of failures stopped
+// being a blip — later retries stay at WARN so a long outage does not bury the
+// logs in ERRORs.
+func logReadFailure(stream string, attempt int, delay time.Duration, escalate bool, err error) {
+	attrs := []any{
+		slog.String("stream", stream),
+		slog.Int("attempt", attempt),
+		slog.Duration("retry_in", delay),
+		slog.String("error", err.Error()),
+	}
+	if escalate {
+		slog.Default().Error("events: redis read failing persistently, consumer is not progressing", attrs...)
+		return
+	}
+	slog.Default().Warn("events: redis read failed, retrying", attrs...)
 }
 
 // runReclaimer periodically claims messages that have been pending longer than
@@ -378,4 +413,3 @@ func matchesAny(patterns []string, eventType string) bool {
 	}
 	return false
 }
-

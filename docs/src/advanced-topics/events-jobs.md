@@ -226,6 +226,25 @@ Available adapters: `events/redis`, `events/kafka`, `events/nats`,
 `events/rabbitmq`. The in-process adapter (`inproc.New()` from
 `github.com/xaleel/maniflex/events/inproc`) ships in the core module for tests.
 
+> **A consumer that cannot reach its broker now says so.** The `events/kafka`
+> and `events/redis` read loops retry forever — stopping would silently end
+> consumption — but the retry is paced by an exponential, jittered backoff
+> (100ms up to 30s) rather than the fixed one-second interval they used before.
+> The jitter matters on recovery: without it every consumer in a fleet retries
+> on the same tick and stampedes the broker the moment it comes back. Each
+> failed read logs at WARN, escalating to ERROR once when the backoff first
+> reaches its ceiling, so a sustained outage is findable without a long one
+> burying the logs. The wait honours the context, so shutdown no longer blocks
+> behind it. An idle stream is not a failure and does not advance the backoff.
+> The policy is `events.ReadBackoff` if you need the same behaviour elsewhere.
+
+> **`events/kafka` connects in plaintext unless told otherwise.** Set
+> `Config.TLS` and `Config.SASL` — build the mechanism with kafka-go's own
+> `sasl/plain` or `sasl/scram` — and both apply to publishing, consuming and
+> topic creation, which each open their own connection. Managed clusters
+> require at least one of the two. SASL/PLAIN sends credentials in the clear,
+> so pair it with TLS.
+
 > **`inproc` applies backpressure.** Each subscription has a bounded queue
 > (`Options.QueueSize`, default 1024) drained by `Concurrency` workers. `Publish`
 > never blocks; it returns `inproc.ErrQueueFull` when a subscription is full, so

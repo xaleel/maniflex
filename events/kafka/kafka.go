@@ -6,12 +6,28 @@
 //
 // Consumer groups provide at-least-once delivery. Pattern matching is done
 // client-side after reading from matching topics.
+//
+// # Connecting securely
+//
+// Connections are plaintext and unauthenticated by default. Set Config.TLS,
+// Config.SASL, or both — every connection the Bus makes shares one dialer, so
+// they apply to publishing, consuming and topic creation alike:
+//
+//	import "github.com/segmentio/kafka-go/sasl/scram"
+//
+//	m, err := scram.Mechanism(scram.SHA512, user, pass)
+//	bus := kafka.New(brokers, "myapp", kafka.Config{
+//	    TLS:  &tls.Config{},
+//	    SASL: m,
+//	})
 package kafka
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net"
 	"path"
 	"strings"
@@ -19,12 +35,17 @@ import (
 	"time"
 
 	kafkago "github.com/segmentio/kafka-go"
+	"github.com/segmentio/kafka-go/sasl"
 
 	"github.com/xaleel/maniflex/events"
 )
 
-// Config holds optional Kafka topic configuration applied when EnsureTopics
-// creates new topics. Zero values fall back to the defaults below.
+// defaultDialTimeout bounds a connection attempt, so an unreachable or
+// black-holed broker fails rather than hanging the caller indefinitely.
+const defaultDialTimeout = 10 * time.Second
+
+// Config holds optional Kafka configuration. Zero values fall back to the
+// defaults below.
 type Config struct {
 	// NumPartitions is the number of partitions for newly created topics.
 	// Default: 3. A value of 1 disables the per-Subject partition key benefit.
@@ -32,15 +53,44 @@ type Config struct {
 	// ReplicationFactor is the replication factor for newly created topics.
 	// Default: 1 (suitable for single-broker dev clusters).
 	ReplicationFactor int
+
+	// TLS enables encrypted connections to the brokers. Nil means plaintext,
+	// which was previously the only option this adapter offered (audit EV-12) —
+	// so a managed cluster, or any broker reached over a network you do not
+	// control, could not be used at all without it.
+	//
+	// A zero &tls.Config{} is enough for a broker with a publicly trusted
+	// certificate; set RootCAs for a private CA, and Certificates for mutual TLS.
+	TLS *tls.Config
+
+	// SASL authenticates to the brokers. Nil means no authentication.
+	//
+	// Build one with kafka-go's own mechanisms so every mechanism it supports is
+	// available here without this package having to enumerate them:
+	//
+	//	import "github.com/segmentio/kafka-go/sasl/plain"
+	//	Config{SASL: plain.Mechanism{Username: u, Password: p}}
+	//
+	//	import "github.com/segmentio/kafka-go/sasl/scram"
+	//	m, err := scram.Mechanism(scram.SHA512, u, p)
+	//	Config{SASL: m}
+	//
+	// SASL/PLAIN sends credentials in the clear: pair it with TLS, or the
+	// password is on the wire.
+	SASL sasl.Mechanism
+
+	// DialTimeout bounds a single connection attempt. Default: 10s.
+	DialTimeout time.Duration
 }
 
 // Bus is a kafka-go event bus.
 type Bus struct {
-	brokers        []string
-	prefix         string
-	cfg            Config
-	writer         *kafkago.Writer
-	ensuredTopics  sync.Map // topic string → struct{}
+	brokers       []string
+	prefix        string
+	cfg           Config
+	dialer        *kafkago.Dialer
+	writer        *kafkago.Writer
+	ensuredTopics sync.Map // topic string → struct{}
 }
 
 // New creates a Kafka Bus. brokers is a list of bootstrap broker addresses
@@ -50,22 +100,46 @@ type Bus struct {
 // A single goroutine-safe Writer is held for the lifetime of the Bus; call
 // Close when the Bus is no longer needed.
 func New(brokers []string, prefix string, cfgs ...Config) *Bus {
-	cfg := Config{NumPartitions: 3, ReplicationFactor: 1}
+	cfg := Config{NumPartitions: 3, ReplicationFactor: 1, DialTimeout: defaultDialTimeout}
 	if len(cfgs) > 0 {
-		if cfgs[0].NumPartitions > 0 {
-			cfg.NumPartitions = cfgs[0].NumPartitions
+		in := cfgs[0]
+		if in.NumPartitions > 0 {
+			cfg.NumPartitions = in.NumPartitions
 		}
-		if cfgs[0].ReplicationFactor > 0 {
-			cfg.ReplicationFactor = cfgs[0].ReplicationFactor
+		if in.ReplicationFactor > 0 {
+			cfg.ReplicationFactor = in.ReplicationFactor
 		}
+		if in.DialTimeout > 0 {
+			cfg.DialTimeout = in.DialTimeout
+		}
+		// No zero-value guard: nil is a meaningful value for both (plaintext,
+		// unauthenticated), and there is nothing to fall back to.
+		cfg.TLS = in.TLS
+		cfg.SASL = in.SASL
 	}
+
+	// One dialer for every connection this Bus makes — the writer, each
+	// consumer-group reader, and both admin dials in createTopic. They are
+	// separate code paths and each opens its own socket, so TLS or SASL applied
+	// to only some of them fails partway through rather than at connect: a
+	// publish would succeed while topic creation was refused, or vice versa
+	// (audit EV-12).
+	dialer := &kafkago.Dialer{
+		Timeout:       cfg.DialTimeout,
+		DualStack:     true,
+		TLS:           cfg.TLS,
+		SASLMechanism: cfg.SASL,
+	}
+
 	w := kafkago.NewWriter(kafkago.WriterConfig{
 		Brokers:  brokers,
 		Balancer: &kafkago.Hash{},
+		Dialer:   dialer,
+
 		// Topic is intentionally empty: each Message.Topic is used instead,
 		// allowing the single writer to route to any topic.
 	})
-	return &Bus{brokers: brokers, prefix: prefix, cfg: cfg, writer: w}
+	return &Bus{brokers: brokers, prefix: prefix, cfg: cfg, dialer: dialer, writer: w}
 }
 
 func (b *Bus) topic(eventType string) string {
@@ -152,6 +226,7 @@ func (b *Bus) Subscribe(ctx context.Context, sub events.Subscription) (events.Ca
 			Brokers: b.brokers,
 			GroupID: sub.Group,
 			Topic:   topic,
+			Dialer:  b.dialer,
 		})
 
 		wg.Add(1)
@@ -182,6 +257,12 @@ func (b *Bus) runConsumer(ctx context.Context, r *kafkago.Reader, sub events.Sub
 		}
 	}
 
+	// A read loop retries forever — stopping would silently end consumption —
+	// so the pacing is what keeps that affordable. The previous fixed
+	// time.Sleep(time.Second) never grew, never jittered, and ignored ctx
+	// (audit EV-13).
+	var bo events.ReadBackoff
+
 	for {
 		msg, err := r.FetchMessage(ctx)
 		if err != nil {
@@ -189,9 +270,15 @@ func (b *Bus) runConsumer(ctx context.Context, r *kafkago.Reader, sub events.Sub
 				wg.Wait()
 				return
 			}
-			time.Sleep(time.Second)
+			attempt, delay, escalate := bo.Next()
+			logReadFailure(r.Config().Topic, attempt, delay, escalate, err)
+			if !bo.Wait(ctx, delay) {
+				wg.Wait()
+				return
+			}
 			continue
 		}
+		bo.Reset()
 
 		// Tracked before any commit decision, including the skip paths below:
 		// a skipped message still occupies an offset, and leaving it untracked
@@ -220,6 +307,26 @@ func (b *Bus) runConsumer(ctx context.Context, r *kafkago.Reader, sub events.Sub
 			commit(msg)
 		}()
 	}
+}
+
+// logReadFailure reports a failed broker read. Before audit EV-13 this loop
+// was entirely silent: a consumer that could not reach the broker looked
+// identical to one with nothing to consume. escalate is true exactly once,
+// when the backoff first reaches its ceiling, marking the point where a run of
+// failures stopped being a blip — later retries stay at WARN so a long outage
+// does not bury the logs in ERRORs.
+func logReadFailure(topic string, attempt int, delay time.Duration, escalate bool, err error) {
+	attrs := []any{
+		slog.String("topic", topic),
+		slog.Int("attempt", attempt),
+		slog.Duration("retry_in", delay),
+		slog.String("error", err.Error()),
+	}
+	if escalate {
+		slog.Default().Error("events: kafka read failing persistently, consumer is not progressing", attrs...)
+		return
+	}
+	slog.Default().Warn("events: kafka read failed, retrying", attrs...)
 }
 
 // Close closes the shared writer. Readers are closed per-subscription via Cancel.
@@ -257,7 +364,10 @@ func (b *Bus) createTopic(ctx context.Context, topic string) error {
 	if len(b.brokers) == 0 {
 		return nil
 	}
-	conn, err := kafkago.DialContext(ctx, "tcp", b.brokers[0])
+	// b.dialer, not the package-level DialContext: that one is plaintext and
+	// unauthenticated, so on a TLS or SASL cluster topic creation failed while
+	// publishing worked (audit EV-12).
+	conn, err := b.dialer.DialContext(ctx, "tcp", b.brokers[0])
 	if err != nil {
 		return fmt.Errorf("kafka: dial: %w", err)
 	}
@@ -267,7 +377,7 @@ func (b *Bus) createTopic(ctx context.Context, topic string) error {
 	if err != nil {
 		return fmt.Errorf("kafka: controller: %w", err)
 	}
-	ctrlConn, err := kafkago.DialContext(ctx, "tcp", net.JoinHostPort(ctrl.Host, fmt.Sprint(ctrl.Port)))
+	ctrlConn, err := b.dialer.DialContext(ctx, "tcp", net.JoinHostPort(ctrl.Host, fmt.Sprint(ctrl.Port)))
 	if err != nil {
 		return fmt.Errorf("kafka: dial controller: %w", err)
 	}

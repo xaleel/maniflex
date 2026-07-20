@@ -13,13 +13,27 @@ new connections and gives in-flight requests up to
 3. The listener stops accepting new connections immediately.
 4. In-flight requests are allowed to complete — including their pipeline
    middleware, transaction commits, and Response writes.
-5. When all requests have finished, or the deadline elapses, the database
+5. Background work spawned by the request — audit writes, cache invalidations,
+   event publishes — is waited for on the same budget.
+6. When all requests have finished, or the deadline elapses, the database
    adapter's `Close()` is called.
-6. `Start()` returns.
+7. `Start()` returns.
 
 If the deadline passes with requests still running, the underlying TCP
 connections are closed — those requests fail mid-flight but the process exits
 cleanly.
+
+> **Step 5 needs a *started* server.** `Shutdown` returns early on a server that
+> was only ever used through `Handler()` (embedded in your own mux), because it
+> was never started. Nothing is drained in that case — drive shutdown from
+> whatever owns the listener, and call `Close()` on any event bus yourself.
+
+## Event buses
+
+A bus is not owned by the server, so nothing closes it for you. `inproc.Bus.Close`
+stops accepting events and waits for in-flight handlers, bounded by
+`Options.DrainTimeout`; a non-nil error means the drain did not finish and those
+events were not processed. Broker adapters close their connections.
 
 ## Tuning `ShutdownTimeout`
 

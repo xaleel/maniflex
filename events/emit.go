@@ -149,11 +149,19 @@ func Emit(pub Publisher, cfgs ...EmitConfig) maniflex.MiddlewareFunc {
 		// holding an event for a write that never happened (audit EV-3).
 		// AfterCommit runs it inline when there is no transaction to wait for.
 		ctx.AfterCommit(func() {
-			go func() {
-				bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			// GoBackground, not a bare goroutine: Server.Shutdown waits for
+			// tracked work, and the context it supplies is cancelled when the
+			// shutdown budget elapses. An untracked goroutine on
+			// context.Background() was both unwaited-for and unstoppable, so a
+			// publish in flight at shutdown was simply lost and the
+			// cancellation path it appeared to have could never fire — at
+			// least-once degrading to at-most-once precisely at deploy time
+			// (audit EV-6).
+			ctx.GoBackground(func(bgCtx context.Context) {
+				pubCtx, cancel := context.WithTimeout(bgCtx, 5*time.Second)
 				defer cancel()
-				_ = pub.Publish(bgCtx, e)
-			}()
+				_ = pub.Publish(pubCtx, e)
+			})
 		})
 		return nil
 	}

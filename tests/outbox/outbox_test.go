@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -17,10 +18,28 @@ import (
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
+	// A file in the test's temp dir, not ":memory:".
+	//
+	// Every connection to ":memory:" opens its OWN empty database, so a pooled
+	// *sql.DB spreads one test across several of them — the relayer writes on
+	// one connection and an assertion reads on another, finding "no such table:
+	// event_outbox". It surfaced as a flake (measured 3 runs in 8), which is
+	// worse than a failure because it reads as someone else's problem.
+	//
+	// The obvious fix, a shared-cache DSN like db/sqlite.Open uses, was tried and
+	// still flaked: a shared-cache in-memory database lives only while at least
+	// one connection is open, and database/sql may retire and reopen a pooled
+	// connection at any moment — which silently destroys and recreates the
+	// database mid-test. A file has no such lifetime rule, and t.TempDir cleans
+	// it up. Speed is irrelevant here; determinism is not.
+	dsn := filepath.Join(t.TempDir(), "outbox.db")
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// SQLite takes one writer at a time; the relayer and the assertions both
+	// write, so serialise rather than surfacing SQLITE_BUSY as a flake.
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
 	if err := outbox.Migrate(context.Background(), db, "sqlite"); err != nil {
 		t.Fatal(err)
@@ -51,7 +70,7 @@ type nopPublisher struct{}
 
 func (n *nopPublisher) Publish(_ context.Context, _ events.Event) error        { return nil }
 func (n *nopPublisher) PublishBatch(_ context.Context, _ []events.Event) error { return nil }
-func (n *nopPublisher) Close() error                                            { return nil }
+func (n *nopPublisher) Close() error                                           { return nil }
 
 type recordingPublisher struct {
 	mu     sync.Mutex
@@ -83,7 +102,7 @@ type failingPublisher struct{ err error }
 
 func (f *failingPublisher) Publish(_ context.Context, _ events.Event) error        { return f.err }
 func (f *failingPublisher) PublishBatch(_ context.Context, _ []events.Event) error { return f.err }
-func (f *failingPublisher) Close() error                                            { return nil }
+func (f *failingPublisher) Close() error                                           { return nil }
 
 // slowPublisher wraps a publisher and adds a fixed delay per Publish call so
 // concurrent relayers have time to race on the same unshipped row.

@@ -36,6 +36,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"strconv"
 	"time"
 
 	"github.com/xaleel/maniflex/events"
@@ -210,9 +211,13 @@ func (r *Relayer) Start(ctx context.Context) error {
 }
 
 type pending struct {
-	id       string
-	payload  string
-	attempts int
+	id      string
+	payload string
+	// eventType is the row's own type column. It is the only type information
+	// available when the payload does not decode, which is exactly when the
+	// dead-letter most needs to say what it was (audit EV-8).
+	eventType string
+	attempts  int
 }
 
 func (r *Relayer) relay(ctx context.Context) error {
@@ -230,7 +235,7 @@ func (r *Relayer) relay(ctx context.Context) error {
 
 	b := r.bus
 	rs, err := b.db.QueryContext(ctx,
-		fmt.Sprintf(`SELECT id, payload, attempts FROM event_outbox WHERE lease_id = %s AND shipped_at IS NULL`, b.ph(1)),
+		fmt.Sprintf(`SELECT id, payload, type, attempts FROM event_outbox WHERE lease_id = %s AND shipped_at IS NULL`, b.ph(1)),
 		leaseID)
 	if err != nil {
 		return err
@@ -239,7 +244,7 @@ func (r *Relayer) relay(ctx context.Context) error {
 	var batch []pending
 	for rs.Next() {
 		var p pending
-		if err := rs.Scan(&p.id, &p.payload, &p.attempts); err != nil {
+		if err := rs.Scan(&p.id, &p.payload, &p.eventType, &p.attempts); err != nil {
 			rs.Close()
 			return err
 		}
@@ -295,7 +300,7 @@ func (r *Relayer) claimBatch(ctx context.Context, leaseID string, leaseUntil, no
 func (r *Relayer) processRow(ctx context.Context, p pending) {
 	var e events.Event
 	if err := json.Unmarshal([]byte(p.payload), &e); err != nil {
-		r.markError(ctx, p.id, err.Error(), p.attempts)
+		r.handlePoison(ctx, p, err)
 		return
 	}
 	if err := r.bus.downstream.Publish(ctx, e); err != nil {
@@ -307,6 +312,51 @@ func (r *Relayer) processRow(ctx context.Context, p pending) {
 		return
 	}
 	r.markShipped(ctx, p.id)
+}
+
+// handlePoison resolves a row whose payload will not decode.
+//
+// Decoding is deterministic over fixed bytes, so this failure is terminal: a
+// retry runs the same parse over the same payload and fails identically. The old
+// code called markError anyway, which walked the row up to MaxAttempts and then
+// left it in a state claimBatch filters out ("attempts < MaxAttempts") and sweep
+// ignores ("shipped_at IS NOT NULL") — never delivered, never dead-lettered,
+// never deleted, one such row accumulating per malformed payload (audit EV-8).
+//
+// It is dead-lettered and then marked shipped, the same terminal treatment the
+// publish-exhaustion path already applies. shipped_at here means "resolved", not
+// "delivered"; last_error records which it was.
+func (r *Relayer) handlePoison(ctx context.Context, p pending, decodeErr error) {
+	slog.Default().Error("outbox: payload could not be decoded, dead-lettering row",
+		slog.String("row_id", p.id),
+		slog.String("type", p.eventType),
+		slog.Bool("dlq_configured", r.opts.DLQType != ""),
+		slog.String("error", decodeErr.Error()))
+
+	// Synthesised from the row's own columns: the payload did not parse, so
+	// there is no Event to copy provenance from. The raw bytes ride along as
+	// Data because they are the only remaining evidence of what was written,
+	// and DataType says plainly that they are not to be trusted as JSON.
+	r.routeToDLQ(ctx, events.Event{
+		ID:       p.id,
+		Type:     p.eventType,
+		DataType: "application/octet-stream",
+		Data:     json.RawMessage(strconv.Quote(p.payload)),
+	})
+
+	// Recorded before the row is closed out, so an operator reading the table
+	// sees why it was resolved rather than an unexplained shipped row.
+	r.markLastError(ctx, p.id, "undecodable payload: "+decodeErr.Error())
+	r.markShipped(ctx, p.id)
+}
+
+// markLastError records why a row was resolved without touching attempts or
+// scheduling a retry — markError does both, which is wrong for a terminal
+// failure: the attempt count would imply a retry that is never coming.
+func (r *Relayer) markLastError(ctx context.Context, id, errMsg string) {
+	b := r.bus
+	q := fmt.Sprintf(`UPDATE event_outbox SET last_error = %s WHERE id = %s`, b.ph(1), b.ph(2))
+	_, _ = b.db.ExecContext(ctx, q, errMsg, id)
 }
 
 // routeToDLQ re-publishes an event that exhausted its delivery attempts under

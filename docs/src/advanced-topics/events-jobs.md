@@ -148,6 +148,16 @@ A DLQ publish that itself fails is logged and the event is then lost — the DLQ
 rides the same broker that was already failing, so a persistent outage takes the
 dead-letters with it.
 
+**An outbox row whose payload will not decode is dead-lettered immediately**,
+without consuming its retry budget: decoding is deterministic, so a retry parses
+the same bytes and fails identically. That dead-letter is synthesised from the
+row itself — `original_id` is the outbox row id and `original_type` its `type`
+column, since there is no event to read them from — and carries the raw bytes as
+`Data` with `DataType: application/octet-stream`, because they are the only
+remaining evidence of what was written. The row is then marked shipped so the
+sweep can reclaim it; `last_error` records that it was resolved rather than
+delivered.
+
 > **Custom actions emit manually.** `events.Emit` runs on the DB step, which
 > [custom actions](actions.md) skip — so a `server.Action` handler never fires
 > the middleware and must publish to the bus itself:

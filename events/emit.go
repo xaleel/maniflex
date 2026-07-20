@@ -111,7 +111,11 @@ func Emit(pub Publisher, cfgs ...EmitConfig) maniflex.MiddlewareFunc {
 			}
 		}
 
-		data, _ := json.Marshal(ctx.DBResult)
+		// Redacted, never the raw ctx.DBResult: that map is already decrypted, and
+		// carries hidden and write-only columns the response serializer strips
+		// (audit EV-1). The payload reaches every subscriber, the persisted
+		// outbox row, and the realtime hub (RT-6), none of which redact again.
+		data, _ := json.Marshal(maniflex.RedactRecord(ctx.Model, ctx.DBResult))
 
 		e := Event{
 			ID:        newID(),

@@ -446,17 +446,7 @@ func chooseSnapshot(pre, post map[string]any, op Operation) map[string]any {
 // always applied this exclusion set; the snapshot must apply the same one, or
 // the two halves of a history row disagree about what is a secret.
 func redactSnapshot(model *ModelMeta, snap map[string]any) map[string]any {
-	if snap == nil {
-		return nil
-	}
-	excluded := excludedDBNames(model)
-	out := make(map[string]any, len(snap))
-	for k, v := range snap {
-		if !excluded[k] {
-			out[k] = v
-		}
-	}
-	return out
+	return redactDBMap(model, snap)
 }
 
 // excludedDBNames returns the set of DB column names that must not appear in

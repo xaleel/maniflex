@@ -43,6 +43,33 @@ bus.Subscribe(ctx, events.Subscription{
 For WebSocket fan-out, connect a `realtime.Hub` to the bus — see
 [Realtime / WebSockets](realtime.md).
 
+### What the payload carries
+
+`Event.Data` is the written row, keyed by **database column name** — not by
+`json` name, and not the response shape. It is deliberately not the response
+projection: locale resolution and `ctx.RedactResponseField` masking are
+decisions made for one requesting caller, and an event is durable, replayable,
+and read by subscribers who never made that request.
+
+Four kinds of column are stripped before the event leaves:
+
+| Excluded | Why |
+|---|---|
+| `mfx:"hidden"` | never leaves the server |
+| `mfx:"writeonly"` | never read back — password hashes and the like |
+| `mfx:"encrypted"` | the row reaching `Emit` is already decrypted, so emitting it would publish the plaintext |
+| `{field}_hmac` | the searchable digest companion of an encrypted+unique column |
+
+This matters because the payload is not a transient in-memory value: it is
+persisted verbatim to `event_outbox.payload`, replayed by the outbox relayer,
+pushed to every WebSocket and SSE client through the hub, and written to
+whatever the broker retains. An encrypted column emitted in the clear defeats
+the at-rest guarantee everywhere downstream at once.
+
+`maniflex.RedactRecord(model, row)` applies the same exclusion set, if you build
+an event by hand (see the custom-action note below) or serialize `ctx.DBResult`
+in your own middleware.
+
 ### Dead-lettering
 
 Set `Subscription.DLQ` (or `RelayOptions.DLQType` on the outbox relayer) to
@@ -67,12 +94,17 @@ dead-letters with it.
 > the middleware and must publish to the bus itself:
 >
 > ```go
+> data, _ := json.Marshal(maniflex.RedactRecord(ctx.Model, ctx.DBResult))
 > err := bus.Publish(ctx.Ctx, events.Event{
 >     Type:     "order.cancelled",
 >     Model:    "Order",
 >     RecordID: orderID,
+>     Data:     data,
 > })
 > ```
+>
+> Nothing redacts a hand-built payload for you — marshal `ctx.DBResult` directly
+> and you publish the plaintext of every encrypted column.
 >
 > For the transactional outbox, publish inside the action's own transaction so
 > the event commits atomically with the write.

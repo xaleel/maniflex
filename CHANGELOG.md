@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.1
+
+- **Security:** `events.Emit` no longer publishes hidden, write-only or encrypted fields. It marshalled the already-decrypted `ctx.DBResult` into `Data`, so every subscriber, broker topic, WS/SSE client and stored `event_outbox.payload` row got password hashes and encrypted plaintext. New `maniflex.RedactRecord` applies the exclusion set and now backs the versioning snapshot too. Keys unchanged.
+
 ## v0.3.0 (2026-07-20)
 
 - **Feature:** `?include=` accepts one level of nesting — `?include=author.company` loads a relation of the included relation. Asking for `a.b` implies `a`. Each level stays batched, so the cost is one query per node of the tree rather than per row, and nested rows are scoped, decrypted and field-filtered exactly as the first level: a forced filter applies at every level, and `hidden`/`writeonly` fields on the nested model stay out. Depth is capped at two segments (`maniflex.MaxIncludeDepth`) and `?include=a.b.c` is refused with `400`, because the tree is client-supplied and each level multiplies the work. Every segment must name a real relation; a typo is a `400` rather than a silently absent key. `QueryParams` gains `NestedIncludes map[string][]string`; `Includes` keeps its meaning and existing readers are unaffected. **Applies to the JSON response only** — typed relation structs are still populated one level deep, so `post.Author.Company` is not filled in by a typed read.

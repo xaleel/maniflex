@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/xaleel/maniflex"
@@ -160,7 +161,17 @@ func Emit(pub Publisher, cfgs ...EmitConfig) maniflex.MiddlewareFunc {
 			ctx.GoBackground(func(bgCtx context.Context) {
 				pubCtx, cancel := context.WithTimeout(bgCtx, 5*time.Second)
 				defer cancel()
-				_ = pub.Publish(pubCtx, e)
+				if err := pub.Publish(pubCtx, e); err != nil {
+					// Logged, not discarded. Nothing downstream of here holds a
+					// copy — this goroutine is the event's last reference — so a
+					// swallowed error is an event that vanished without trace.
+					// A saturated in-process bus reports inproc.ErrQueueFull
+					// this way, which is the only signal that it is shedding.
+					ctx.Logger().Error("events: publish failed, event dropped",
+						slog.String("type", e.Type),
+						slog.String("id", e.ID),
+						slog.String("error", err.Error()))
+				}
 			})
 		})
 		return nil

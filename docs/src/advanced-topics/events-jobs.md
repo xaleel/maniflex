@@ -226,6 +226,13 @@ Available adapters: `events/redis`, `events/kafka`, `events/nats`,
 `events/rabbitmq`. The in-process adapter (`inproc.New()` from
 `github.com/xaleel/maniflex/events/inproc`) ships in the core module for tests.
 
+> **`inproc` applies backpressure.** Each subscription has a bounded queue
+> (`Options.QueueSize`, default 1024) drained by `Concurrency` workers. `Publish`
+> never blocks; it returns `inproc.ErrQueueFull` when a subscription is full, so
+> a handler slower than the publish rate shows up as an error rather than as
+> memory growth. `events.Emit` cannot return it to you — it publishes after the
+> response — so it logs an ERROR naming the event instead.
+
 > **`events/redis` reclaims abandoned messages.** A consumer that dies
 > mid-delivery leaves its messages pending; each consumer runs a periodic
 > `XAUTOCLAIM` sweep to take them over. Tune `Options.ClaimMinIdle` (default 5m)

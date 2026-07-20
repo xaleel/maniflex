@@ -1,6 +1,12 @@
 // Package inproc provides an in-process event bus for maniflex.
-// Events are delivered to subscribers via a bounded worker pool whose size is
-// controlled by Subscription.Concurrency.
+//
+// Each subscription owns a bounded queue drained by Subscription.Concurrency
+// workers. Publish enqueues and returns; it never blocks, and returns
+// ErrQueueFull when a subscription's queue has no room — so a slow handler
+// causes visible backpressure rather than an invisible pile-up, and a handler
+// that publishes to its own bus cannot deadlock itself. Size the queue with
+// Options.QueueSize.
+//
 // There is no persistence: events published before a subscription is registered,
 // or while the process is down, are lost.
 //
@@ -34,24 +40,47 @@ import (
 // instead, and can distinguish shutdown from a delivery failure.
 var ErrBusClosed = errors.New("inproc: bus is closed")
 
-// defaultDrainTimeout bounds Close. Long enough for an ordinary handler to
-// finish, short enough that a wedged one cannot hold shutdown open forever.
-const defaultDrainTimeout = 30 * time.Second
+// ErrQueueFull is returned by Publish when a matching subscription's queue has
+// no room. It means the bus is falling behind, not that delivery failed: the
+// event was never accepted, so the caller still holds it and can log, shed, or
+// retry.
+var ErrQueueFull = errors.New("inproc: subscription queue is full")
+
+const (
+	// defaultDrainTimeout bounds Close. Long enough for an ordinary handler to
+	// finish, short enough that a wedged one cannot hold shutdown open forever.
+	defaultDrainTimeout = 30 * time.Second
+
+	// defaultQueueSize is the per-subscription backlog. Deep enough to absorb an
+	// ordinary burst, shallow enough that a stalled handler is noticed while the
+	// memory held is still trivial.
+	defaultQueueSize = 1024
+)
 
 // Options customises the Bus. All fields are optional.
 type Options struct {
 	// DrainTimeout bounds how long Close waits for in-flight deliveries before
 	// giving up and returning an error. Default: 30s.
 	DrainTimeout time.Duration
+
+	// QueueSize is the per-subscription backlog depth. Default: 1024.
+	//
+	// Publish returns ErrQueueFull once a subscription's queue is full rather
+	// than waiting, so a slow handler cannot stall the caller and a handler that
+	// publishes to its own bus cannot deadlock itself.
+	QueueSize int
 }
 
 // Bus is an in-process fan-out event bus.
 type Bus struct {
-	mu   sync.RWMutex
-	subs []subscription
+	mu sync.RWMutex
+	// Pointers, not values: a subscription owns a sync.Once and a WaitGroup, and
+	// Publish snapshots this slice — copying either type is a bug vet catches.
+	subs []*subscription
 	seq  atomic.Uint64
 
 	drainTimeout time.Duration
+	queueSize    int
 
 	// rootCtx is cancelled by Close, so in-flight handlers are asked to stop
 	// rather than merely being outlived. Deliveries previously ran on
@@ -66,10 +95,21 @@ type Bus struct {
 	closed   atomic.Bool
 }
 
+// subscription is a bounded queue drained by a fixed pool of workers.
+//
+// Publish used to start one goroutine per subscriber per event, each blocking on
+// a semaphore. That bounds how many handlers *run*, not how many goroutines wait
+// behind them — so a handler slower than the publish rate accumulated goroutines
+// without limit, each pinning its own copy of the event (audit EV-11). The queue
+// bounds the backlog itself, and the pool replaces the semaphore as the cap on
+// concurrent handlers.
 type subscription struct {
-	id  uint64
-	sub events.Subscription
-	sem chan struct{} // bounded semaphore: capacity == sub.Concurrency
+	id     uint64
+	sub    events.Subscription
+	queue  chan events.Event
+	stop   chan struct{}  // closed by Cancel to retire this subscription's workers
+	once   sync.Once      // guards stop, so Cancel stays safe to call twice
+	worker sync.WaitGroup // this subscription's workers
 }
 
 // New creates an in-process Bus.
@@ -81,42 +121,95 @@ func New(opts ...Options) *Bus {
 	if o.DrainTimeout <= 0 {
 		o.DrainTimeout = defaultDrainTimeout
 	}
+	if o.QueueSize <= 0 {
+		o.QueueSize = defaultQueueSize
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Bus{drainTimeout: o.DrainTimeout, rootCtx: ctx, cancel: cancel}
+	return &Bus{
+		drainTimeout: o.DrainTimeout,
+		queueSize:    o.QueueSize,
+		rootCtx:      ctx,
+		cancel:       cancel,
+	}
 }
 
-// Publish delivers e to all matching subscribers. Each delivery acquires a slot
-// from the subscription's semaphore before calling DeliverWithRetry, so at most
-// Concurrency handlers run concurrently per subscription.
+// Publish delivers e to every matching subscription's queue, where that
+// subscription's worker pool picks it up. At most Concurrency handlers run at
+// once per subscription.
+//
+// Publish returns ErrQueueFull if any matching subscription has no room. It
+// never blocks: a slow handler must not stall the caller, and a handler that
+// publishes to its own bus would otherwise deadlock against a full queue.
+//
+// The event is still enqueued to every other matching subscription — one
+// saturated consumer does not deny the rest their copy — so a non-nil return
+// means "at least one subscriber did not accept this", not "nothing was
+// delivered".
 func (b *Bus) Publish(_ context.Context, e events.Event) error {
 	if b.closed.Load() {
 		return ErrBusClosed
 	}
 
 	b.mu.RLock()
-	subs := make([]subscription, len(b.subs))
+	subs := make([]*subscription, len(b.subs))
 	copy(subs, b.subs)
 	b.mu.RUnlock()
 
+	var full error
 	for _, s := range subs {
 		if !matchesAny(s.sub.Patterns, e.Type) {
 			continue
 		}
-		// Add before the goroutine starts, so a Close racing this Publish
-		// either sees the counter and waits, or has already set closed and
-		// been refused above. Incrementing inside the goroutine would leave a
-		// window where Close observes zero in-flight work and returns.
+		// Counted before the send, so a Close racing this Publish either sees
+		// the counter and waits, or has already set closed and refused above.
 		b.inflight.Add(1)
-		go func() {
-			defer b.inflight.Done()
-			s.sem <- struct{}{}
-			defer func() { <-s.sem }()
-			// b.rootCtx, not context.Background(): Close cancels it, so a
-			// handler mid-retry is asked to stop instead of being abandoned.
-			events.DeliverWithRetry(b.rootCtx, b, s.sub, e)
-		}()
+		select {
+		case s.queue <- e:
+		default:
+			b.inflight.Done()
+			full = fmt.Errorf("%w (subscription %d, capacity %d)", ErrQueueFull, s.id, cap(s.queue))
+		}
 	}
-	return nil
+	return full
+}
+
+// runWorker drains one subscription's queue until the subscription is cancelled
+// or the bus is closed. Concurrency of these run per subscription, which is what
+// caps concurrent handlers now that the per-event semaphore is gone.
+func (b *Bus) runWorker(s *subscription) {
+	defer s.worker.Done()
+	for {
+		select {
+		case e := <-s.queue:
+			// b.rootCtx, not context.Background(): Close cancels it, so a
+			// handler mid-retry is asked to stop instead of being abandoned
+			// (audit EV-6).
+			events.DeliverWithRetry(b.rootCtx, b, s.sub, e)
+			b.inflight.Done()
+		case <-s.stop:
+			// Cancelled. Release the events still queued so Close's drain
+			// cannot wait forever on deliveries that will never run.
+			b.releaseQueued(s)
+			return
+		case <-b.rootCtx.Done():
+			b.releaseQueued(s)
+			return
+		}
+	}
+}
+
+// releaseQueued discounts the events left in a retired subscription's queue.
+// Each was counted at Publish, so without this the inflight WaitGroup never
+// reaches zero and Close blocks until its timeout on work nobody will do.
+func (b *Bus) releaseQueued(s *subscription) {
+	for {
+		select {
+		case <-s.queue:
+			b.inflight.Done()
+		default:
+			return
+		}
+	}
 }
 
 // PublishBatch publishes each event in es. Each delivery is independent.
@@ -145,28 +238,37 @@ func (b *Bus) Subscribe(_ context.Context, sub events.Subscription) (events.Canc
 		sub.Patterns = []string{"*"}
 	}
 
-	id := b.seq.Add(1)
+	s := &subscription{
+		id:    b.seq.Add(1),
+		sub:   sub,
+		queue: make(chan events.Event, b.queueSize),
+		stop:  make(chan struct{}),
+	}
+
+	// Workers start before the subscription is visible to Publish, so nothing
+	// can land in a queue nobody is draining.
+	s.worker.Add(sub.Concurrency)
+	for range sub.Concurrency {
+		go b.runWorker(s)
+	}
 
 	b.mu.Lock()
-	b.subs = append(b.subs, subscription{
-		id:  id,
-		sub: sub,
-		sem: make(chan struct{}, sub.Concurrency),
-	})
+	b.subs = append(b.subs, s)
 	b.mu.Unlock()
 
-	var once sync.Once
 	return func() {
-		once.Do(func() {
-			b.mu.Lock()
-			for i, s := range b.subs {
-				if s.id == id {
-					b.subs = append(b.subs[:i], b.subs[i+1:]...)
-					break
-				}
+		b.mu.Lock()
+		for i, cur := range b.subs {
+			if cur.id == s.id {
+				b.subs = append(b.subs[:i], b.subs[i+1:]...)
+				break
 			}
-			b.mu.Unlock()
-		})
+		}
+		b.mu.Unlock()
+		// Unregistered first, so no further events are queued, then the workers
+		// are retired. sync.Once keeps a second Cancel from closing stop twice.
+		s.once.Do(func() { close(s.stop) })
+		s.worker.Wait()
 	}, nil
 }
 

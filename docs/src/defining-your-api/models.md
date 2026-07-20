@@ -128,6 +128,15 @@ pluralised:
 | `Article`  | `articles`   |
 | `BlogPost` | `blog_posts` |
 | `Category` | `categories` |
+| `Analysis` | `analyses`   |
+| `Matrix`   | `matrices`   |
+
+A short list of Latin and Greek stems inflect classically — `analysis`, `basis`,
+`axis`, `diagnosis`, `thesis` (and `hypothesis`), `datum`, `medium`, `matrix`,
+`vertex`, `criterion`, `phenomenon` — including inside a compound name, so
+`BloodAnalysis` becomes `blood_analyses`. Everything else takes the English
+ending: `album` → `albums`, `complex` → `complexes`, and `index` → `indexes`,
+since that is the plural the database world uses.
 
 To use a different name, pass a `ModelConfig` with `TableName` set when
 registering:
@@ -137,6 +146,10 @@ server.MustRegister(
     Article{}, maniflex.ModelConfig{TableName: "articles"},
 )
 ```
+
+`TableName` is also how you pin an existing table whose generated name has
+changed — see the v0.3.0 note in the changelog if you have a model named after
+one of the stems above.
 
 ## Registration options
 

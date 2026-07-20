@@ -31,6 +31,36 @@ func toSnakeCase(s string) string {
 	return b.String()
 }
 
+// classicalPlurals holds Latin and Greek stems whose plural the English suffix
+// rules below get wrong: they inflect the stem rather than adding an ending, so
+// "matrix" became "matrixes", "analysis" became "analysises" and "datum" became
+// "datums" (audit 11D.4).
+//
+// Enumerated rather than derived. A blanket "-um → -a" turns album into alba, a
+// blanket "-ex → -ices" turns complex into complices, and "index" is deliberately
+// absent because "indexes" is the plural the database world actually uses. These
+// words are listed precisely because their morphology cannot be read off their
+// spelling.
+//
+// A slice, not a map: matched by suffix and ordered longest-first, so the choice
+// is deterministic and the longer stem wins where two could match. Ranging a map
+// here would pick a different answer per process, which is the same fault that
+// destabilised locale fallback in MS-L5.
+var classicalPlurals = []struct{ stem, plural string }{
+	{"phenomenon", "phenomena"},
+	{"criterion", "criteria"},
+	{"diagnosis", "diagnoses"},
+	{"analysis", "analyses"},
+	{"vertex", "vertices"},
+	{"matrix", "matrices"},
+	{"medium", "media"},
+	{"thesis", "theses"}, // also inflects "hypothesis"
+	{"datum", "data"},
+	{"basis", "bases"},
+	{"axis", "axes"},
+	{"quiz", "quizzes"}, // the -z rule below gives "quizes"
+}
+
 // pluralize applies basic English pluralisation rules to a snake_case word.
 func pluralize(s string) string {
 	if s == "" {
@@ -45,6 +75,16 @@ func pluralize(s string) string {
 	}
 	if p, ok := irregulars[lower]; ok {
 		return p
+	}
+
+	// Classical stems, matched as a suffix so compounds inflect too
+	// ("blood_analysis" → "blood_analyses", "hypothesis" → "hypotheses").
+	// The map above stays exact-match: "man" as a suffix would turn "human"
+	// into "humen".
+	for _, cp := range classicalPlurals {
+		if strings.HasSuffix(lower, cp.stem) {
+			return s[:len(s)-len(cp.stem)] + cp.plural
+		}
 	}
 
 	switch {

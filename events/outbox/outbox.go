@@ -34,6 +34,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"time"
 
@@ -308,17 +309,38 @@ func (r *Relayer) processRow(ctx context.Context, p pending) {
 	r.markShipped(ctx, p.id)
 }
 
+// routeToDLQ re-publishes an event that exhausted its delivery attempts under
+// the configured dead-letter type, carrying the original headers plus enough
+// provenance to trace it back.
+//
+// Deliberately the same payload contract as events.DeliverWithRetry, which this
+// used to diverge from in two ways (audit 11D.10). It stamped original_type but
+// not original_id, so a dead-letter could not be tied to the event it came from;
+// and it reused the original ID, which is worse — the original was already
+// published under that ID, so any downstream deduper treats the dead-letter as a
+// duplicate and drops it. The failure would then be dead-lettered into nothing,
+// which is the one outcome a DLQ exists to prevent.
 func (r *Relayer) routeToDLQ(ctx context.Context, e events.Event) {
 	if r.opts.DLQType == "" {
 		return
 	}
 	dlq := e
+	dlq.ID = events.NewID() // fresh ID so downstream dedupers see a new event
 	dlq.Type = r.opts.DLQType
-	newHeaders := make(map[string]string, len(e.Headers)+1)
+	newHeaders := make(map[string]string, len(e.Headers)+2)
 	maps.Copy(newHeaders, e.Headers)
 	newHeaders["original_type"] = e.Type
+	newHeaders["original_id"] = e.ID
 	dlq.Headers = newHeaders
-	_ = r.bus.downstream.Publish(ctx, dlq)
+	if err := r.bus.downstream.Publish(ctx, dlq); err != nil {
+		// Logged, not swallowed: this is the last chance to record the event
+		// before it is marked shipped and forgotten.
+		slog.Default().Error("outbox: DLQ publish failed, event lost",
+			slog.String("dlq_type", r.opts.DLQType),
+			slog.String("original_type", e.Type),
+			slog.String("original_id", e.ID),
+			slog.String("error", err.Error()))
+	}
 }
 
 func (r *Relayer) markShipped(ctx context.Context, id string) {

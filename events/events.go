@@ -198,6 +198,12 @@ func DeliverWithRetry(ctx context.Context, pub Publisher, sub Subscription, e Ev
 	}
 }
 
+// NewID returns a fresh event identifier in the format Publish assigns. Exported
+// for subpackages that mint events of their own — the outbox relayer needs one
+// when it dead-letters, so that the dead-letter is a new event downstream rather
+// than a duplicate of the one that failed.
+func NewID() string { return newID() }
+
 // newID returns a ULID-format identifier: 48-bit millisecond timestamp followed
 // by 80 random bits, encoded as 26 Crockford base32 characters.
 // Pure stdlib, no third-party dependencies.

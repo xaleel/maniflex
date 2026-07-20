@@ -43,6 +43,25 @@ bus.Subscribe(ctx, events.Subscription{
 For WebSocket fan-out, connect a `realtime.Hub` to the bus — see
 [Realtime / WebSockets](realtime.md).
 
+### Dead-lettering
+
+Set `Subscription.DLQ` (or `RelayOptions.DLQType` on the outbox relayer) to
+re-publish an event that exhausted its attempts under a separate type, through
+the same broker. Both paths produce the same payload:
+
+| | |
+|---|---|
+| `ID` | **a fresh one** — the original was already published under its ID, so reusing it gets the dead-letter dropped by any downstream deduper |
+| `Type` | the configured DLQ type |
+| `Headers` | every original header, plus `original_type` and `original_id` |
+
+Everything else is copied unchanged, so the dead-letter carries the same `Data`,
+`Model`, `RecordID` and `TenantID` as the event it came from.
+
+A DLQ publish that itself fails is logged and the event is then lost — the DLQ
+rides the same broker that was already failing, so a persistent outage takes the
+dead-letters with it.
+
 > **Custom actions emit manually.** `events.Emit` runs on the DB step, which
 > [custom actions](actions.md) skip — so a `server.Action` handler never fires
 > the middleware and must publish to the bus itself:

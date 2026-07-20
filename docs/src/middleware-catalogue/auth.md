@@ -29,6 +29,20 @@ algorithms (`RS256/384/512`) when `JWTOptions.PublicKey` is set — useful with
 external identity providers (Auth0, Okta, Cognito, etc.). `AuthMethod` on
 `ctx.Auth` is set to `"jwt"`.
 
+### Where the token is read from
+
+By default the token comes from `Authorization`, which **must** carry the
+`Bearer ` scheme — a bare token there is malformed, not merely unadorned. Point
+`JWTOptions.Header` at another header to read it from there instead:
+
+```go
+auth.JWTAuth(secret, auth.JWTOptions{Header: "X-Auth-Token"})
+```
+
+A custom header accepts the token with or without the `Bearer ` prefix, so a
+client that sends it out of habit is not punished for it. The scheme name is
+matched case-insensitively on both, per RFC 7235 — `bearer <token>` is valid.
+
 Tokens must carry an `exp` claim: one with no expiry is rejected
 (`401 TOKEN_MISSING_EXPIRY`), since it would otherwise be valid forever. Set
 `JWTOptions.AllowNoExpiry` to accept non-expiring tokens from issuers that

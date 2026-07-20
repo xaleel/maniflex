@@ -200,8 +200,16 @@ func isSafeMethod(m string) bool {
 	return false
 }
 
+// hasBearer reports whether the request authenticates with a bearer token, in
+// which case it is not cookie-borne and CSRF does not apply.
+//
+// Shares stripBearer with JWTAuth so the two agree on what a bearer header is.
+// They must: this decides whether CSRF is enforced and JWTAuth decides whether
+// the token is read, so a header one accepted and the other did not would
+// authenticate the caller and then demand a CSRF token from them anyway.
 func hasBearer(r *http.Request) bool {
-	return strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ")
+	_, ok := stripBearer(r.Header.Get("Authorization"))
+	return ok
 }
 
 func ensureDoubleSubmitCookie(w http.ResponseWriter, r *http.Request, opt *CSRFOptions) {

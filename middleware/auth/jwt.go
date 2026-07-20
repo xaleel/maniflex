@@ -298,25 +298,45 @@ func principalFrom(ctx *maniflex.ServerContext, opt JWTOptions, claims map[strin
 	return info, true
 }
 
-// readToken pulls the raw token from the configured header. For the default
-// Authorization header it requires the "Bearer " prefix. It returns (token, true)
-// on success, or ("", false) after aborting the request when the header is
-// missing or malformed.
+// stripBearer removes a leading "Bearer " scheme from a header value, reporting
+// whether one was there. The comparison is case-insensitive per RFC 7235 §2.1,
+// which makes the scheme name case-insensitive.
+//
+// Stripping is unambiguous: a JWT is dot-separated base64url and can never
+// contain a space, so a leading "Bearer " is always framing and never part of
+// the token.
+func stripBearer(raw string) (token string, hadScheme bool) {
+	const scheme = "Bearer "
+	if len(raw) >= len(scheme) && strings.EqualFold(raw[:len(scheme)], scheme) {
+		return raw[len(scheme):], true
+	}
+	return raw, false
+}
+
+// readToken pulls the raw token from the configured header. It returns
+// (token, true) on success, or ("", false) after aborting the request when the
+// header is missing or malformed.
+//
+// Authorization *requires* the scheme, since a bare token there is malformed
+// rather than merely unadorned. Any other header *tolerates* it: the prefix used
+// to be stripped only when the header was literally "Authorization", so pointing
+// JWTOptions.Header at X-Auth-Token and sending "Bearer <token>" — the reflex,
+// because it is what the header being replaced requires — parsed the scheme as
+// part of the token and answered a flat 401 about the token being invalid rather
+// than about its framing (audit 11D.9).
 func readToken(ctx *maniflex.ServerContext, opt JWTOptions) (string, bool) {
 	raw := ctx.Request.Header.Get(opt.Header)
-	if opt.Header == "Authorization" {
-		if !strings.HasPrefix(raw, "Bearer ") {
-			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",
-				"missing or malformed Authorization: Bearer <token> header")
-			return "", false
-		}
-		raw = strings.TrimPrefix(raw, "Bearer ")
+	token, hadScheme := stripBearer(raw)
+	if opt.Header == "Authorization" && !hadScheme {
+		ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",
+			"missing or malformed Authorization: Bearer <token> header")
+		return "", false
 	}
-	if raw == "" {
+	if token == "" {
 		ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED", "missing token")
 		return "", false
 	}
-	return raw, true
+	return token, true
 }
 
 // validateRegisteredClaims checks the standard registered claims — exp, nbf, iat

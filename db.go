@@ -241,6 +241,33 @@ type ScopeChecker interface {
 // DBAdapter is the interface all database backends must implement.
 // Methods receive a *ModelMeta describing the target model and a *QueryParams
 // carrying pagination, filters, sorts, and relation includes.
+//
+// # Implementations must be comparable, and compare by identity
+//
+// The framework compares DBAdapter values with == and != to decide whether two
+// models live on the same database. ModelConfig.Adapter makes that a real
+// question: with per-model adapters in play, "same adapter" is what decides
+// whether one transaction may span two models.
+//
+// Two consequences for an implementation:
+//
+//   - **Use a pointer receiver.** Return *MyAdapter, not MyAdapter. Two separately
+//     constructed value-type adapters holding equal fields compare equal, so the
+//     framework would treat two distinct databases as one and let a transaction
+//     span them — a silent correctness bug, not an error.
+//   - **Stay comparable.** Comparing interface values whose dynamic type is not
+//     comparable — a struct containing a map, slice, or func field, used as a
+//     value rather than a pointer — panics at run time. A pointer receiver
+//     satisfies this too, since pointers are always comparable.
+//
+// Both are what every built-in adapter already does; this is written down
+// because nothing in the type system enforces it, and getting it wrong fails at
+// run time or not at all (audit 11D.8).
+//
+// The comparison sites, should the contract need revisiting: Batcher.For
+// (batch.go) refuses a model that routes elsewhere, and ServerContext.getModel
+// (context.go) drops ctx.Tx when the target model resolves to a different
+// adapter than the request's.
 type DBAdapter interface {
 	// AutoMigrate creates or updates tables/collections for the given models.
 	// Called once on Server.Start() unless Config.DisableAutoMigrate is set.

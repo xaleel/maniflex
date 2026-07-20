@@ -128,6 +128,23 @@ data service, a remote API, a different SQL database — implement the same
 interface and inject the result through `server.SetDB(myAdapter)`. The
 interface is in [db.go](../../../db.go).
 
+### Adapters are compared by identity
+
+The framework uses `==` on `DBAdapter` values to decide whether two models share
+a database — that is what stops a transaction from silently spanning two of them.
+So a custom adapter must:
+
+- **use a pointer receiver** — return `*MyAdapter`, not `MyAdapter`. Two
+  separately constructed value-type adapters with equal fields compare *equal*,
+  so the framework would treat two databases as one and let a transaction span
+  them. That fails silently, not loudly.
+- **stay comparable** — comparing interface values whose dynamic type is not
+  comparable (a struct holding a map, slice, or func, used as a value) panics at
+  run time. A pointer receiver gives you this for free.
+
+Nothing in the type system enforces either, which is why it is written down here
+and on the `DBAdapter` godoc.
+
 ## Per-model adapter routing
 
 `Config.DB` sets the default adapter. Individual models can override it by
@@ -143,6 +160,11 @@ server.MustRegister(
     User{},          // unrouted — falls back to Config.DB
 )
 ```
+
+"Distinct" here means distinct under `==`. Two models that share a database must
+be given the **same** adapter value, not two opened against the same DSN — those
+are separate connection pools and separate transactions, and nothing tells the
+framework they point at one database.
 
 The framework treats each distinct adapter as its own database:
 

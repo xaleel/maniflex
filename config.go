@@ -110,6 +110,13 @@ type ModelConfig struct {
 	// maniflex.Batch and pkg/saga cannot span adapters in a single transaction —
 	// Batch construction rejects mixed-adapter model sets; sagas are the
 	// supported cross-adapter pattern.
+	//
+	// "Same adapter" means the same value under ==, so two models sharing a
+	// database must be given the *same* adapter, not two equivalent ones opened
+	// against the same DSN — those are separate connection pools and separate
+	// transactions, and the framework has no way to tell they point at one
+	// database. See the DBAdapter godoc for the comparability contract this puts
+	// on an implementation.
 	Adapter DBAdapter
 
 	// ExportEnabled mounts GET /:model/export when true. The route accepts the

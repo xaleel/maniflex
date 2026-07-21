@@ -353,6 +353,14 @@ adapters is a one-line change.
 > workers sharing one ID are a single consumer to Redis and share one pending
 > list, which defeats per-worker recovery.
 
+> **Delayed jobs are promoted once, even with many replicas.** A job enqueued
+> with `NotBefore`/`EnqueueAt` waits in a sorted set until due, then the promoter
+> moves it to the stream. Every replica runs a promoter, but the move is a single
+> atomic server-side script, so Redis serialises them: whichever replica runs
+> first claims the due jobs and the rest find them already gone — a delayed job is
+> delivered once, not once per replica, and a dropped connection cannot leave one
+> half-moved.
+
 ### Defining and enqueueing a job
 
 ```go

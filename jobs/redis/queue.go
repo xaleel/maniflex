@@ -16,7 +16,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strconv"
 	"sync"
 	"time"
 
@@ -31,6 +30,7 @@ const (
 	defaultBlockDuration  = 200 * time.Millisecond
 	delayedSetSuffix      = ":delayed"
 	promoterInterval      = 500 * time.Millisecond
+	promoteBatch          = 100 // max delayed members promoted per tick
 	defaultReclaimMinIdle = 5 * time.Minute
 )
 
@@ -43,6 +43,7 @@ type pendingEntry struct {
 type Queue struct {
 	client         *goredis.Client
 	ops            streamOps
+	promoter       promoteOps
 	stream         string
 	delayed        string // ZSET key for delayed jobs
 	group          string
@@ -100,6 +101,7 @@ func New(client *goredis.Client, opts Options) *Queue {
 	return &Queue{
 		client:         client,
 		ops:            redisStreamOps{client: client},
+		promoter:       redisPromoteOps{client: client},
 		stream:         opts.Stream,
 		delayed:        opts.Stream + delayedSetSuffix,
 		group:          opts.Group,
@@ -379,23 +381,12 @@ func (q *Queue) promoteLoop(ctx context.Context) {
 }
 
 func (q *Queue) promoteDue(ctx context.Context) {
-	now := strconv.FormatInt(time.Now().UnixMilli(), 10)
-	members, err := q.client.ZRangeByScore(ctx, q.delayed, &goredis.ZRangeBy{
-		Min: "-inf", Max: now, Count: 100,
-	}).Result()
-	if err != nil || len(members) == 0 {
-		return
-	}
-	pipe := q.client.Pipeline()
-	for _, m := range members {
-		pipe.XAdd(ctx, &goredis.XAddArgs{
-			Stream: q.stream,
-			ID:     "*",
-			Values: map[string]any{"job": m},
-		})
-		pipe.ZRem(ctx, q.delayed, m)
-	}
-	_, _ = pipe.Exec(ctx)
+	// Best-effort: the move is atomic server-side (see promoteOps), so a transient
+	// failure cannot half-move a job — it just leaves the due members in the
+	// delayed set for the next tick to promote. There is no logger on this path
+	// (the package convention), and a failed promote is self-healing, so the error
+	// is intentionally not surfaced.
+	_, _ = q.promoter.PromoteDue(ctx, q.delayed, q.stream, time.Now().UnixMilli(), promoteBatch)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

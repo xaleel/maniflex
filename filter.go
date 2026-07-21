@@ -330,6 +330,13 @@ func resolveFlatFilter(expr *FilterExpr, fieldPath string, model *ModelMeta) (*F
 		return nil, fmt.Errorf("field %q on model %s is not filterable (add mfx:\"filterable\" to the struct tag)", fieldPath, model.Name)
 	}
 	expr.Field = f.Tags.DBName
+	// On a time-typed column the value is compared as TEXT on SQLite, so a raw
+	// client string ("…12:00:00Z", a zone offset, a short fraction) can misorder
+	// against the fixed-width form the write path stores. Re-emit a well-formed
+	// timestamp in that same form; leave date-only and non-time values untouched.
+	if isTimeType(f.Type) {
+		expr.Value = canonicalizeTimeFilterValue(expr.Operator, expr.Value)
+	}
 	return expr, nil
 }
 
@@ -386,6 +393,9 @@ func resolveNestedFilter(expr *FilterExpr, fieldPath string, model *ModelMeta, r
 	expr.RelationTable = relMeta.TableName
 	expr.RelationFK = rel.FKColumn
 	expr.NestedField = nf.Tags.DBName
+	if isTimeType(nf.Type) {
+		expr.Value = canonicalizeTimeFilterValue(expr.Operator, expr.Value)
+	}
 
 	return expr, nil
 }

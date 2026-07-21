@@ -336,10 +336,8 @@ func readScanTime(holder any) (time.Time, bool, error) {
 		if !h.Valid || h.String == "" {
 			return time.Time{}, false, nil
 		}
-		for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
-			if t, err := time.Parse(layout, h.String); err == nil {
-				return t.UTC(), true, nil
-			}
+		if t, ok := parseStoredTime([]byte(h.String)); ok {
+			return t, true, nil
 		}
 		return time.Time{}, false, fmt.Errorf("sqlcore: cannot parse timestamp %q", h.String)
 	default:
@@ -372,6 +370,21 @@ func (a *Adapter) scanStructValues(model *maniflex.ModelMeta, cols []string, raw
 	return convertRowValues(model, a.driver, cols, raw, a.scanPlanFor(model, cols))
 }
 
+// parseStoredTime parses the stored textual form of a timestamp column into an
+// instant, in UTC. It accepts the fixed-width form the write path now stores
+// (maniflex.CanonicalTimeLayout), the variable-width RFC3339 forms legacy rows
+// carry, and the space-separated form some tools write. It is the single place
+// the read and echo paths agree on what a stored timestamp looks like.
+func parseStoredTime(text []byte) (time.Time, bool) {
+	s := string(text)
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
+}
+
 // asStoredText returns the textual stored form of a scanned DB value (the
 // string / []byte shapes scanRows produces) and true; any other Go type is
 // already a native value that needs no decode, and returns false.
@@ -385,13 +398,14 @@ func asStoredText(v any) ([]byte, bool) {
 	return nil, false
 }
 
-// decodeStructuredColumns rewrites JSON / SQLTyper column values in a DB-column
-// echo map (the map produced by scanRows / findByIDMap on the create/update
-// write path) from their stored text form into the Go value of the matching
-// model field. This makes create and update responses serialise structured
-// columns — maniflex.LocaleString and JSON-backed sql.Scanner types — as
-// objects/arrays, matching the typed read path (scanStruct), instead of the raw
-// JSON string the map otherwise carries onto the response.
+// decodeStructuredColumns rewrites JSON / SQLTyper / timestamp column values in a
+// DB-column echo map (the map produced by scanRows / findByIDMap on the
+// create/update write path) from their stored text form into the Go value of the
+// matching model field. This makes create and update responses serialise those
+// columns — maniflex.LocaleString and JSON-backed sql.Scanner types as
+// objects/arrays, timestamps as a time.Time — matching the typed read path
+// (scanStruct), instead of the raw stored string the map otherwise carries onto
+// the response.
 //
 // Columns with no matching model field (e.g. encryption *_hmac companions) and
 // plain scalar fields are left untouched. No-op for GoType-less synthetic
@@ -416,6 +430,14 @@ func decodeStructuredColumns(model *maniflex.ModelMeta, m map[string]any) {
 			base = base.Elem()
 		}
 		switch {
+		case base == reflect.TypeOf(time.Time{}):
+			// A timestamp column is stored as fixed-width text; parse it back to a
+			// time.Time so the echo serialises it identically to the typed read
+			// path (Go's time.Time JSON), rather than exposing the stored string's
+			// nine-digit fraction verbatim in create/update responses.
+			if t, ok := parseStoredTime(text); ok {
+				m[f.Tags.DBName] = t
+			}
 		case base == scanLocaleType:
 			ls := maniflex.LocaleString{}
 			if err := json.Unmarshal(text, &ls); err == nil {

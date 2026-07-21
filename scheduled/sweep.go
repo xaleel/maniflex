@@ -29,10 +29,6 @@ type modelResult struct {
 	hooks   []hookCall
 }
 
-// timestampFormat is how the SQL adapters store time.Time values. Matching it
-// keeps the lexicographic comparison of the filter parameter correct.
-const timestampFormat = time.RFC3339Nano
-
 // sweepModel sweeps one model: it claims due rows for every scheduled spec via
 // the adapter's filtered read path, then applies each action inside a single
 // transaction so the tick is atomic per model.
@@ -85,7 +81,9 @@ func (r *Runner) sweepModel(ctx context.Context, meta *maniflex.ModelMeta, now t
 // dueQuery builds the QueryParams that selects rows due for one spec. The
 // FilterExprs are built in Go, bypassing HTTP filterability validation.
 func (r *Runner) dueQuery(spec maniflex.ScheduledSpec, now time.Time) *maniflex.QueryParams {
-	nowVal := now.UTC().Format(timestampFormat)
+	// Match the fixed-width form the SQL adapters store time.Time in, so the
+	// lexicographic TEXT comparison of this due-check bound is correct on SQLite.
+	nowVal := maniflex.CanonicalTime(now)
 	filters := []*maniflex.FilterExpr{
 		{Field: spec.Column, Operator: maniflex.OpLte, Value: nowVal, Group: -1},
 		{Field: spec.Column, Operator: maniflex.OpNotNull, Group: -1},

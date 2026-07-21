@@ -2587,7 +2587,7 @@ func normalise(v any) any {
 		v = rv.Elem().Interface()
 	}
 	if t, ok := v.(time.Time); ok {
-		return t.UTC().Format(time.RFC3339Nano)
+		return maniflex.CanonicalTime(t)
 	}
 	// Locale maps (map[string]any or map[string]string) must be serialised to a
 	// JSON string before being handed to database/sql, which has no native map

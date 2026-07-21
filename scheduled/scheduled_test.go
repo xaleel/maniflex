@@ -93,14 +93,17 @@ func ptr(t time.Time) *time.Time { return &t }
 func (ts *testServer) createArticle(t *testing.T, status string, publishAt, expiresAt, purgeAt *time.Time) string {
 	t.Helper()
 	data := map[string]any{"status": status}
+	// Seed timestamps in the same fixed-width form the adapter writes a time.Time
+	// value in, so the sweep's due-check comparison behaves as it does in production
+	// (a raw RFC3339Nano string would misorder at a whole-second boundary — NEW-1).
 	if publishAt != nil {
-		data["publish_at"] = publishAt.UTC().Format(time.RFC3339Nano)
+		data["publish_at"] = maniflex.CanonicalTime(*publishAt)
 	}
 	if expiresAt != nil {
-		data["expires_at"] = expiresAt.UTC().Format(time.RFC3339Nano)
+		data["expires_at"] = maniflex.CanonicalTime(*expiresAt)
 	}
 	if purgeAt != nil {
-		data["purge_at"] = purgeAt.UTC().Format(time.RFC3339Nano)
+		data["purge_at"] = maniflex.CanonicalTime(*purgeAt)
 	}
 	meta := ts.meta(t, "Article")
 	row, err := ts.db.Create(context.Background(), meta, data)
@@ -114,10 +117,10 @@ func (ts *testServer) createBanner(t *testing.T, color string, start, end *time.
 	t.Helper()
 	data := map[string]any{"color": color}
 	if start != nil {
-		data["holiday_start"] = start.UTC().Format(time.RFC3339Nano)
+		data["holiday_start"] = maniflex.CanonicalTime(*start)
 	}
 	if end != nil {
-		data["holiday_end"] = end.UTC().Format(time.RFC3339Nano)
+		data["holiday_end"] = maniflex.CanonicalTime(*end)
 	}
 	meta := ts.meta(t, "Banner")
 	row, err := ts.db.Create(context.Background(), meta, data)

@@ -46,6 +46,13 @@ Multiple filters compose with AND. The framework parses each filter once in
 the Deserialize step into `ctx.Query.Filters`, then the DB step translates
 the slice into a `WHERE` clause.
 
+On a date/time field, a full-timestamp bound is normalised to the same
+fixed-width UTC form the write path stores, so the comparison orders
+chronologically on SQLite (which compares timestamp columns as text) and a zone
+offset is honoured. A value carrying an offset like
+`created_at:gte:2026-01-01T12:00:00+05:00` is compared in UTC; a date-only bound
+like `published_at:gte:2020-01-01` above keeps its plain meaning.
+
 ## Relation filters
 
 `?filter=genres.label:in:...` filters through the many-to-many junction.

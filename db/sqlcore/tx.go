@@ -619,7 +619,7 @@ func normaliseTx(v any) any {
 		v = rv.Elem().Interface()
 	}
 	if t, ok := v.(time.Time); ok {
-		return t.UTC().Format(time.RFC3339Nano)
+		return maniflex.CanonicalTime(t)
 	}
 	if ls, ok := v.(maniflex.LocaleString); ok {
 		if b, err := json.Marshal(ls); err == nil {

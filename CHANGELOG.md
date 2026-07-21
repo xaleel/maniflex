@@ -2,6 +2,7 @@
 
 ## v0.3.2
 
+- **Bugfix:** `jobs/sql` detects the `jackc/pgx` driver instead of mistaking it for SQLite. `New` matched the driver type name against "pq"/"postgres", but pgx registers as `stdlib.Driver`, so a pgx-backed Postgres queue ran the SQLite dialect — wrong SQL and `?` placeholders not `$1`. Detection now classifies by the driver's package path; new `WithDriver` forces it explicitly.
 - **Bugfix:** a job that finishes as the worker shuts down is no longer re-executed. The terminal `Ack`/`Nack`/dead-letter and their status transitions ran on the run context, so cancelling it at shutdown failed a succeeded job's `Ack` and the job was redelivered and rerun. Those writes now run on a context detached from the cancellation, but bounded so a hung backend cannot stall `Shutdown`.
 - **Bugfix:** a job of a type no worker handles no longer bounces forever (`jobs/redis`) or burns its retry budget (`jobs/sql`, `jobs/inproc`). The worker requeued unhandled types via `Nack`, whose semantics diverged per adapter. Requeuing now uses a new `jobs.Requeuer` that re-persists the job without spending an attempt and dead-letters after `MaxUnhandledRequeues` (default 20).
 - **Bugfix:** `jobs/redis` recovers jobs from a crashed worker. It read only `XREADGROUP ">"`, so a job claimed by a worker that died sat in the pending list forever, never redelivered. `Dequeue` now reclaims entries idle past `ReclaimMinIdle` (5m) via `XAUTOCLAIM`, and a new `RenewLease` keeps a live long job from being reclaimed mid-run. The default `ConsumerID` is now unique per process.

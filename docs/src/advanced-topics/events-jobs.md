@@ -363,6 +363,13 @@ queue := jobssql.New(db)
 if err := jobssql.Migrate(ctx, db, "sqlite"); err != nil { /* ... */ } // "postgres" on PG
 ```
 
+> **Driver dialect.** `New` detects whether the handle is Postgres or SQLite from
+> the driver, recognising `lib/pq` and `jackc/pgx`. The dialect fixes both the
+> SQL and the placeholder style (`$1` vs `?`), so a wrong guess fails outright
+> rather than running slow. If you use a Postgres driver it does not recognise,
+> state it explicitly with `jobssql.New(db, jobssql.WithDriver("postgres"))` —
+> the same value you pass to `Migrate`.
+
 ### Lanes and secrets
 
 - **Separate lanes:** run an isolated queue on its own table so a type-restricted

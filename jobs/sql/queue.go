@@ -57,6 +57,7 @@ type Option func(*config)
 type config struct {
 	table  string
 	cipher PayloadCipher
+	driver string // "" = auto-detect; "postgres" or "sqlite" to force
 }
 
 func newConfig(opts []Option) config {
@@ -81,6 +82,16 @@ func WithTableName(name string) Option { return func(c *config) { c.table = name
 // coexist. Pass the same cipher to New wherever the queue is read or written.
 func WithPayloadCipher(c PayloadCipher) Option { return func(cfg *config) { cfg.cipher = c } }
 
+// WithDriver forces the SQL dialect instead of auto-detecting it from the
+// driver. Pass "postgres" or "sqlite" — the same value you pass to Migrate.
+//
+// New otherwise guesses from db.Driver()'s package path, which recognises
+// lib/pq and jackc/pgx. Set this when you use a Postgres driver it does not
+// recognise, or simply to be explicit: the dialect decides both the SQL
+// (Postgres uses FOR UPDATE SKIP LOCKED) and the placeholder style ($1 vs ?),
+// so a wrong guess does not run slower — it fails outright (audit JB-6).
+func WithDriver(name string) Option { return func(c *config) { c.driver = name } }
+
 // Queue is both a jobs.Queue (producer) and a jobs.Source (consumer).
 // It also implements jobs.Cancellable, jobs.Inspector, and jobs.LeaseRenewer.
 type Queue struct {
@@ -90,10 +101,25 @@ type Queue struct {
 	cipher PayloadCipher
 }
 
-// New creates a Queue backed by db. The driver is auto-detected from db.Driver().
+// New creates a Queue backed by db. The dialect is auto-detected from
+// db.Driver() unless WithDriver forces it.
 func New(db *stdsql.DB, opts ...Option) *Queue {
 	c := newConfig(opts)
-	return &Queue{db: db, isPG: detectPostgres(db), table: c.table, cipher: c.cipher}
+	return &Queue{db: db, isPG: resolveIsPG(c.driver, db), table: c.table, cipher: c.cipher}
+}
+
+// resolveIsPG decides the dialect: an explicit WithDriver value wins, otherwise
+// the driver is inspected. An unrecognised explicit value falls through to
+// detection rather than silently forcing a dialect.
+func resolveIsPG(explicit string, db *stdsql.DB) bool {
+	switch strings.ToLower(strings.TrimSpace(explicit)) {
+	case "postgres", "postgresql", "pgx":
+		return true
+	case "sqlite", "sqlite3":
+		return false
+	default:
+		return detectPostgres(db)
+	}
 }
 
 // q rewrites the default quoted "job_queue" table reference to the configured
@@ -106,8 +132,37 @@ func (q *Queue) q(query string) string {
 }
 
 func detectPostgres(db *stdsql.DB) bool {
-	t := reflect.TypeOf(db.Driver()).String()
-	return strings.Contains(t, "pq") || strings.Contains(t, "postgres")
+	pkgPath, name := driverIdent(reflect.TypeOf(db.Driver()))
+	return isPostgresDriver(pkgPath, name)
+}
+
+// driverIdent returns the import path and short type name of a driver type,
+// unwrapping the pointer most drivers register (e.g. *stdlib.Driver). A pointer
+// type has no PkgPath of its own, so the element must be taken first.
+func driverIdent(t reflect.Type) (pkgPath, name string) {
+	for t != nil && t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	if t == nil {
+		return "", ""
+	}
+	return t.PkgPath(), t.String()
+}
+
+// isPostgresDriver classifies a driver as Postgres from its package path, which
+// is stable across versions, with the old short-name heuristic as a fallback.
+// The original check matched only "pq"/"postgres", so jackc/pgx — whose driver
+// is package "stdlib", type "stdlib.Driver" — was misread as SQLite and the
+// whole adapter spoke the wrong dialect (audit JB-6).
+func isPostgresDriver(pkgPath, name string) bool {
+	for _, m := range []string{"jackc/pgx", "lib/pq", "cockroachdb"} {
+		if strings.Contains(pkgPath, m) {
+			return true
+		}
+	}
+	// Fallback for drivers not matched by path: the pre-existing heuristic.
+	lower := strings.ToLower(name)
+	return strings.Contains(lower, "pq") || strings.Contains(lower, "postgres")
 }
 
 // ── Queue (producer) ──────────────────────────────────────────────────────────

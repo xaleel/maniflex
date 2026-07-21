@@ -515,8 +515,19 @@ queue.Enqueue(ctx, jobs.Job{
 })
 ```
 
-The `jobs/sql` adapter enforces this via `SELECT … SKIP LOCKED`; `jobs/inproc`
-tracks running keys in memory.
+`jobs/inproc` tracks running keys in memory. `jobs/sql` enforces the key on two
+levels: the claim query ranks candidates with `ROW_NUMBER() OVER (PARTITION BY
+group_key)` and takes only the top row per key, so a single `Dequeue` — however
+large its batch — never starts two jobs of one key; and a partial unique index
+on `(group_key) WHERE status = 'running'` makes a second running job of a key
+impossible even across two workers claiming at the same instant, which the query
+alone cannot prevent on Postgres. An empty `GroupKey` opts out of serialisation
+entirely, so unkeyed jobs run fully in parallel.
+
+> **Upgrade note:** the partial unique index is created by `Migrate`. If a queue
+> already contains two running jobs for one key — the very bug this closes —
+> creating the index fails and the migration stops. Drain or clear the duplicate
+> running rows, then migrate.
 
 ### Retry and dead-letter
 

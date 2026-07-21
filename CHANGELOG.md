@@ -2,6 +2,7 @@
 
 ## v0.3.2
 
+- **Bugfix:** `jobs/sql` `GroupKey` (one running job per key) now holds under load. It was enforced only by a `NOT IN (running)` subquery evaluated before the claim's own UPDATE, so one `Dequeue` could start several jobs of a key. The claim now dedups per key with `ROW_NUMBER()`, and a partial unique index on `(group_key) WHERE status='running'` backstops concurrent Postgres claims.
 - **Bugfix:** `jobs/sql` on SQLite no longer hands one job to several workers. The claim was an `UPDATE` stamping `lease_until`, then a `SELECT` re-finding those rows by that timestamp — not a unique identifier, so two claims in the same clock tick each matched the other's rows. Now one `UPDATE … RETURNING` (SQLite 3.35+). It also stranded jobs as `running` with an attempt spent that nothing ran.
 
 ## v0.3.1 (2026-07-20)

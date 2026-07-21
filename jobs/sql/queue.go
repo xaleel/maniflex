@@ -181,31 +181,87 @@ func (q *Queue) enqueueAt(ctx context.Context, j jobs.Job, at time.Time) (string
 // both drivers so the two claim statements cannot drift apart.
 const claimedColumns = `"id","type","payload","trace_id","actor_id","tenant_id","max_retry","priority","not_before","group_key","headers","attempts"`
 
+// maxClaimRetries bounds the Postgres group-collision retry loop (see Dequeue).
+// A collision resolves as soon as the winning transaction commits and its key
+// becomes visible as running, so one retry almost always suffices; the bound
+// only guards against a pathological run of overlapping claims.
+const maxClaimRetries = 3
+
 // Dequeue claims up to n ready jobs.
 //
 // Both drivers claim and return in a single statement, so the rows a caller
-// receives are exactly the rows it stamped. Postgres additionally needs FOR
-// UPDATE SKIP LOCKED to keep concurrent claimers off each other's candidates;
-// SQLite's database-level write lock already serialises the statement.
+// receives are exactly the rows it stamped (audit JB-1). Both also dedupe by
+// group_key within the claim, so a single call never takes two jobs sharing a
+// non-empty GroupKey — the WHERE clause alone cannot prevent that, because its
+// "group not already running" subquery is evaluated against the pre-UPDATE
+// state where none of this batch's jobs are running yet (audit JB-2).
+//
+// Postgres additionally needs FOR UPDATE SKIP LOCKED to keep concurrent
+// claimers off each other's candidates. That still leaves a cross-transaction
+// race: two Dequeues snapshot before either commits, so neither sees the
+// other's claim, and at the LIMIT boundary they can pick different jobs of the
+// same key. The job_queue_group_running partial unique index makes that state
+// impossible — the losing UPDATE fails — and this loop retries it, by which
+// point the winner's key is visible as running and is excluded. SQLite's
+// database-level write lock serialises whole claims, so it never reaches here.
 func (q *Queue) Dequeue(ctx context.Context, n int) ([]jobs.Job, error) {
 	if n <= 0 {
 		return nil, nil
 	}
-	now := time.Now()
-	leaseUntil := ts(now.Add(defaultLeaseDuration))
-	nowStr := ts(now)
+	for attempt := 0; ; attempt++ {
+		now := time.Now()
+		leaseUntil := ts(now.Add(defaultLeaseDuration))
+		nowStr := ts(now)
 
-	if q.isPG {
-		return q.dequeuePG(ctx, n, nowStr, leaseUntil)
+		var (
+			claimed []jobs.Job
+			err     error
+		)
+		if q.isPG {
+			claimed, err = q.dequeuePG(ctx, n, nowStr, leaseUntil)
+		} else {
+			claimed, err = q.dequeueSQLite(ctx, n, nowStr, leaseUntil)
+		}
+		if err == nil {
+			return claimed, nil
+		}
+		if q.isGroupRunningViolation(err) && attempt < maxClaimRetries {
+			continue
+		}
+		return nil, err
 	}
-	return q.dequeueSQLite(ctx, n, nowStr, leaseUntil)
+}
+
+// rankedDedup wraps src so it yields every empty-key job plus the single
+// highest-priority job of each non-empty key — the row_number()=1 of its
+// partition. A claim built from it therefore takes at most one job per key,
+// which the WHERE clause alone cannot guarantee (audit JB-2). src is the
+// relation to rank over: the FOR-UPDATE-locked CTE on Postgres, the base-table
+// ready set on SQLite. It must expose "id", "group_key", "priority" and
+// "created_at"; the wrapper re-exposes the last three so callers can order and
+// limit the survivors.
+func rankedDedup(src string) string {
+	return `SELECT "id","priority","created_at" FROM (
+        SELECT "id","group_key","priority","created_at",
+            ROW_NUMBER() OVER (
+                PARTITION BY "group_key" ORDER BY "priority" DESC, "created_at" ASC
+            ) AS "rn"
+        FROM ` + src + `
+    ) "ranked"
+    WHERE "group_key" = '' OR "rn" = 1`
 }
 
 func (q *Queue) dequeuePG(ctx context.Context, n int, nowStr, leaseUntil string) ([]jobs.Job, error) {
 	p := q.newPH()
+	// The dedup runs over the locked set, not the base table: Postgres forbids
+	// FOR UPDATE alongside a window function in one query level, so the CTE
+	// locks candidates first (SKIP LOCKED for throughput) and ROW_NUMBER ranks
+	// what it locked. LIMIT is on the locked set, so a burst of one key can
+	// crowd the batch — acceptable, since that key runs one-at-a-time regardless.
+	// Placeholders are added in the order they appear in the string.
 	query := fmt.Sprintf(`
-WITH candidates AS (
-    SELECT "id" FROM "job_queue"
+WITH "locked" AS (
+    SELECT "id","group_key","priority","created_at" FROM "job_queue"
     WHERE "status" IN ('enqueued','failed')
       AND "not_before" <= %s
       AND ("lease_until" IS NULL OR "lease_until" < %s)
@@ -219,7 +275,7 @@ WITH candidates AS (
 )
 UPDATE "job_queue"
 SET "status" = 'running', "lease_until" = %s, "attempts" = "attempts" + 1, "updated_at" = %s
-WHERE "id" IN (SELECT "id" FROM candidates)
+WHERE "id" IN (SELECT "id" FROM (`+rankedDedup(`"locked"`)+`) "deduped")
 RETURNING `+claimedColumns,
 		p.Add(nowStr), p.Add(nowStr), p.Add(n),
 		p.Add(leaseUntil), p.Add(nowStr),
@@ -252,28 +308,39 @@ RETURNING `+claimedColumns,
 //
 // RETURNING removes the identification step entirely: the statement hands back
 // precisely the rows it updated, so there is nothing to match on and no window
-// to interleave in. Requires SQLite 3.35 (2021).
+// to interleave in. Requires SQLite 3.35 (2021). The dedup subquery adds the
+// group_key guarantee (audit JB-2); the write lock covers concurrency, so no
+// retry is needed here.
 func (q *Queue) dequeueSQLite(ctx context.Context, n int, nowStr, leaseUntil string) ([]jobs.Job, error) {
 	p := q.newPH()
+	// SQLite uses positional "?" placeholders, so every p.Add below is called in
+	// the exact left-to-right order its placeholder appears in the query: the two
+	// SET values first, then the two inside the ready subquery, then LIMIT. The
+	// ready set is ranked in place (no FOR UPDATE — SQLite has none, and its
+	// write lock already serialises the whole statement), then the survivors are
+	// ordered and limited.
+	ready := `(
+        SELECT "id","group_key","priority","created_at" FROM "job_queue"
+        WHERE "status" IN ('enqueued','failed')
+          AND "not_before" <= %s
+          AND ("lease_until" IS NULL OR "lease_until" < %s)
+          AND ("group_key" = '' OR "group_key" NOT IN (
+              SELECT DISTINCT "group_key" FROM "job_queue"
+              WHERE "status" = 'running' AND "group_key" != ''
+          ))
+    )`
 	query := fmt.Sprintf(`
 UPDATE "job_queue"
 SET "status" = 'running', "lease_until" = %s, "attempts" = "attempts" + 1, "updated_at" = %s
 WHERE "id" IN (
-    SELECT "id" FROM "job_queue"
-    WHERE "status" IN ('enqueued','failed')
-      AND "not_before" <= %s
-      AND ("lease_until" IS NULL OR "lease_until" < %s)
-      AND ("group_key" = '' OR "group_key" NOT IN (
-          SELECT DISTINCT "group_key" FROM "job_queue"
-          WHERE "status" = 'running' AND "group_key" != ''
-      ))
+    SELECT "id" FROM (`+rankedDedup(ready)+`) "deduped"
     ORDER BY "priority" DESC, "created_at" ASC
     LIMIT %s
 )
 RETURNING `+claimedColumns,
-		p.Add(leaseUntil), p.Add(nowStr),
-		p.Add(nowStr), p.Add(nowStr),
-		p.Add(n),
+		p.Add(leaseUntil), p.Add(nowStr), // SET
+		p.Add(nowStr), p.Add(nowStr), // ready: not_before, lease_until
+		p.Add(n), // LIMIT
 	)
 	rows, err := q.db.QueryContext(ctx, q.q(query), p.Args()...)
 	if err != nil {
@@ -281,6 +348,21 @@ RETURNING `+claimedColumns,
 	}
 	defer rows.Close()
 	return q.scanJobs(rows)
+}
+
+// isGroupRunningViolation reports whether err is the job_queue_group_running
+// unique-index violation raised when a concurrent claim would put a second job
+// of one key into running. It matches on the index name rather than a driver
+// error code, so it holds for both pq and pgx (both name the index in the
+// message) without importing either.
+func (q *Queue) isGroupRunningViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	idx := q.table + "_group_running"
+	msg := err.Error()
+	return strings.Contains(msg, idx) &&
+		(strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate"))
 }
 
 func (q *Queue) Ack(ctx context.Context, id string) error {

@@ -430,6 +430,14 @@ cancel()
 w.Shutdown(shutdownCtx)
 ```
 
+> **Cancelling the run context does not orphan a finished job.** When you
+> `cancel()` to stop the worker, a handler already running is interrupted
+> through its context — but once a handler *returns*, the worker records the
+> outcome (ack, retry, or dead-letter) on a context detached from the
+> cancellation, so a job that just succeeded is acknowledged and not
+> redelivered on the next start. Those writes are still bounded, so a hung
+> queue backend cannot hold `Shutdown` open indefinitely.
+
 > **Migrate before you launch background goroutines.** `server.Go(fn)` (and a bare
 > `go w.Run(ctx)`) starts running immediately, but `AutoMigrate` only runs inside
 > `Start()`. A worker that touches a table before `Start()` migrates it races table

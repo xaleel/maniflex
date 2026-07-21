@@ -291,6 +291,15 @@ func (w *Worker) handle(ctx context.Context, j Job) {
 		stopRenew()
 	}
 
+	// The handler has committed to an outcome; the bookkeeping that records it
+	// must run on a context detached from ctx's cancellation. At shutdown ctx is
+	// cancelled, and an Ack that fails because of it leaves a job that already
+	// succeeded unacknowledged — so it is redelivered and runs a second time
+	// (audit JB-5). The context is still bounded, so a hung backend cannot stall
+	// shutdown, and it keeps ctx's trace values.
+	termCtx, termCancel := w.terminalContext(ctx)
+	defer termCancel()
+
 	if err != nil {
 		logger.Warn("[jobs] handler failed",
 			slog.String("error", err.Error()),
@@ -298,34 +307,48 @@ func (w *Worker) handle(ctx context.Context, j Job) {
 			slog.Int("max_retry", MaxRetryFor(j)),
 		)
 		if j.Attempts >= MaxRetryFor(j) {
-			w.markDead(ctx, j, err)
+			w.markDead(termCtx, j, err)
 		} else {
 			delay := BackoffFor(j).Next(j.Attempts)
-			w.transition(ctx, j, StatusRunning, StatusFailed, StatusInfo{
+			w.transition(termCtx, j, StatusRunning, StatusFailed, StatusInfo{
 				Attempt:  j.Attempts,
 				Error:    err.Error(),
 				JobType:  j.Type,
 				ActorID:  j.ActorID,
 				TenantID: j.TenantID,
 			})
-			if nackErr := w.cfg.Source.Nack(ctx, j.ID, err, delay); nackErr != nil {
+			if nackErr := w.cfg.Source.Nack(termCtx, j.ID, err, delay); nackErr != nil {
 				logger.Error("[jobs] nack failed", slog.String("error", nackErr.Error()))
 			}
 		}
 		return
 	}
 
-	w.transition(ctx, j, StatusRunning, StatusSucceeded, StatusInfo{
+	w.transition(termCtx, j, StatusRunning, StatusSucceeded, StatusInfo{
 		Attempt:  j.Attempts,
 		Result:   &result,
 		JobType:  j.Type,
 		ActorID:  j.ActorID,
 		TenantID: j.TenantID,
 	})
-	w.publishJobEvent(ctx, j, "completed")
-	if ackErr := w.cfg.Source.Ack(ctx, j.ID); ackErr != nil {
+	w.publishJobEvent(termCtx, j, "completed")
+	if ackErr := w.cfg.Source.Ack(termCtx, j.ID); ackErr != nil {
 		logger.Error("[jobs] ack failed", slog.String("error", ackErr.Error()))
 	}
+}
+
+// terminalWriteTimeout bounds the detached bookkeeping that finalises a job
+// (Ack, Nack, dead-letter, status transition). Long enough for a single backend
+// write to complete during shutdown, short enough that a hung backend cannot
+// hold the worker's Shutdown open beyond it.
+const terminalWriteTimeout = 30 * time.Second
+
+// terminalContext derives the context used to finalise a job's outcome. It is
+// detached from ctx's cancellation — the finalising write must not be abandoned
+// just because the worker is stopping — but bounded and value-preserving. See
+// the call site in handle for why (audit JB-5).
+func (w *Worker) terminalContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), terminalWriteTimeout)
 }
 
 // requeueUnhandled handles a job whose type this worker has no handler for. It
@@ -335,10 +358,13 @@ func (w *Worker) handle(ctx context.Context, j Job) {
 // (audit JB-4). The requeue does not spend a retry attempt, which the retry
 // budget must not be (audit JB-9).
 //
-// Requeuing uses context.Background(), not the run context: it must complete
-// even as the worker shuts down, or the job would be left stuck running.
+// It requeues (or dead-letters) on a terminalContext — detached from the run
+// context's cancellation so the durable write completes even as the worker
+// shuts down, or the job would be left stuck running (audit JB-4/JB-5).
 func (w *Worker) requeueUnhandled(ctx context.Context, j Job, logger *slog.Logger) {
 	err := fmt.Errorf("no handler registered for job type %q", j.Type)
+	termCtx, termCancel := w.terminalContext(ctx)
+	defer termCancel()
 
 	rq, ok := w.cfg.Source.(Requeuer)
 	if !ok {
@@ -347,7 +373,7 @@ func (w *Worker) requeueUnhandled(ctx context.Context, j Job, logger *slog.Logge
 		// changing it for third-party adapters.
 		logger.Warn("[jobs] requeuing job of unhandled type (source has no Requeuer; requeue is unbounded)",
 			slog.String("type", j.Type), slog.String("job_id", j.ID))
-		if nackErr := w.cfg.Source.Nack(context.Background(), j.ID, err, w.unhandledRequeueDelay()); nackErr != nil {
+		if nackErr := w.cfg.Source.Nack(termCtx, j.ID, err, w.unhandledRequeueDelay()); nackErr != nil {
 			logger.Error("[jobs] requeue of unhandled type failed",
 				slog.String("job_id", j.ID), slog.String("error", nackErr.Error()))
 		}
@@ -359,7 +385,7 @@ func (w *Worker) requeueUnhandled(ctx context.Context, j Job, logger *slog.Logge
 		logger.Error("[jobs] dead-lettering job no worker handles",
 			slog.String("type", j.Type), slog.String("job_id", j.ID),
 			slog.Int("requeues", count))
-		w.markDead(ctx, j, err)
+		w.markDead(termCtx, j, err)
 		return
 	}
 
@@ -372,14 +398,14 @@ func (w *Worker) requeueUnhandled(ctx context.Context, j Job, logger *slog.Logge
 
 	// It is going back to the queue, not running — move the status row off
 	// running so it does not appear stuck (partially addresses JB-18).
-	w.transition(ctx, j, StatusRunning, StatusEnqueued, StatusInfo{
+	w.transition(termCtx, j, StatusRunning, StatusEnqueued, StatusInfo{
 		Attempt: j.Attempts, JobType: j.Type, ActorID: j.ActorID, TenantID: j.TenantID,
 	})
 
 	logger.Warn("[jobs] requeuing job of unhandled type",
 		slog.String("type", j.Type), slog.String("job_id", j.ID),
 		slog.Int("requeue", count+1), slog.Int("max", w.cfg.MaxUnhandledRequeues))
-	if rqErr := rq.Requeue(context.Background(), j, w.unhandledRequeueDelay()); rqErr != nil {
+	if rqErr := rq.Requeue(termCtx, j, w.unhandledRequeueDelay()); rqErr != nil {
 		logger.Error("[jobs] requeue of unhandled type failed",
 			slog.String("job_id", j.ID), slog.String("error", rqErr.Error()))
 	}
@@ -432,7 +458,10 @@ func (w *Worker) markDead(ctx context.Context, j Job, err error) {
 		TenantID: j.TenantID,
 	})
 	w.publishJobEvent(ctx, j, "failed")
-	if deadErr := w.cfg.Source.Dead(context.Background(), j.ID, err); deadErr != nil {
+	// ctx is a terminalContext at both call sites: detached from the run
+	// context's cancellation so dead-lettering completes during shutdown
+	// (audit JB-5), but bounded.
+	if deadErr := w.cfg.Source.Dead(ctx, j.ID, err); deadErr != nil {
 		w.cfg.Logger.Error("[jobs] dead failed",
 			slog.String("job_id", j.ID),
 			slog.String("error", deadErr.Error()),
@@ -458,7 +487,7 @@ func (w *Worker) markDead(ctx context.Context, j Job, err error) {
 	dlq.ID = ""
 	dlq.Type = w.cfg.DLQType
 	dlq.Payload = json.RawMessage(raw)
-	if _, enqErr := q.Enqueue(context.Background(), dlq); enqErr != nil {
+	if _, enqErr := q.Enqueue(ctx, dlq); enqErr != nil {
 		w.cfg.Logger.Error("[jobs] dlq enqueue failed",
 			slog.String("job_id", j.ID),
 			slog.String("error", enqErr.Error()),

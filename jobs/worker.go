@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -58,6 +59,15 @@ type WorkerConfig struct {
 	// a matching handler is registered, dead jobs are re-enqueued under this
 	// type with the original job as payload.
 	DLQType string
+
+	// MaxUnhandledRequeues bounds how many times a job of a type this worker has
+	// no handler for is requeued before it is dead-lettered. Default: 20.
+	//
+	// Requeuing lets another worker — one still coming up during a deploy —
+	// claim the job; the bound stops a type that NO worker handles from bouncing
+	// between workers forever. It applies only when the Source implements
+	// Requeuer; otherwise the worker falls back to Nack and cannot bound it.
+	MaxUnhandledRequeues int
 
 	// OnPanic is called when a handler panics. When nil the panic is logged and
 	// the job is nacked.
@@ -119,6 +129,9 @@ func NewWorker(cfg WorkerConfig) (*Worker, error) {
 	}
 	if cfg.MaxEmptyQueueBackoff < cfg.EmptyQueueBackoff {
 		cfg.MaxEmptyQueueBackoff = cfg.EmptyQueueBackoff
+	}
+	if cfg.MaxUnhandledRequeues <= 0 {
+		cfg.MaxUnhandledRequeues = 20
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -260,15 +273,7 @@ func (w *Worker) handle(ctx context.Context, j Job) {
 
 	h, ok := w.cfg.Handlers[j.Type]
 	if !ok {
-		// A type-restricted worker sharing a table with other workers must not
-		// destroy job types it doesn't handle. Requeue (Nack) so a worker that
-		// does handle this type can claim it, instead of dead-lettering it.
-		err := fmt.Errorf("no handler registered for job type %q", j.Type)
-		logger.Warn("[jobs] requeuing job of unhandled type", slog.String("type", j.Type), slog.String("job_id", j.ID))
-		if nackErr := w.cfg.Source.Nack(context.Background(), j.ID, err, w.unhandledRequeueDelay()); nackErr != nil {
-			logger.Error("[jobs] requeue of unhandled type failed",
-				slog.String("job_id", j.ID), slog.String("error", nackErr.Error()))
-		}
+		w.requeueUnhandled(ctx, j, logger)
 		return
 	}
 
@@ -321,6 +326,87 @@ func (w *Worker) handle(ctx context.Context, j Job) {
 	if ackErr := w.cfg.Source.Ack(ctx, j.ID); ackErr != nil {
 		logger.Error("[jobs] ack failed", slog.String("error", ackErr.Error()))
 	}
+}
+
+// requeueUnhandled handles a job whose type this worker has no handler for. It
+// requeues the job so another worker can claim it — one still coming up during
+// a deploy, say — but bounds that with a per-job counter (HeaderUnhandledRequeues)
+// so a type NO worker handles is dead-lettered instead of bouncing forever
+// (audit JB-4). The requeue does not spend a retry attempt, which the retry
+// budget must not be (audit JB-9).
+//
+// Requeuing uses context.Background(), not the run context: it must complete
+// even as the worker shuts down, or the job would be left stuck running.
+func (w *Worker) requeueUnhandled(ctx context.Context, j Job, logger *slog.Logger) {
+	err := fmt.Errorf("no handler registered for job type %q", j.Type)
+
+	rq, ok := w.cfg.Source.(Requeuer)
+	if !ok {
+		// The Source cannot re-persist the counter, so the requeue cannot be
+		// bounded here. Preserve the legacy Nack behaviour rather than silently
+		// changing it for third-party adapters.
+		logger.Warn("[jobs] requeuing job of unhandled type (source has no Requeuer; requeue is unbounded)",
+			slog.String("type", j.Type), slog.String("job_id", j.ID))
+		if nackErr := w.cfg.Source.Nack(context.Background(), j.ID, err, w.unhandledRequeueDelay()); nackErr != nil {
+			logger.Error("[jobs] requeue of unhandled type failed",
+				slog.String("job_id", j.ID), slog.String("error", nackErr.Error()))
+		}
+		return
+	}
+
+	count := unhandledCount(j)
+	if count >= w.cfg.MaxUnhandledRequeues {
+		logger.Error("[jobs] dead-lettering job no worker handles",
+			slog.String("type", j.Type), slog.String("job_id", j.ID),
+			slog.Int("requeues", count))
+		w.markDead(ctx, j, err)
+		return
+	}
+
+	// Undo the attempt this delivery counted, so shuttling a job past a worker
+	// that cannot handle it does not erode the budget a real handler will need.
+	if j.Attempts > 0 {
+		j.Attempts--
+	}
+	j.Headers = withUnhandledCount(j.Headers, count+1)
+
+	// It is going back to the queue, not running — move the status row off
+	// running so it does not appear stuck (partially addresses JB-18).
+	w.transition(ctx, j, StatusRunning, StatusEnqueued, StatusInfo{
+		Attempt: j.Attempts, JobType: j.Type, ActorID: j.ActorID, TenantID: j.TenantID,
+	})
+
+	logger.Warn("[jobs] requeuing job of unhandled type",
+		slog.String("type", j.Type), slog.String("job_id", j.ID),
+		slog.Int("requeue", count+1), slog.Int("max", w.cfg.MaxUnhandledRequeues))
+	if rqErr := rq.Requeue(context.Background(), j, w.unhandledRequeueDelay()); rqErr != nil {
+		logger.Error("[jobs] requeue of unhandled type failed",
+			slog.String("job_id", j.ID), slog.String("error", rqErr.Error()))
+	}
+}
+
+// unhandledCount reads the requeue counter carried in the job's headers.
+func unhandledCount(j Job) int {
+	if j.Headers == nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(j.Headers[HeaderUnhandledRequeues])
+	if n < 0 {
+		return 0
+	}
+	return n
+}
+
+// withUnhandledCount returns a copy of h with the requeue counter set to n. It
+// copies rather than mutating so the caller's job (and any retained reference)
+// is not changed underneath it.
+func withUnhandledCount(h map[string]string, n int) map[string]string {
+	out := make(map[string]string, len(h)+1)
+	for k, v := range h {
+		out[k] = v
+	}
+	out[HeaderUnhandledRequeues] = strconv.Itoa(n)
+	return out
 }
 
 func (w *Worker) runHandler(ctx context.Context, j Job, h Handler, logger *slog.Logger) (res Result, err error) {

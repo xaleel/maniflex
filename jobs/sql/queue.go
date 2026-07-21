@@ -411,6 +411,32 @@ func (q *Queue) Nack(ctx context.Context, id string, jobErr error, delay time.Du
 	return err
 }
 
+// Requeue returns j to the queue without spending a retry attempt: it rewrites
+// the row to enqueued with j's attempt count and headers (which the Worker uses
+// to carry the unhandled-requeue counter) and clears the lease. Unlike Nack it
+// does not consult or advance the retry budget — the Worker uses it for a job
+// of a type this worker cannot handle, so another worker can claim it, and an
+// unhandled round-trip must not erode the budget a real handler will need
+// (audit JB-4/JB-9). The stored attempts is j.Attempts as given; the next claim
+// re-increments it, so the effective count is unchanged across the round-trip.
+func (q *Queue) Requeue(ctx context.Context, j jobs.Job, delay time.Duration) error {
+	headers, err := marshalHeaders(j.Headers)
+	if err != nil {
+		return fmt.Errorf("jobs/sql: requeue headers: %w", err)
+	}
+	p := q.newPH()
+	now := ts(time.Now())
+	nb := ts(time.Now().Add(delay))
+	_, err = q.db.ExecContext(ctx, q.q(fmt.Sprintf(
+		`UPDATE "job_queue" SET "status"='enqueued',"attempts"=%s,"headers"=%s,"not_before"=%s,"lease_until"=NULL,"updated_at"=%s WHERE "id"=%s`,
+		p.Add(j.Attempts), p.Add(headers), p.Add(nb), p.Add(now), p.Add(j.ID),
+	)), p.Args()...)
+	if err != nil {
+		return fmt.Errorf("jobs/sql: requeue: %w", err)
+	}
+	return nil
+}
+
 func (q *Queue) Dead(ctx context.Context, id string, jobErr error) error {
 	errMsg := ""
 	if jobErr != nil {
@@ -690,4 +716,5 @@ var (
 	_ jobs.Cancellable  = (*Queue)(nil)
 	_ jobs.Inspector    = (*Queue)(nil)
 	_ jobs.LeaseRenewer = (*Queue)(nil)
+	_ jobs.Requeuer     = (*Queue)(nil)
 )

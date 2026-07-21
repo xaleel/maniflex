@@ -163,6 +163,30 @@ type BlockingSource interface {
 	DequeueBlocking(ctx context.Context, n int, max time.Duration) ([]Job, error)
 }
 
+// Requeuer is an optional capability for returning a job to the queue WITHOUT
+// counting the delivery as a retry attempt. The Worker uses it for a job whose
+// type it has no handler for: the job is requeued so a differently-configured
+// worker can claim it (e.g. one still starting during a deploy), rather than
+// failed against its retry budget.
+//
+// Adapters that do not implement it fall back to Nack, which does spend the
+// budget and, on some adapters, requeues without bound — so implementing
+// Requeuer is what lets the Worker bound the requeue and dead-letter a type no
+// worker handles instead of storming (audit JB-4, JB-9).
+type Requeuer interface {
+	// Requeue re-persists j — including Header changes the Worker made, such as
+	// HeaderUnhandledRequeues — and schedules it to become claimable again after
+	// delay. It must store j.Attempts as given and must not increment it: an
+	// unhandled delivery is not an attempt.
+	Requeue(ctx context.Context, j Job, delay time.Duration) error
+}
+
+// HeaderUnhandledRequeues is the Job header in which the Worker counts how many
+// times a job has been requeued for lack of a handler. When it reaches
+// WorkerConfig.MaxUnhandledRequeues the job is dead-lettered instead of requeued
+// again, so a type no worker handles surfaces rather than bouncing forever.
+const HeaderUnhandledRequeues = "maniflex-unhandled-requeues"
+
 // Handler is the function signature for job processing logic.
 type Handler func(ctx context.Context, j Job) (Result, error)
 

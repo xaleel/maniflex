@@ -549,6 +549,17 @@ job is marked `dead` and the status row records the final error. Set
 `WorkerConfig.DLQType` to route dead jobs to a separate handler for inspection
 or alerting.
 
+**Jobs of an unhandled type.** A worker that dequeues a job whose `Type` it has
+no handler for does not fail or drop it — a type-restricted worker sharing a
+queue with others must let a job pass to the worker that does handle it. It
+requeues the job instead, *without spending a retry attempt*, so the job's
+budget is preserved for its real handler. To stop a type that **no** worker
+handles from bouncing forever, the worker counts these requeues in a header and
+dead-letters the job once it reaches `WorkerConfig.MaxUnhandledRequeues`
+(default 20) — surfacing the misconfiguration rather than storming. This
+requires the queue to implement `jobs.Requeuer` (all three built-in adapters
+do); a custom adapter that does not falls back to the older unbounded `Nack`.
+
 ### Cancellation
 
 When the inner queue implements `jobs.Cancellable` (both `jobs/inproc` and

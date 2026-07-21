@@ -189,6 +189,37 @@ func (q *Queue) Nack(ctx context.Context, id string, jobErr error, delay time.Du
 	return nil
 }
 
+// Requeue returns j to the queue without spending a retry attempt: it restores
+// the entry to enqueued with j's attempt count and headers (which the Worker
+// uses to carry the unhandled-requeue counter). Unlike Nack it does not consult
+// the retry budget — the Worker uses it for a job of a type this worker cannot
+// handle, and an unhandled round-trip must not erode the budget a real handler
+// will need (audit JB-4/JB-9). It also releases the GroupKey the delivery held.
+func (q *Queue) Requeue(ctx context.Context, j jobs.Job, delay time.Duration) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	e, ok := q.byID[j.ID]
+	if !ok {
+		return nil
+	}
+	q.releaseGroup(e.job.GroupKey)
+	e.job = j
+	e.attempts = j.Attempts
+	e.status = jobs.StatusEnqueued
+	e.notBefore = time.Now().Add(delay)
+	go func() {
+		select {
+		case <-time.After(delay):
+			select {
+			case q.notifyCh <- struct{}{}:
+			default:
+			}
+		case <-q.closeCh:
+		}
+	}()
+	return nil
+}
+
 func (q *Queue) Dead(ctx context.Context, id string, jobErr error) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -308,4 +339,5 @@ var (
 	_ jobs.Source      = (*Queue)(nil)
 	_ jobs.Cancellable = (*Queue)(nil)
 	_ jobs.Inspector   = (*Queue)(nil)
+	_ jobs.Requeuer    = (*Queue)(nil)
 )

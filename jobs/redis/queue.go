@@ -328,6 +328,28 @@ func (q *Queue) Dead(ctx context.Context, id string, jobErr error) error {
 	return q.xack(ctx, id)
 }
 
+// Requeue returns j to the queue without spending a retry attempt: it acks the
+// current stream message and re-enqueues j (with the Worker's header changes)
+// to run again after delay. Unlike Nack it does not carry retry semantics — the
+// Worker uses it for a job of a type this worker cannot handle, so another can
+// (audit JB-4/JB-9). j.Attempts is stored as given; the next Dequeue increments
+// it, so an unhandled round-trip leaves the effective attempt count unchanged.
+func (q *Queue) Requeue(ctx context.Context, j jobs.Job, delay time.Duration) error {
+	q.pendingMu.Lock()
+	e, ok := q.pending[j.ID]
+	delete(q.pending, j.ID)
+	q.pendingMu.Unlock()
+	if ok && e.msgID != "" {
+		if err := q.ops.Ack(ctx, q.stream, q.group, e.msgID); err != nil {
+			return fmt.Errorf("jobs/redis: requeue ack: %w", err)
+		}
+	}
+	if _, err := q.EnqueueAt(ctx, j, time.Now().Add(delay)); err != nil {
+		return fmt.Errorf("jobs/redis: requeue: %w", err)
+	}
+	return nil
+}
+
 func (q *Queue) xack(ctx context.Context, jobID string) error {
 	q.pendingMu.Lock()
 	e, ok := q.pending[jobID]
@@ -394,4 +416,5 @@ var (
 	_ jobs.Queue        = (*Queue)(nil)
 	_ jobs.Source       = (*Queue)(nil)
 	_ jobs.LeaseRenewer = (*Queue)(nil)
+	_ jobs.Requeuer     = (*Queue)(nil)
 )

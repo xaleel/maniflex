@@ -321,6 +321,44 @@ func TestReclaim_DefaultConsumerIDIsUnique(t *testing.T) {
 	}
 }
 
+// Requeue must ack the current stream message (removing it from the PEL) and
+// drop it from the in-memory pending map before re-enqueuing, so it is not both
+// reclaimable AND re-enqueued. The re-enqueue itself goes through the raw client
+// and needs a Redis server, so here it is expected to fail fast; the ack and the
+// pending-map removal are what this asserts (the recovery-relevant half). The
+// full re-enqueue is read-verified, as with the rest of this no-server suite.
+func TestReclaim_RequeueAcksAndUntracksBeforeReenqueue(t *testing.T) {
+	ops := newFakeOps()
+	ops.pel = []*fakeEntry{{id: "1-1", payload: jobPayload(t, "job-a", "email"), idle: time.Minute}}
+	q := queueWith(ops, time.Millisecond)
+	// A client that fails to dial fast, so the re-enqueue errors instead of
+	// panicking on a nil client — no Redis is present.
+	q.client = goredis.NewClient(&goredis.Options{
+		Addr: "127.0.0.1:1", DialTimeout: 20 * time.Millisecond, MaxRetries: -1,
+	})
+	defer q.client.Close()
+
+	ctx := context.Background()
+	got, err := q.Dequeue(ctx, 10)
+	if err != nil || len(got) != 1 {
+		t.Fatalf("dequeue: got %d err %v", len(got), err)
+	}
+
+	// Requeue returns the enqueue error (no server); the ack must have happened
+	// first regardless.
+	_ = q.Requeue(ctx, got[0], time.Second)
+
+	if ops.pendingUnacked() != 0 {
+		t.Error("Requeue did not ack the old stream message; it stays in the PEL and can be reclaimed again")
+	}
+	q.pendingMu.Lock()
+	_, still := q.pending[got[0].ID]
+	q.pendingMu.Unlock()
+	if still {
+		t.Error("Requeue left the job in the in-memory pending map")
+	}
+}
+
 // Anti-vacuity: with no pending and no new messages, Dequeue returns empty and
 // still attempts a reclaim (so recovery is always in the loop) — it must not
 // spuriously invent jobs.

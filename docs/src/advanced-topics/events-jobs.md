@@ -335,6 +335,12 @@ adapters is a one-line change.
 > workers, and stranded others as `running` with an attempt already spent that
 > no worker had ever received.
 
+> **`NotBefore` is honoured to the nanosecond on SQLite.** SQLite compares the
+> timestamp columns as text, so the stored format has to sort the same way the
+> instants do. Timestamps are written with a fixed-width fractional part for
+> that reason; an earlier variable-width format could fire a scheduled job up to
+> a second early or late whenever its `NotBefore` fell on a whole second.
+
 > **`jobs/redis` recovers jobs from a crashed worker.** A worker that dies after
 > claiming a job but before completing it leaves the job in the consumer group's
 > pending list. `Dequeue` reclaims such entries (via `XAUTOCLAIM`) once they have

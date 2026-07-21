@@ -605,8 +605,21 @@ func (q *Queue) newPH() *sqlcore.PlaceholderBuilder {
 	return sqlcore.NewPlaceholderBuilder(driver)
 }
 
+// tsLayout is RFC3339 with a fixed nine-digit fractional part.
+//
+// time.RFC3339Nano omits trailing zeros, so its strings vary in width: a
+// whole-second stamp ("…56Z") and a fractional one ("…56.5Z") differ in the
+// character right after the seconds — 'Z' (0x5A) versus '.' (0x2E). SQLite
+// compares these columns as TEXT (lexicographically), so within one second the
+// whole-second stamp sorts AFTER the fractional one, inverting time order: a due
+// job can look not-due and a future job can look due, each by up to a second
+// (audit JB-7). A fixed width removes the variability, so lexicographic order
+// matches chronological order. Postgres stores TIMESTAMPTZ and compares
+// chronologically regardless, and it parses this layout the same as before.
+const tsLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
 func ts(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
+	return t.UTC().Format(tsLayout)
 }
 
 func parseTS(s string) *time.Time {

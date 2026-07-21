@@ -335,6 +335,18 @@ adapters is a one-line change.
 > workers, and stranded others as `running` with an attempt already spent that
 > no worker had ever received.
 
+> **`jobs/redis` recovers jobs from a crashed worker.** A worker that dies after
+> claiming a job but before completing it leaves the job in the consumer group's
+> pending list. `Dequeue` reclaims such entries (via `XAUTOCLAIM`) once they have
+> been idle past `Options.ReclaimMinIdle` (default 5m), so the job is redelivered
+> rather than lost. `ReclaimMinIdle` is a crash-detection window, not a
+> job-duration limit: a live worker renews its hold on a long-running job through
+> the worker's lease-renewal loop, so only a worker that has stopped renewing —
+> crashed or hung — lets its jobs age past the threshold. Give each worker a
+> unique `Options.ConsumerID` (the default is `maniflex-{hostname}-{pid}`); two
+> workers sharing one ID are a single consumer to Redis and share one pending
+> list, which defeats per-worker recovery.
+
 ### Defining and enqueueing a job
 
 ```go

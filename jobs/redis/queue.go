@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"sync"
 	"time"
@@ -25,12 +26,12 @@ import (
 )
 
 const (
-	defaultStream        = "maniflex:jobs"
-	defaultGroup         = "workers"
-	defaultConsumerID    = "worker-0"
-	defaultBlockDuration = 200 * time.Millisecond
-	delayedSetSuffix     = ":delayed"
-	promoterInterval     = 500 * time.Millisecond
+	defaultStream         = "maniflex:jobs"
+	defaultGroup          = "workers"
+	defaultBlockDuration  = 200 * time.Millisecond
+	delayedSetSuffix      = ":delayed"
+	promoterInterval      = 500 * time.Millisecond
+	defaultReclaimMinIdle = 5 * time.Minute
 )
 
 type pendingEntry struct {
@@ -40,13 +41,17 @@ type pendingEntry struct {
 
 // Queue is both a jobs.Queue (producer) and a jobs.Source (consumer).
 type Queue struct {
-	client     *goredis.Client
-	stream     string
-	delayed    string // ZSET key for delayed jobs
-	group      string
-	consumerID string
+	client         *goredis.Client
+	ops            streamOps
+	stream         string
+	delayed        string // ZSET key for delayed jobs
+	group          string
+	consumerID     string
+	reclaimMinIdle time.Duration
 
-	// pending maps job.ID → pendingEntry so Ack/Nack can XACK and re-enqueue.
+	// pending maps job.ID → pendingEntry so Ack/Nack/RenewLease can address the
+	// stream message. It is per-process and lost on crash — which is exactly why
+	// recovery cannot rely on it, and the reclaimer works off the Redis PEL.
 	pendingMu sync.Mutex
 	pending   map[string]pendingEntry
 
@@ -60,9 +65,22 @@ type Options struct {
 	Stream string
 	// Group is the consumer group name. Default: "workers".
 	Group string
-	// ConsumerID uniquely identifies this worker within the group.
-	// Default: "worker-0". Use a hostname/pod-name in production.
+	// ConsumerID uniquely identifies this worker within the group. Default:
+	// "maniflex-{hostname}-{pid}". It MUST be unique per running worker: two
+	// workers sharing a ConsumerID are one consumer to Redis, sharing a single
+	// pending list, which defeats per-worker crash recovery. Set it explicitly
+	// to a stable per-worker value in production if you want a crashed worker to
+	// reclaim its own pending entries by name on restart; otherwise another
+	// worker's reclaimer recovers them regardless.
 	ConsumerID string
+	// ReclaimMinIdle is how long a delivered-but-unacknowledged message must sit
+	// idle before another worker may reclaim it. Default: 5m.
+	//
+	// It is a crash-detection window, not a job-duration limit: a live worker
+	// renews its hold every LeaseRenew (via RenewLease), so a job running longer
+	// than this is not reclaimed. Only a worker that has stopped renewing — one
+	// that crashed or hung — lets its jobs age past the threshold.
+	ReclaimMinIdle time.Duration
 }
 
 // New creates a Queue backed by client. Call EnsureGroup before using it as a Source.
@@ -74,24 +92,42 @@ func New(client *goredis.Client, opts Options) *Queue {
 		opts.Group = defaultGroup
 	}
 	if opts.ConsumerID == "" {
-		opts.ConsumerID = defaultConsumerID
+		opts.ConsumerID = defaultConsumerName()
+	}
+	if opts.ReclaimMinIdle <= 0 {
+		opts.ReclaimMinIdle = defaultReclaimMinIdle
 	}
 	return &Queue{
-		client:       client,
-		stream:       opts.Stream,
-		delayed:      opts.Stream + delayedSetSuffix,
-		group:        opts.Group,
-		consumerID:   opts.ConsumerID,
-		pending:      make(map[string]pendingEntry),
-		promoterStop: make(chan struct{}),
+		client:         client,
+		ops:            redisStreamOps{client: client},
+		stream:         opts.Stream,
+		delayed:        opts.Stream + delayedSetSuffix,
+		group:          opts.Group,
+		consumerID:     opts.ConsumerID,
+		reclaimMinIdle: opts.ReclaimMinIdle,
+		pending:        make(map[string]pendingEntry),
+		promoterStop:   make(chan struct{}),
 	}
+}
+
+// defaultConsumerName identifies this process uniquely within the group. A pod
+// keeps its hostname across container restarts, so a restarted worker reclaims
+// its own pending entries by name; the pid disambiguates multiple workers in
+// one host. Redis never removes consumers from a group, so a name that changes
+// every start slowly accretes empty consumer entries — set Options.ConsumerID
+// to a stable per-worker value to avoid that.
+func defaultConsumerName() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "unknown"
+	}
+	return fmt.Sprintf("maniflex-%s-%d", host, os.Getpid())
 }
 
 // EnsureGroup creates the consumer group on the stream (MKSTREAM). Safe to
 // call repeatedly; BUSYGROUP errors are silenced.
 func (q *Queue) EnsureGroup(ctx context.Context) error {
-	err := q.client.XGroupCreateMkStream(ctx, q.stream, q.group, "0").Err()
-	if err != nil && err.Error() != "BUSYGROUP Consumer Group name already exists" {
+	if err := q.ops.EnsureGroup(ctx, q.stream, q.group); err != nil {
 		return fmt.Errorf("jobs/redis: EnsureGroup: %w", err)
 	}
 	return nil
@@ -173,17 +209,26 @@ func (q *Queue) enqueueAt(ctx context.Context, j jobs.Job, at time.Time) (string
 
 // ── Source (consumer) ─────────────────────────────────────────────────────────
 
-// Dequeue claims up to n jobs via XREADGROUP. Blocks up to 200ms before
-// returning an empty slice when the stream is idle.
+// Dequeue claims up to n jobs. It first reclaims messages abandoned by a
+// crashed worker, then reads new ones; either way it blocks at most ~200ms
+// when idle.
+//
+// Before this, Dequeue read only with XREADGROUP ">", which returns solely
+// never-delivered messages. A worker that died after delivery but before
+// Ack/Nack left its message in the group's pending entries list (PEL), where
+// nothing ever redelivered it — the job was lost while the queue looked
+// healthy, and the in-memory pending map that Ack/Nack relies on had been lost
+// with the process (audit JB-3). The reclaim step recovers those via
+// XAUTOCLAIM once they have been idle past ReclaimMinIdle.
 func (q *Queue) Dequeue(ctx context.Context, n int) ([]jobs.Job, error) {
-	streams, err := q.client.XReadGroup(ctx, &goredis.XReadGroupArgs{
-		Group:    q.group,
-		Consumer: q.consumerID,
-		Streams:  []string{q.stream, ">"},
-		Count:    int64(n),
-		Block:    defaultBlockDuration,
-		NoAck:    false,
-	}).Result()
+	// Reclaim first, so a crashed worker's backlog drains ahead of new work.
+	// A reclaim error is not fatal to the call: fall through and still service
+	// new messages rather than stalling the whole queue on a transient hiccup.
+	if reclaimed := q.reclaim(ctx, n); len(reclaimed) > 0 {
+		return reclaimed, nil
+	}
+
+	streams, err := q.ops.ReadGroup(ctx, q.stream, q.group, q.consumerID, int64(n), defaultBlockDuration)
 	if err != nil {
 		if err == goredis.Nil || isNoGroup(err) {
 			return nil, nil
@@ -196,26 +241,67 @@ func (q *Queue) Dequeue(ctx context.Context, n int) ([]jobs.Job, error) {
 
 	var out []jobs.Job
 	for _, s := range streams {
-		for _, msg := range s.Messages {
-			raw, _ := msg.Values["job"].(string)
-			if raw == "" {
-				continue
-			}
-			var j jobs.Job
-			if err := json.Unmarshal([]byte(raw), &j); err != nil {
-				// Malformed message: ack and skip.
-				_ = q.client.XAck(ctx, q.stream, q.group, msg.ID).Err()
-				continue
-			}
-			j.Attempts++
-			// Track the stream message ID and job for Ack/Nack.
-			q.pendingMu.Lock()
-			q.pending[j.ID] = pendingEntry{msgID: msg.ID, job: j}
-			q.pendingMu.Unlock()
-			out = append(out, j)
-		}
+		out = append(out, q.collect(ctx, s.Messages)...)
 	}
 	return out, nil
+}
+
+// reclaim takes up to n messages that have been pending longer than
+// ReclaimMinIdle and returns them as jobs, tracked for Ack/Nack exactly like a
+// fresh delivery. Starting the scan from "0-0" each call is deliberate: a
+// reclaimed message's idle clock resets to now, so it falls out of the next
+// scan's window without a persisted cursor.
+func (q *Queue) reclaim(ctx context.Context, n int) []jobs.Job {
+	msgs, _, err := q.ops.AutoClaim(ctx, q.stream, q.group, q.consumerID, q.reclaimMinIdle, "0-0", int64(n))
+	if err != nil {
+		return nil // transient; the next Dequeue tries again
+	}
+	return q.collect(ctx, msgs)
+}
+
+// collect turns claimed stream messages into jobs, acking and dropping any that
+// will not decode (a retry would decode the same bytes and fail identically),
+// and recording each in the pending map so Ack/Nack/RenewLease can address it.
+func (q *Queue) collect(ctx context.Context, msgs []goredis.XMessage) []jobs.Job {
+	var out []jobs.Job
+	for _, msg := range msgs {
+		raw, _ := msg.Values["job"].(string)
+		if raw == "" {
+			continue
+		}
+		var j jobs.Job
+		if err := json.Unmarshal([]byte(raw), &j); err != nil {
+			_ = q.ops.Ack(ctx, q.stream, q.group, msg.ID)
+			continue
+		}
+		j.Attempts++
+		q.pendingMu.Lock()
+		q.pending[j.ID] = pendingEntry{msgID: msg.ID, job: j}
+		q.pendingMu.Unlock()
+		out = append(out, j)
+	}
+	return out
+}
+
+// RenewLease resets the idle clock on the running job's stream message, so a
+// long-running job is not mistaken for one abandoned by a crashed worker and
+// reclaimed out from under its live handler. The worker calls it periodically
+// (WorkerConfig.LeaseRenew) for any Source implementing jobs.LeaseRenewer.
+//
+// d is ignored: a Redis stream has no per-message lease duration, only an idle
+// clock, and reclaim eligibility is governed by ReclaimMinIdle. Renewing simply
+// resets that clock to zero.
+func (q *Queue) RenewLease(ctx context.Context, id string, _ time.Duration) error {
+	q.pendingMu.Lock()
+	e, ok := q.pending[id]
+	q.pendingMu.Unlock()
+	if !ok || e.msgID == "" {
+		return nil
+	}
+	if _, err := q.ops.Claim(ctx, q.stream, q.group, q.consumerID, []string{e.msgID}); err != nil {
+		return fmt.Errorf("jobs/redis: renew lease: %w", err)
+	}
+	return nil
 }
 
 func (q *Queue) Ack(ctx context.Context, id string) error {
@@ -231,7 +317,7 @@ func (q *Queue) Nack(ctx context.Context, id string, jobErr error, delay time.Du
 	if !ok {
 		return nil
 	}
-	if err := q.client.XAck(ctx, q.stream, q.group, e.msgID).Err(); err != nil {
+	if err := q.ops.Ack(ctx, q.stream, q.group, e.msgID); err != nil {
 		return fmt.Errorf("jobs/redis: nack xack: %w", err)
 	}
 	_, err := q.EnqueueAt(ctx, e.job, time.Now().Add(delay))
@@ -250,7 +336,7 @@ func (q *Queue) xack(ctx context.Context, jobID string) error {
 	if !ok || e.msgID == "" {
 		return nil
 	}
-	return q.client.XAck(ctx, q.stream, q.group, e.msgID).Err()
+	return q.ops.Ack(ctx, q.stream, q.group, e.msgID)
 }
 
 // ── promoter ──────────────────────────────────────────────────────────────────
@@ -305,6 +391,7 @@ func newID() string {
 
 // Compile-time interface checks.
 var (
-	_ jobs.Queue  = (*Queue)(nil)
-	_ jobs.Source = (*Queue)(nil)
+	_ jobs.Queue        = (*Queue)(nil)
+	_ jobs.Source       = (*Queue)(nil)
+	_ jobs.LeaseRenewer = (*Queue)(nil)
 )

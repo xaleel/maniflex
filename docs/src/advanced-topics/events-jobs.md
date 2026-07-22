@@ -401,9 +401,30 @@ if err := jobssql.Migrate(ctx, db, "sqlite"); err != nil { /* ... */ } // "postg
   `Migrate` returns an error and `New` panics. Do not build it from user input.
 
 - **Encrypt payloads at rest:** payloads are stored as cleartext JSON by default.
-  Pass `WithPayloadCipher(cipher)` (any `Encrypt([]byte)`/`Decrypt([]byte)`
-  implementation) to encrypt the payload column; stored values are prefixed
-  `encq:` and decrypted transparently on dequeue.
+  Pass `WithKeyProvider(kp, keyID)` to encrypt the payload column with the same
+  key machinery as `mfx:"encrypted"` struct fields — `encryption.EnvKeyProvider`
+  or `encryption.VaultKeyProvider`:
+
+  ```go
+  kp := &encryption.EnvKeyProvider{Prefix: "MYAPP_KEY"} // reads MYAPP_KEY_JOBS
+  q := jobssql.New(db, jobssql.WithKeyProvider(kp, "jobs"))
+  ```
+
+  Stored values are `enc:<base64(envelope)>`, and the envelope carries the key id,
+  so **rotation works**: point the queue at a new key id and jobs already in the
+  queue still decrypt, as long as the provider can still resolve the id they were
+  written under. Retire an old key only once no job holds a payload encrypted with
+  it.
+
+  The older `WithPayloadCipher(cipher)` (any `Encrypt([]byte)`/`Decrypt([]byte)`
+  implementation, stored `encq:`) still works and is still read, but records no
+  key id — so rotating its key strands every job still holding one. Prefer a key
+  provider. Both may be set while migrating: new rows are written through the
+  provider, existing `encq:` rows keep decrypting with the cipher.
+
+  A payload that cannot be decrypted — key retired, option removed — is never
+  handed to a handler as-is; the row is quarantined as `dead` with the reason
+  recorded.
 
 - **Unhandled types are requeued, not killed:** a worker that lacks a handler for
   a job's type now requeues it (so another worker can claim it) instead of

@@ -15,6 +15,7 @@ import (
 	stdsql "database/sql"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -75,6 +76,8 @@ type config struct {
 	cipher PayloadCipher
 	driver string // "" = auto-detect; "postgres" or "sqlite" to force
 	lease  time.Duration
+	kp     maniflex.KeyProvider
+	keyID  string
 }
 
 func newConfig(opts []Option) (config, error) {
@@ -91,6 +94,9 @@ func newConfig(opts []Option) (config, error) {
 	}
 	if c.lease <= 0 {
 		c.lease = defaultLeaseDuration
+	}
+	if c.kp != nil && c.keyID == "" {
+		c.keyID = defaultPayloadKeyID
 	}
 	return c, nil
 }
@@ -110,6 +116,28 @@ func WithTableName(name string) Option { return func(c *config) { c.table = name
 // The stored value is prefixed "encq:" so encrypted and legacy cleartext rows can
 // coexist. Pass the same cipher to New wherever the queue is read or written.
 func WithPayloadCipher(c PayloadCipher) Option { return func(cfg *config) { cfg.cipher = c } }
+
+// WithKeyProvider encrypts the payload column with maniflex's key-provider
+// machinery — the same self-describing envelope used for mfx:"encrypted" struct
+// fields, stored as "enc:<base64(envelope)>". The envelope embeds the key id, so
+// a payload written under an older key still decrypts as long as the provider can
+// still resolve that id.
+//
+// Prefer this to WithPayloadCipher. A PayloadCipher records no key id, so
+// rotating its key makes every job still holding a payload encrypted under the
+// old one undecodable; those rows are quarantined as dead rather than run
+// (audit JB-14). With a provider, rotation is a key the provider still answers
+// for: encryption.EnvKeyProvider resolves each id from its own env var, and
+// VaultKeyProvider from Vault Transit, so old and new keys coexist.
+//
+// keyID names the key new payloads are written under; "" means "default", as for
+// struct fields.
+//
+// Both options may be set during a migration: new rows are written through the
+// provider while existing "encq:" rows still decrypt with the cipher.
+func WithKeyProvider(kp maniflex.KeyProvider, keyID string) Option {
+	return func(c *config) { c.kp, c.keyID = kp, keyID }
+}
 
 // WithDriver forces the SQL dialect instead of auto-detecting it from the
 // driver. Pass "postgres" or "sqlite" — the same value you pass to Migrate.
@@ -140,6 +168,8 @@ type Queue struct {
 	table  string
 	cipher PayloadCipher
 	lease  time.Duration // visibility timeout stamped on claim
+	kp     maniflex.KeyProvider
+	keyID  string
 }
 
 // New creates a Queue backed by db. The dialect is auto-detected from
@@ -155,7 +185,10 @@ func New(db *stdsql.DB, opts ...Option) *Queue {
 	if err != nil {
 		panic(err)
 	}
-	return &Queue{db: db, isPG: resolveIsPG(c.driver, db), table: c.table, cipher: c.cipher, lease: c.lease}
+	return &Queue{
+		db: db, isPG: resolveIsPG(c.driver, db), table: c.table,
+		cipher: c.cipher, lease: c.lease, kp: c.kp, keyID: c.keyID,
+	}
 }
 
 // resolveIsPG decides the dialect: an explicit WithDriver value wins, otherwise
@@ -246,7 +279,7 @@ func (q *Queue) enqueueAt(ctx context.Context, j jobs.Job, at time.Time) (string
 	if j.MaxRetry == 0 {
 		j.MaxRetry = 3
 	}
-	payload, err := q.marshalPayload(j.Payload)
+	payload, err := q.marshalPayload(ctx, j.Payload)
 	if err != nil {
 		return "", err
 	}
@@ -397,7 +430,7 @@ RETURNING `+claimedColumns,
 		return nil, nil, fmt.Errorf("jobs/sql: dequeue: %w", err)
 	}
 	defer rows.Close()
-	return q.scanJobs(rows)
+	return q.scanJobs(ctx, rows)
 }
 
 // dequeueSQLite claims and returns in one statement.
@@ -459,7 +492,7 @@ RETURNING `+claimedColumns,
 		return nil, nil, fmt.Errorf("jobs/sql: dequeue: %w", err)
 	}
 	defer rows.Close()
-	return q.scanJobs(rows)
+	return q.scanJobs(ctx, rows)
 }
 
 // isGroupRunningViolation reports whether err is the job_queue_group_running
@@ -621,7 +654,7 @@ FROM "job_queue" WHERE "id"=%s LIMIT 1`, p.Add(id),
 		return jobs.JobState{}, err
 	}
 	defer rows.Close()
-	states, err := q.scanJobStates(rows)
+	states, err := q.scanJobStates(ctx, rows)
 	if err != nil {
 		return jobs.JobState{}, err
 	}
@@ -664,7 +697,7 @@ FROM "job_queue"%s ORDER BY "created_at" DESC LIMIT %s OFFSET %s`,
 		return nil, err
 	}
 	defer rows.Close()
-	return q.scanJobStates(rows)
+	return q.scanJobStates(ctx, rows)
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -705,11 +738,34 @@ func parseTS(s string) *time.Time {
 	return &t
 }
 
-const encPayloadPrefix = "encq:"
+const (
+	// encPayloadPrefix marks a payload encrypted by a PayloadCipher: hex, and
+	// carrying no key id, which is why rotating that key strands every row still
+	// holding one (audit JB-14).
+	encPayloadPrefix = "encq:"
 
-func (q *Queue) marshalPayload(p json.RawMessage) (string, error) {
+	// encEnvelopePrefix marks a payload encrypted by a maniflex.KeyProvider. The
+	// encoding is exactly what core writes for mfx:"encrypted" struct fields —
+	// "enc:" + base64 of a self-describing envelope with the key id inside — so
+	// the two share one format, and rotation works here for the same reason it
+	// works there: Decrypt reads the id from the envelope and asks the provider
+	// for that key, not for the current one.
+	encEnvelopePrefix = "enc:"
+
+	// defaultPayloadKeyID matches core's default for struct fields.
+	defaultPayloadKeyID = "default"
+)
+
+func (q *Queue) marshalPayload(ctx context.Context, p json.RawMessage) (string, error) {
 	if len(p) == 0 {
 		return "{}", nil
+	}
+	if q.kp != nil {
+		envelope, err := q.kp.Encrypt(ctx, q.keyID, []byte(p))
+		if err != nil {
+			return "", fmt.Errorf("jobs/sql: encrypt payload: %w", err)
+		}
+		return encEnvelopePrefix + base64.StdEncoding.EncodeToString(envelope), nil
 	}
 	if q.cipher == nil {
 		return string(p), nil
@@ -721,21 +777,48 @@ func (q *Queue) marshalPayload(p json.RawMessage) (string, error) {
 	return encPayloadPrefix + hex.EncodeToString(ciphertext), nil
 }
 
-// unmarshalPayload reverses marshalPayload: decrypts an "encq:"-prefixed value
-// when a cipher is configured, and passes cleartext (legacy) rows through.
-func (q *Queue) unmarshalPayload(stored string) (json.RawMessage, error) {
-	if q.cipher == nil || !strings.HasPrefix(stored, encPayloadPrefix) {
-		return json.RawMessage(stored), nil
+// unmarshalPayload reverses marshalPayload, dispatching on the stored prefix, and
+// passes an unprefixed (cleartext, or pre-encryption legacy) row through.
+//
+// A value that is encrypted but cannot be decrypted — the key material is gone,
+// the option was dropped, or the key was rotated out — is an error. It used to be
+// returned verbatim whenever no cipher was configured, which handed the handler
+// the literal string "encq:<hex>" as its JSON payload: not a decode failure it
+// could notice, just ciphertext in place of data (audit JB-14). As an error it is
+// quarantined instead, and the row says why (audit JB-11).
+func (q *Queue) unmarshalPayload(ctx context.Context, stored string) (json.RawMessage, error) {
+	switch {
+	case strings.HasPrefix(stored, encEnvelopePrefix):
+		if q.kp == nil {
+			return nil, fmt.Errorf("jobs/sql: payload is key-provider encrypted but no " +
+				"KeyProvider is configured (pass WithKeyProvider)")
+		}
+		envelope, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(stored, encEnvelopePrefix))
+		if err != nil {
+			return nil, fmt.Errorf("jobs/sql: decode payload envelope: %w", err)
+		}
+		plaintext, err := q.kp.Decrypt(ctx, envelope)
+		if err != nil {
+			return nil, fmt.Errorf("jobs/sql: decrypt payload: %w", err)
+		}
+		return json.RawMessage(plaintext), nil
+
+	case strings.HasPrefix(stored, encPayloadPrefix):
+		if q.cipher == nil {
+			return nil, fmt.Errorf("jobs/sql: payload is cipher encrypted but no " +
+				"PayloadCipher is configured (pass WithPayloadCipher)")
+		}
+		raw, err := hex.DecodeString(strings.TrimPrefix(stored, encPayloadPrefix))
+		if err != nil {
+			return nil, fmt.Errorf("jobs/sql: decode payload: %w", err)
+		}
+		plaintext, err := q.cipher.Decrypt(raw)
+		if err != nil {
+			return nil, fmt.Errorf("jobs/sql: decrypt payload: %w", err)
+		}
+		return json.RawMessage(plaintext), nil
 	}
-	raw, err := hex.DecodeString(strings.TrimPrefix(stored, encPayloadPrefix))
-	if err != nil {
-		return nil, fmt.Errorf("jobs/sql: decode payload: %w", err)
-	}
-	plaintext, err := q.cipher.Decrypt(raw)
-	if err != nil {
-		return nil, fmt.Errorf("jobs/sql: decrypt payload: %w", err)
-	}
-	return json.RawMessage(plaintext), nil
+	return json.RawMessage(stored), nil
 }
 
 func marshalHeaders(h map[string]string) (string, error) {
@@ -766,7 +849,7 @@ type poisonRow struct {
 // A rows.Scan failure stays fatal. That means the column set does not match what
 // this code expects — systemic rather than per-row — and it leaves no id to
 // quarantine by.
-func (q *Queue) scanJobs(rows *stdsql.Rows) ([]jobs.Job, []poisonRow, error) {
+func (q *Queue) scanJobs(ctx context.Context, rows *stdsql.Rows) ([]jobs.Job, []poisonRow, error) {
 	var out []jobs.Job
 	var poison []poisonRow
 	for rows.Next() {
@@ -779,7 +862,7 @@ func (q *Queue) scanJobs(rows *stdsql.Rows) ([]jobs.Job, []poisonRow, error) {
 			&maxRetry, &priority, &notBefore, &groupKey, &headers, &attempts); err != nil {
 			return nil, nil, err
 		}
-		decoded, err := q.unmarshalPayload(payload)
+		decoded, err := q.unmarshalPayload(ctx, payload)
 		if err != nil {
 			poison = append(poison, poisonRow{id: id, err: err})
 			continue
@@ -827,7 +910,7 @@ func (q *Queue) quarantine(ctx context.Context, poison []poisonRow) {
 	}
 }
 
-func (q *Queue) scanJobStates(rows *stdsql.Rows) ([]jobs.JobState, error) {
+func (q *Queue) scanJobStates(ctx context.Context, rows *stdsql.Rows) ([]jobs.JobState, error) {
 	var out []jobs.JobState
 	for rows.Next() {
 		var (
@@ -849,7 +932,7 @@ func (q *Queue) scanJobStates(rows *stdsql.Rows) ([]jobs.JobState, error) {
 		// operator uses to find a quarantined row (audit JB-11), so the row is kept
 		// and reported with no payload rather than dropped or turned into an error —
 		// erroring here would hide exactly the row being looked for.
-		decoded, decodeErr := q.unmarshalPayload(payload)
+		decoded, decodeErr := q.unmarshalPayload(ctx, payload)
 		if decodeErr != nil {
 			decoded = nil
 			if lastErr == "" {

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -43,6 +44,21 @@ var txFromContext func(context.Context) sqlExecer
 
 const defaultTableName = "job_queue"
 
+// tableIdentPattern restricts the queue table name to the conservative unquoted
+// SQL identifier grammar shared by SQLite and Postgres.
+//
+// The name is interpolated straight into every query and into the migration DDL —
+// and, in the DDL, into the derived index names as a bare (unquoted) substring.
+// Neither a table reference nor a DDL identifier accepts a bind parameter, so
+// there is nothing to parameterise: a name carrying a double quote would close
+// the quoted identifier and leave the rest as SQL. Rejecting outright beats
+// quote-escaping here, because the bare substitution in the index names cannot be
+// escaped at all (audit JB-13). Same reasoning, and nearly the same grammar, as
+// db/postgres' schema-name check.
+const tableIdentPattern = `^[A-Za-z_][A-Za-z0-9_]*$`
+
+var tableIdentRe = regexp.MustCompile(tableIdentPattern)
+
 // PayloadCipher encrypts and decrypts the job payload column at rest. Provide one
 // via WithPayloadCipher when jobs may carry sensitive data; without it payloads
 // are stored as cleartext JSON.
@@ -61,7 +77,7 @@ type config struct {
 	lease  time.Duration
 }
 
-func newConfig(opts []Option) config {
+func newConfig(opts []Option) (config, error) {
 	c := config{table: defaultTableName}
 	for _, o := range opts {
 		o(&c)
@@ -69,16 +85,25 @@ func newConfig(opts []Option) config {
 	if c.table == "" {
 		c.table = defaultTableName
 	}
+	if !tableIdentRe.MatchString(c.table) {
+		return c, fmt.Errorf("jobs/sql: invalid table name %q: must match %s",
+			c.table, tableIdentPattern)
+	}
 	if c.lease <= 0 {
 		c.lease = defaultLeaseDuration
 	}
-	return c
+	return c, nil
 }
 
 // WithTableName runs the queue on a table other than the default "job_queue",
 // so two independent queues (e.g. an isolated OTP lane) can share one database.
 // Pass the same option to both New and Migrate. Index names are derived from the
 // table name so they don't collide.
+//
+// The name must be a plain SQL identifier ([A-Za-z_][A-Za-z0-9_]*): it is
+// interpolated directly into every statement and into the migration DDL, neither
+// of which can bind it as a parameter. Migrate rejects anything else with an
+// error and New panics. Do not build this name from user input.
 func WithTableName(name string) Option { return func(c *config) { c.table = name } }
 
 // WithPayloadCipher encrypts the payload column at rest with the given cipher.
@@ -119,8 +144,17 @@ type Queue struct {
 
 // New creates a Queue backed by db. The dialect is auto-detected from
 // db.Driver() unless WithDriver forces it.
+//
+// It panics if WithTableName supplied a name that is not a plain SQL identifier.
+// The name is interpolated into every statement this Queue issues, so there is no
+// safe way to continue: falling back to the default table would silently read and
+// write the wrong one. Migrate reports the same condition as an error, having a
+// return value to report it with.
 func New(db *stdsql.DB, opts ...Option) *Queue {
-	c := newConfig(opts)
+	c, err := newConfig(opts)
+	if err != nil {
+		panic(err)
+	}
 	return &Queue{db: db, isPG: resolveIsPG(c.driver, db), table: c.table, cipher: c.cipher, lease: c.lease}
 }
 

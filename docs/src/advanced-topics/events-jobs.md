@@ -395,6 +395,11 @@ if err := jobssql.Migrate(ctx, db, "sqlite"); err != nil { /* ... */ } // "postg
   jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName("otp_jobs"))
   ```
 
+  The name must be a plain SQL identifier (`[A-Za-z_][A-Za-z0-9_]*`). It is
+  interpolated directly into every statement and into the migration DDL — a
+  table reference cannot be bound as a parameter — so anything else is rejected:
+  `Migrate` returns an error and `New` panics. Do not build it from user input.
+
 - **Encrypt payloads at rest:** payloads are stored as cleartext JSON by default.
   Pass `WithPayloadCipher(cipher)` (any `Encrypt([]byte)`/`Decrypt([]byte)`
   implementation) to encrypt the payload column; stored values are prefixed

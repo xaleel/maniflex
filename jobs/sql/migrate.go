@@ -12,7 +12,10 @@ import (
 // or "sqlite". Pass WithTableName to migrate a non-default table (the table and
 // its indexes are renamed consistently so multiple queues can share a database).
 func Migrate(ctx context.Context, db *stdsql.DB, driver string, opts ...Option) error {
-	cfg := newConfig(opts)
+	cfg, err := newConfig(opts)
+	if err != nil {
+		return err
+	}
 	isPG := driver == "postgres"
 
 	// rename rewrites the default table/index identifiers to the configured table.

@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.2
+## v0.3.2 (2026-07-22)
 
 - **Bugfix:** `db/sqlcore` creates Postgres foreign keys in every schema, not only the first one migrated. The existence probe queried `information_schema.table_constraints` with no `table_schema` predicate, and constraint names derive from table and column, so the same model in a second schema looked already migrated. Referential integrity and `onDelete` actions were silently absent there.
 - **Bugfix:** `jobs/sql` absorbs a contended group-key claim rather than failing the `Dequeue`. Two Postgres claimers can both see a key as free and both write it, so the unique index rejects the loser — by design. Three retries was too few: ~40% of runs surfaced the raw violation, which the worker logged as an error and stalled a second on. Now 8; a claim that still loses returns no jobs.

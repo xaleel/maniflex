@@ -2,6 +2,7 @@
 
 ## v0.3.2
 
+- **Feature:** `jobs/cron` elects one replica per firing when given a `WithLocker`. A `Scheduler` ticks in its own process and knew nothing about its peers, so three replicas enqueued a daily report three times a day. Each firing derives a lock key from the entry and the fire time truncated to `Every`, so replicas started at different moments still agree on the interval. Off by default.
 - **Security / Feature:** `jobs/sql` gains `WithKeyProvider`, encrypting payloads with the key-id-bearing envelope core uses for `mfx:"encrypted"` fields, so a rotated key still decrypts jobs written under the previous one — `WithPayloadCipher` has no key id and could not. An undecryptable payload also reached handlers as the literal `encq:<hex>` string; it is now an error and gets quarantined.
 - **Security:** `jobs/sql` validates `WithTableName` as a plain SQL identifier (`^[A-Za-z_][A-Za-z0-9_]*$`). It is interpolated textually into every query and the migration DDL — a table reference cannot be a bind parameter — so a name containing a double quote closed the quoted identifier and left the rest as SQL; index names could not be escaped at all. `Migrate` errors; `New` panics.
 - **Security:** `/job_statuses` refuses an unauthenticated caller instead of answering unscoped. The per-actor scope was skipped whenever `ctx.Auth == nil`, so wherever these routes were reachable without auth a list returned every actor's and every tenant's job metadata. No identity on a per-actor resource is now a `401`; the actor scope and the admin bypass are unchanged.

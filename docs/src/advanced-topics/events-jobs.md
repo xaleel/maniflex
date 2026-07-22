@@ -700,3 +700,46 @@ cr.Add(cron.Entry{
 })
 cr.Start(ctx) // returns immediately; cr.Stop() halts the tickers
 ```
+
+#### Running cron on more than one replica
+
+A `Scheduler` ticks in its own process and knows nothing about its peers, so
+three replicas each running one enqueue `daily_report` **three times a day**.
+Run the `Scheduler` in exactly one process, or pass a `cron.Locker` and let the
+replicas elect a single winner per interval:
+
+```go
+cr := cron.New(queue, nil, cron.WithLocker(myLocker))
+```
+
+```go
+// Locker is the whole interface. Return true to exactly one caller per key.
+type Locker interface {
+    Acquire(ctx context.Context, key string, ttl time.Duration) (bool, error)
+}
+```
+
+The framework ships no implementation — use whatever the deployment already
+runs. A Redis one is three lines:
+
+```go
+func (l redisLocker) Acquire(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+    return l.client.SetNX(ctx, key, "1", ttl).Result()
+}
+```
+
+Keys look like `cron|daily_report|24h0m0s|1784678400` and carry the fire time
+truncated to `Every`, so replicas that started at different moments still agree
+on which interval a tick belongs to — one ticking at 00:03 and another at 00:47
+contend for the same midnight key. `Entry.Name` overrides the `daily_report`
+segment; set it when two entries share both a `Type` and an interval.
+
+Two properties worth knowing:
+
+- **There is no release.** The lock marks the interval as claimed, not the work
+  as in progress, so it must outlive the firing — let it expire with its TTL
+  (which is `Every`). Deleting it early lets the next replica to tick within the
+  same interval fire again.
+- **A Locker error fails open** and the job fires, matching
+  [`idempotency`](idempotency.md). A lock backend outage produces visible
+  duplicates rather than a nightly job that quietly never ran.

@@ -679,6 +679,13 @@ dead-letters the job once it reaches `WorkerConfig.MaxUnhandledRequeues`
 requires the queue to implement `jobs.Requeuer` (all three built-in adapters
 do); a custom adapter that does not falls back to the older unbounded `Nack`.
 
+The status row follows the job either way, so it never reads as executing on a
+worker that has already let it go. Through `Requeuer` it returns to `enqueued`,
+since a requeue spends no attempt; through the `Nack` fallback it becomes
+`failed` — or `dead` once the budget is spent — because that is what `Nack`
+does. The row is written only after the queue write succeeds: if the requeue
+itself fails the job is still held, and `running` is then the truthful status.
+
 ### Cancellation
 
 When the inner queue implements `jobs.Cancellable` (both `jobs/inproc` and

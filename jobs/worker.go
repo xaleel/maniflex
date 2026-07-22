@@ -376,7 +376,21 @@ func (w *Worker) requeueUnhandled(ctx context.Context, j Job, logger *slog.Logge
 		if nackErr := w.cfg.Source.Nack(termCtx, j.ID, err, w.unhandledRequeueDelay()); nackErr != nil {
 			logger.Error("[jobs] requeue of unhandled type failed",
 				slog.String("job_id", j.ID), slog.String("error", nackErr.Error()))
+			return // the job is still held; a running status row is the truth
 		}
+		// This branch used to leave the status row on running while the job was
+		// back in the queue, so it read as executing forever on a worker that had
+		// already let it go (audit JB-18). Nack, unlike Requeue, does spend the
+		// attempt, so the row follows what Nack itself does with the budget —
+		// the same test handle() applies to a failed handler.
+		to := StatusFailed
+		if j.Attempts >= MaxRetryFor(j) {
+			to = StatusDead
+		}
+		w.transition(termCtx, j, StatusRunning, to, StatusInfo{
+			Attempt: j.Attempts, Error: err.Error(),
+			JobType: j.Type, ActorID: j.ActorID, TenantID: j.TenantID,
+		})
 		return
 	}
 
@@ -396,19 +410,26 @@ func (w *Worker) requeueUnhandled(ctx context.Context, j Job, logger *slog.Logge
 	}
 	j.Headers = withUnhandledCount(j.Headers, count+1)
 
-	// It is going back to the queue, not running — move the status row off
-	// running so it does not appear stuck (partially addresses JB-18).
-	w.transition(termCtx, j, StatusRunning, StatusEnqueued, StatusInfo{
-		Attempt: j.Attempts, JobType: j.Type, ActorID: j.ActorID, TenantID: j.TenantID,
-	})
-
 	logger.Warn("[jobs] requeuing job of unhandled type",
 		slog.String("type", j.Type), slog.String("job_id", j.ID),
 		slog.Int("requeue", count+1), slog.Int("max", w.cfg.MaxUnhandledRequeues))
+
+	// The queue is the source of truth, so it moves first and the status row
+	// follows. The other order wrote "enqueued" before the requeue was durable,
+	// so a failed Requeue left the status row describing a job the queue still
+	// holds as running. Requeuing with a delay (5s or more) means no other worker
+	// can claim it and re-transition the row in between.
 	if rqErr := rq.Requeue(termCtx, j, w.unhandledRequeueDelay()); rqErr != nil {
 		logger.Error("[jobs] requeue of unhandled type failed",
 			slog.String("job_id", j.ID), slog.String("error", rqErr.Error()))
+		return // still held by the queue; running is the honest status
 	}
+
+	// It is back in the queue, not running — move the status row off running so
+	// it does not read as executing forever (audit JB-18).
+	w.transition(termCtx, j, StatusRunning, StatusEnqueued, StatusInfo{
+		Attempt: j.Attempts, JobType: j.Type, ActorID: j.ActorID, TenantID: j.TenantID,
+	})
 }
 
 // unhandledCount reads the requeue counter carried in the job's headers.

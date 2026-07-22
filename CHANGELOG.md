@@ -2,6 +2,7 @@
 
 ## v0.3.2
 
+- **Bugfix:** a job of an unhandled type no longer leaves its status row on `running`. The `Requeuer` path was fixed with the requeue bound, but the `Nack` fallback a Source without `Requeuer` takes was not, so the row read as executing forever on a worker that had already let the job go. It now records what `Nack` does — `failed`, or `dead` once the budget is spent.
 - **Bugfix:** `jobs/sql` recovers jobs from a crashed worker. The claim reads `status IN ('enqueued','failed')` and nothing ever moved a row back, so a worker that died mid-job left its rows `running` forever — never redelivered, retried or dead-lettered — and `lease_until` had no reader at all. `Dequeue` now sweeps lapsed leases first, and dead-letters a row whose retry budget is spent.
 - **Bugfix:** `jobs.ExponentialBackoff` no longer returns a negative delay. The float pow converted back to a `Duration` is implementation-defined past int64 — amd64 gives `MinInt64` — and `Max` never caught it, a negative not exceeding the cap, so the retry landed in the past and backoff became a hot loop. `Base 24h, Max 5m` broke at attempt 17. Doubling saturates; a zero `Base` now means 1s.
 - **Feature:** `jobs/cron` elects one replica per firing when given a `WithLocker`. A `Scheduler` ticks in its own process and knew nothing about its peers, so three replicas enqueued a daily report three times a day. Each firing derives a lock key from the entry and the fire time truncated to `Every`, so replicas started at different moments still agree on the interval. Off by default.

@@ -244,6 +244,12 @@ func (q *Queue) Cancel(ctx context.Context, id string) error {
 		return fmt.Errorf("jobs/inproc: job %s is already running", id)
 	}
 	e.status = jobs.StatusCancelled
+	// Cancelled is terminal, so drop the entry — as Ack, Dead and an exhausted
+	// Nack all do. Cancel was the one terminal path that kept it, which leaked an
+	// entry per cancellation for the life of the process and left it in the slice
+	// Dequeue walks on every call, so a long-lived queue went on paying for
+	// cancellations it had already served (audit JB-15).
+	q.removeEntry(id)
 	return nil
 }
 
@@ -295,13 +301,25 @@ func (q *Queue) List(ctx context.Context, qry jobs.ListQuery) ([]jobs.JobState, 
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+// releaseGroup drops one running-job count for key, forgetting the key entirely
+// once nothing holds it.
+//
+// The delete is not tidiness: leaving a zero behind kept one map entry per
+// distinct GroupKey the queue had ever seen, for the life of the process. Group
+// keys are usually high-cardinality — a user, tenant or invoice id — so that grew
+// without bound on exactly the workloads that use them. A missing key and a zero
+// key read the same to Dequeue, which only asks whether the count is > 0, so
+// nothing else changes (same class as audit JB-15, which the audit names only for
+// Cancel).
 func (q *Queue) releaseGroup(key string) {
 	if key == "" {
 		return
 	}
-	if q.runningKeys[key] > 0 {
+	if q.runningKeys[key] > 1 {
 		q.runningKeys[key]--
+		return
 	}
+	delete(q.runningKeys, key)
 }
 
 func (q *Queue) removeEntry(id string) {

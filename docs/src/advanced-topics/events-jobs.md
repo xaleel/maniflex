@@ -655,6 +655,12 @@ c.Cancel(ctx, jobID)   // marks the job cancelled in the queue and updates the s
 Only jobs that have not yet started can be cancelled; a running job must finish
 or fail before the status row moves.
 
+The two adapters retain a cancelled job differently: `jobs/sql` keeps the row with
+`status='cancelled'`, while `jobs/inproc` drops the entry — as it does for a
+succeeded or dead-lettered job — so its own `Inspector` reports only live jobs.
+Either way the `job_statuses` row created by `Mount` is the durable record of the
+outcome, which is what clients poll.
+
 ### Completion events (optional)
 
 Set `WorkerConfig.EventBus` to publish `job.{type}.completed` and

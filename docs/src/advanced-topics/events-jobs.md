@@ -631,6 +631,24 @@ job is marked `dead` and the status row records the final error. Set
 `WorkerConfig.DLQType` to route dead jobs to a separate handler for inspection
 or alerting.
 
+`Job.Backoff` overrides the policy per job:
+
+```go
+jobs.Job{
+    Type:     "sync_ledger",
+    MaxRetry: 20,
+    Backoff:  jobs.ExponentialBackoff{Base: time.Minute, Max: time.Hour},
+}
+```
+
+Both fields take a default when left at zero: `Base` zero means 1 s, and `Max`
+zero means uncapped — the delay keeps doubling and saturates at the largest
+representable `time.Duration` rather than overflowing. A `Base` of zero used to
+mean *no delay at all*, so a literal that set only `Max` silently retried in a
+tight loop; use `jobs.FixedBackoff{}` if that is what you want. Delays are
+clamped rather than allowed to wrap, so a long `MaxRetry` with a coarse `Base`
+cannot produce a negative delay and an immediate re-run.
+
 **Jobs of an unhandled type.** A worker that dequeues a job whose `Type` it has
 no handler for does not fail or drop it — a type-restricted worker sharing a
 queue with others must let a job pass to the worker that does handle it. It

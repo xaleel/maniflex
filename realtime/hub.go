@@ -37,9 +37,19 @@ type HubConfig struct {
 	Logger         *slog.Logger  // nil → slog.Default()
 	PingInterval   time.Duration // 0 → 30s; SSE keepalive comment cadence
 	SendBuffer     int           // 0 → 64; per-client outbound queue depth
-	SendTimeout    time.Duration // 0 → 5s; slow-client kick threshold
 	MaxMessageSize int64         // 0 → 64 KiB; inbound frame size limit
 	Origins        []string      // allowed Origins for WS upgrade; empty = allow all
+
+	// Deprecated: SendTimeout is ignored and has no replacement.
+	//
+	// It used to bound how long fan-out would wait for room in a client's
+	// outbound buffer. That wait ran inside the single bus-subscriber
+	// goroutine, so one client with a full buffer held up delivery to every
+	// other client for the duration. Fan-out no longer waits at all — a client
+	// with no room is kicked immediately — so there is no window left to bound.
+	// Tune SendBuffer instead: it is what decides how far behind a client may
+	// fall before it is dropped.
+	SendTimeout time.Duration
 
 	// ReadTimeout bounds how long a WebSocket connection may go without
 	// sending anything before the hub treats the peer as dead and closes it.
@@ -98,9 +108,6 @@ func NewHub(cfg HubConfig) (*Hub, error) {
 	}
 	if cfg.SendBuffer <= 0 {
 		cfg.SendBuffer = 64
-	}
-	if cfg.SendTimeout <= 0 {
-		cfg.SendTimeout = 5 * time.Second
 	}
 	if cfg.MaxMessageSize <= 0 {
 		cfg.MaxMessageSize = 64 * 1024
@@ -234,6 +241,7 @@ func (h *Hub) Handler() http.HandlerFunc {
 			principal: principal,
 			out:       make(chan []byte, h.cfg.SendBuffer),
 			done:      make(chan struct{}),
+			kickCh:    make(chan uint16, 1),
 			subs:      make(map[string][]string),
 		}
 		h.clients.Store(c, struct{}{})
@@ -361,6 +369,18 @@ func (h *Hub) deliverWS(c *hubClient, e events.Event, cursor string) {
 // enqueueWS marshals one event message and queues it on the client's outbound
 // channel, kicking the client (close 1013) if it can't keep up. Returns false
 // when the client was kicked. Shared by live fan-out and resume replay.
+//
+// The send never blocks. Fan-out walks every client from the single
+// bus-subscriber goroutine, so any wait here is a wait imposed on all the
+// others: one client with a full buffer used to stop the whole hub delivering
+// for up to SendTimeout, and the events piling up behind it eventually filled
+// the bus's own queue, at which point Publish started refusing events
+// process-wide — for every subscriber, not just this hub.
+//
+// Dropping the client rather than the event is deliberate. A kicked client
+// reconnects and, with a ResumeStore configured, replays from its cursor; a
+// client kept alive while its events are discarded has a gap it can never
+// learn about. SendBuffer is what decides how far behind a client may fall.
 func (h *Hub) enqueueWS(c *hubClient, subID, cursor string, ev events.Event) bool {
 	payload := map[string]any{"op": "event", "subId": subID, "data": ev}
 	if cursor != "" {
@@ -374,9 +394,12 @@ func (h *Hub) enqueueWS(c *hubClient, subID, cursor string, ev events.Event) boo
 	select {
 	case c.out <- frame:
 		return true
-	case <-time.After(h.cfg.SendTimeout):
-		h.kickN.Add(1)
-		c.sendClose(wsClose1013)
+	default:
+		// Counted once per client, not once per dropped event: the client stays
+		// registered until its pumps exit, so every event in the meantime lands
+		// here and would otherwise inflate the metric by the event rate.
+		c.kickOnce.Do(func() { h.kickN.Add(1) })
+		c.kick(wsClose1013)
 		return false
 	}
 }
@@ -393,14 +416,16 @@ func (h *Hub) deliverSSE(sc *sseClient, e events.Event, cursor string) {
 	if err != nil {
 		return
 	}
-	// Mirror the WS slow-consumer policy (roadmap §11B.8 / checkpoint H8):
-	// after SendTimeout the slow client is kicked so its EventSource
-	// reconnects, rather than silently dropping events into /dev/null.
+	// Mirror the WS slow-consumer policy (roadmap §11B.8 / checkpoint H8): a
+	// client with no room is kicked so its EventSource reconnects, rather than
+	// silently dropping events into /dev/null. Non-blocking for the same reason
+	// as enqueueWS — this runs in the shared fan-out goroutine, so waiting on
+	// one SSE client stalls delivery to every WebSocket client too.
 	// kickN is shared with WS so operators see one number.
 	select {
 	case sc.out <- encodeSSEEvent("", cursor, data):
-	case <-time.After(h.cfg.SendTimeout):
-		h.kickN.Add(1)
+	default:
+		sc.kickOnce.Do(func() { h.kickN.Add(1) })
 		sc.shutdown()
 	}
 }
@@ -474,10 +499,12 @@ type hubClient struct {
 	principal  *Principal
 	out        chan []byte       // encoded WS frames; never closed by sender
 	done       chan struct{}     // closed by close() to wake the write loop
+	kickCh     chan uint16       // close code the write loop should send, then exit
 	writeMu    sync.Mutex       // serialises writes to conn
 	closeOnce  sync.Once        // ensures the teardown in close() runs once
 	frameOnce  sync.Once        // ensures the courtesy close frame is written once
 	removeOnce sync.Once        // ensures remove runs once
+	kickOnce   sync.Once        // counts a slow-consumer kick at most once
 	subs       map[string][]string // subID → []pattern
 	subMu      sync.RWMutex
 	subSeq     atomic.Uint64
@@ -499,6 +526,24 @@ func (c *hubClient) close() {
 		c.conn.Close()
 		close(c.done)
 	})
+}
+
+// kick asks the write pump to close this client with the given status code and
+// stop. It never touches the socket, because it is called from the shared
+// fan-out goroutine: sendClose takes writeMu, which the write pump can be
+// holding for the length of a 10s write deadline on exactly the wedged client
+// being kicked — so kicking inline reintroduces the head-of-line stall that
+// dropping the wait was meant to remove, and lengthens it.
+//
+// The write pump owns every socket write, so it is where the close frame
+// belongs. A wedged peer never reads it and is torn down when its write
+// deadline expires instead; a merely-behind peer gets a proper 1013 as soon as
+// its current write drains.
+func (c *hubClient) kick(code uint16) {
+	select {
+	case c.kickCh <- code:
+	default: // a kick is already pending; one is enough
+	}
 }
 
 // sendClose writes a close frame with the given status code and then tears the
@@ -599,7 +644,18 @@ func (c *hubClient) writeLoop() {
 	ping := time.NewTicker(c.hub.cfg.PingInterval)
 	defer ping.Stop()
 	for {
+		// A pending kick outranks queued frames: the client is being dropped,
+		// so draining its backlog first would only postpone the close.
 		select {
+		case code := <-c.kickCh:
+			c.sendClose(code)
+			return
+		default:
+		}
+		select {
+		case code := <-c.kickCh:
+			c.sendClose(code)
+			return
 		case frame := <-c.out:
 			if err := c.writeRaw(frame); err != nil {
 				return
@@ -790,6 +846,7 @@ type sseClient struct {
 	out        chan []byte
 	shutdownCh chan struct{}
 	shutOnce   sync.Once
+	kickOnce   sync.Once // counts a slow-consumer kick at most once
 }
 
 func (sc *sseClient) shutdown() {

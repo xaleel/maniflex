@@ -2,6 +2,7 @@
 
 ## v0.3.3
 
+- **Bugfix:** one slow realtime client no longer stalls delivery to every other. Fan-out walks all clients from a single goroutine and waited up to `SendTimeout` for room in a full buffer, so nobody received anything meanwhile and the backlog could fill the bus queue, making `Publish` refuse events process-wide. A full buffer is now kicked at once; `SendTimeout` is deprecated and ignored.
 - **Bugfix / Feature:** the hub now detects a WebSocket peer that stops answering. It pinged but never enforced a reply and set no read deadline, so a half-open connection kept its read pump blocked forever. A connection must now send something every `ReadTimeout` (default 2×`PingInterval`) or it is closed with 1001; any inbound frame refreshes it, pongs included. `ReadTimeoutDisabled` opts out.
 - **Bugfix:** an abruptly dropped WebSocket no longer leaks a goroutine and a `CLOSE_WAIT` socket. On EOF/RST the read pump returned without closing anything, leaving the writer parked on a channel nothing would close. A client that half-closed its write side but kept reading was permanent — every ping still succeeded, so nothing ever failed. Either pump now tears the connection down.
 

@@ -230,12 +230,28 @@ with the same `json` + `mfx` tags as models and actions
 
 ## Backpressure & slow clients
 
-Each connection has a bounded outbound queue (`SendBuffer`, default 64). If a
-client can't keep up within `SendTimeout` (default 5s) it is kicked — a WebSocket
-close `1013 Try Again Later`, or an SSE disconnect that triggers `EventSource`
+Each connection has a bounded outbound queue (`SendBuffer`, default 64). A
+client that fills it is kicked at once — a WebSocket close
+`1013 Try Again Later`, or an SSE disconnect that triggers `EventSource`
 reconnection. `Hub.Stats()` exposes the live connection count and cumulative
-kick count for monitoring. A frame larger than `MaxMessageSize` (default 64 KiB)
-is rejected with close `1009`.
+kick count (counted per kicked client, not per dropped event) for monitoring. A
+frame larger than `MaxMessageSize` (default 64 KiB) is rejected with close
+`1009`.
+
+**`SendBuffer` is the only knob that matters here**, because fan-out never
+waits. Every client is served from one shared goroutine, so a wait on one is a
+wait imposed on all of them: before v0.3.3 the hub paused for up to
+`SendTimeout` (5s) on a client whose buffer was full, during which *no other
+client received anything*, and the events piling up behind it could fill the
+bus's own queue — at which point `Publish` began refusing events process-wide,
+for every subscriber rather than just the hub. `SendTimeout` is now ignored and
+deprecated; raise `SendBuffer` if your clients need more slack.
+
+Dropping the client rather than the event is deliberate. A kicked client
+reconnects and, with a [`ResumeStore`](#resumable-streams-lasteventid)
+configured, replays from its cursor — so nothing is lost. A client kept
+connected while its events were discarded would have a gap it could never learn
+about, which is the worse failure.
 
 ## Scaling out
 
@@ -271,6 +287,6 @@ handler — the hub is mounted by your code, so it isn't part of
 | `PingInterval`   | 30s              | WS ping / SSE keepalive cadence                      |
 | `ReadTimeout`    | 2×`PingInterval` | WS dead-peer deadline; `ReadTimeoutDisabled` to opt out |
 | `SendBuffer`     | 64               | per-client outbound queue depth                      |
-| `SendTimeout`    | 5s               | slow-client kick threshold                           |
+| `SendTimeout`    | —                | **deprecated, ignored**; fan-out no longer waits     |
 | `MaxMessageSize` | 64 KiB           | inbound frame size limit                             |
 | `Origins`        | allow-all        | allowed `Origin` values for the WS upgrade           |

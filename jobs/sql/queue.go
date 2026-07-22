@@ -12,13 +12,14 @@
 package sql
 
 import (
-	stdsql "database/sql"
 	"context"
 	"crypto/rand"
+	stdsql "database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"regexp"
 	"strings"
@@ -328,9 +329,20 @@ const claimedColumns = `"id","type","payload","trace_id","actor_id","tenant_id",
 
 // maxClaimRetries bounds the Postgres group-collision retry loop (see Dequeue).
 // A collision resolves as soon as the winning transaction commits and its key
-// becomes visible as running, so one retry almost always suffices; the bound
-// only guards against a pathological run of overlapping claims.
-const maxClaimRetries = 3
+// becomes visible as running, so a retry usually suffices.
+//
+// The bound was 3, which measurement against a real Postgres showed is too few:
+// with 24 claimers over 2 group keys the loop exhausted often enough to surface
+// the raw index violation to the caller in ~40% of runs (audit NEW-3).
+//
+// It is the attempt count that matters, not the pacing. Losing here is
+// structural rather than a synchronisation artifact — with far more claimers
+// than keys, most are contending at any instant, so waiting does not improve a
+// claimer's odds and only another attempt does. Pausing between attempts was
+// tried and measured: a jittered pause left the failure rate unchanged, and one
+// 25x longer still failed at a bound of 3, while raising the bound alone fixed
+// it outright. The pause was dropped rather than kept as decoration.
+const maxClaimRetries = 8
 
 // Dequeue claims up to n ready jobs.
 //
@@ -382,8 +394,21 @@ func (q *Queue) Dequeue(ctx context.Context, n int) ([]jobs.Job, error) {
 			}
 			return claimed, nil
 		}
-		if q.isGroupRunningViolation(err) && attempt < maxClaimRetries {
-			continue
+		if q.isGroupRunningViolation(err) {
+			if attempt < maxClaimRetries {
+				continue
+			}
+			// Every attempt lost the race. That is not a failure to report: the
+			// key is held by whichever claimer won, so there is genuinely nothing
+			// here for this caller right now — the same answer an empty queue
+			// gives. Returning the raw index violation instead made the Worker
+			// log a database error and stall a full second over ordinary
+			// contention, for a condition this design treats as routine.
+			slog.Default().Debug("jobs/sql: claim contended out; another claimer holds the group key",
+				slog.String("table", q.table),
+				slog.Int("attempts", attempt+1),
+			)
+			return nil, nil
 		}
 		return nil, err
 	}
@@ -955,16 +980,16 @@ func (q *Queue) scanJobs(ctx context.Context, rows *stdsql.Rows) ([]jobs.Job, []
 			continue
 		}
 		j := jobs.Job{
-			ID:        id,
-			Type:      typ,
-			Payload:   decoded,
-			TraceID:   traceID,
-			ActorID:   actorID,
-			TenantID:  tenantID,
-			MaxRetry:  maxRetry,
-			Priority:  priority,
-			GroupKey:  groupKey,
-			Attempts:  attempts,
+			ID:       id,
+			Type:     typ,
+			Payload:  decoded,
+			TraceID:  traceID,
+			ActorID:  actorID,
+			TenantID: tenantID,
+			MaxRetry: maxRetry,
+			Priority: priority,
+			GroupKey: groupKey,
+			Attempts: attempts,
 		}
 		if nb := parseTS(notBefore); nb != nil {
 			j.NotBefore = *nb

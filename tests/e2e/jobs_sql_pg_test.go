@@ -11,7 +11,10 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -287,5 +290,145 @@ func TestJobsPG_ExpiredLeaseIsReclaimed(t *testing.T) {
 	}
 	if again[0].Attempts != 2 {
 		t.Errorf("attempts = %d after reclaim, want 2", again[0].Attempts)
+	}
+}
+
+// ── NEW-3: colliding claims must resolve inside the adapter ───────────────────
+
+// contendedOutRecorder captures the one debug record jobs/sql emits when a claim
+// loses the group-key race on every attempt. That record is the only precise
+// signal available: exhaustion returns "no jobs" rather than an error, so a
+// caller cannot tell it from an empty queue, and counting returned errors would
+// silently stop detecting a regression of the retry jitter.
+type contendedOutRecorder struct {
+	mu    sync.Mutex
+	table string
+	hits  int
+}
+
+func (r *contendedOutRecorder) Enabled(context.Context, slog.Level) bool { return true }
+func (r *contendedOutRecorder) WithAttrs([]slog.Attr) slog.Handler       { return r }
+func (r *contendedOutRecorder) WithGroup(string) slog.Handler            { return r }
+
+func (r *contendedOutRecorder) Handle(_ context.Context, rec slog.Record) error {
+	if !strings.Contains(rec.Message, "claim contended out") {
+		return nil
+	}
+	// Only count this test's tables: the e2e package runs tests in parallel and
+	// the default logger is process-wide.
+	var mine bool
+	rec.Attrs(func(a slog.Attr) bool {
+		if a.Key == "table" && strings.HasPrefix(a.Value.String(), r.table) {
+			mine = true
+		}
+		return true
+	})
+	if !mine {
+		return nil
+	}
+	r.mu.Lock()
+	r.hits++
+	r.mu.Unlock()
+	return nil
+}
+
+func (r *contendedOutRecorder) count() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.hits
+}
+
+// Two Postgres claimers can both see a group key as free — neither's UPDATE has
+// committed — pick the same job and both write it, so the partial unique index
+// rejects the loser. The adapter is meant to absorb that by retrying. With only
+// three attempts it ran out often enough that the raw "duplicate key value
+// violates unique constraint" surfaced to the caller in about 40% of runs at
+// this concurrency, stalling a worker for a second over ordinary contention
+// (audit NEW-3).
+//
+// What fixed it was the attempt count. Losing is structural here: with 24
+// claimers over 2 keys most are contending at any instant, so a claimer's odds
+// do not improve by waiting, only by trying again. Pacing the retries was
+// measured and made no difference — see the note on maxClaimRetries.
+//
+// One pass reproduced the old behaviour ~40% of the time, so the guard runs
+// several and requires every one to resolve inside the adapter. Measured:
+// bound=3 gives 3-7 exhaustions per 12 passes and never zero; bound=8 gives
+// zero across 90.
+func TestJobsPG_CollidingClaimsResolveWithoutContendingOut(t *testing.T) {
+	skipUnlessPostgres(t)
+
+	const (
+		// Mirrors jobs/sql's maxClaimRetries; used only in the failure message.
+		maxAttemptsDocumented = 8
+		tablePrefix           = "pg_collide"
+		iterations            = 12
+		workers               = 24
+		keys                  = 2
+		perKey                = 20
+	)
+
+	rec := &contendedOutRecorder{table: tablePrefix}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(rec))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	ctx := context.Background()
+	db := rawJobsDB(t)
+
+	for iter := range iterations {
+		table := fmt.Sprintf("%s_%d", tablePrefix, iter)
+		if err := jobssql.Migrate(ctx, db, "postgres", jobssql.WithTableName(table)); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+		q := jobssql.New(db, jobssql.WithTableName(table))
+
+		total := keys * perKey
+		for k := range keys {
+			for range perKey {
+				if _, err := q.Enqueue(ctx, jobs.Job{
+					Type: "pg.collide", GroupKey: fmt.Sprintf("key-%d", k),
+				}); err != nil {
+					t.Fatalf("enqueue: %v", err)
+				}
+			}
+		}
+
+		var done atomic.Int64
+		var wg sync.WaitGroup
+		for range workers {
+			wg.Go(func() {
+				for {
+					got, err := q.Dequeue(ctx, 1)
+					if err != nil {
+						t.Errorf("dequeue: %v", err)
+						return
+					}
+					if len(got) == 0 {
+						return
+					}
+					for _, j := range got {
+						if err := q.Ack(ctx, j.ID); err != nil {
+							t.Errorf("ack: %v", err)
+							return
+						}
+						done.Add(1)
+					}
+				}
+			})
+		}
+		wg.Wait()
+
+		// Absorbing a collision must not cost the job: whatever a claimer skips
+		// stays claimable for the next one.
+		if got := done.Load(); got != int64(total) {
+			t.Errorf("iteration %d: completed %d of %d jobs", iter, got, total)
+		}
+	}
+
+	if n := rec.count(); n != 0 {
+		t.Fatalf("%d claims gave up after %d attempts across %d passes; the retry bound is too low "+
+			"for this contention and callers get empty results instead of the work",
+			n, maxAttemptsDocumented, iterations)
 	}
 }

@@ -286,14 +286,21 @@ func (q *Queue) Dequeue(ctx context.Context, n int) ([]jobs.Job, error) {
 
 		var (
 			claimed []jobs.Job
+			poison  []poisonRow
 			err     error
 		)
 		if q.isPG {
-			claimed, err = q.dequeuePG(ctx, n, nowStr, leaseUntil)
+			claimed, poison, err = q.dequeuePG(ctx, n, nowStr, leaseUntil)
 		} else {
-			claimed, err = q.dequeueSQLite(ctx, n, nowStr, leaseUntil)
+			claimed, poison, err = q.dequeueSQLite(ctx, n, nowStr, leaseUntil)
 		}
 		if err == nil {
+			// After the result set is closed, never during the scan: on SQLite the
+			// pool is often a single connection, and writing while rows are open
+			// would deadlock against the read.
+			if len(poison) > 0 {
+				q.quarantine(ctx, poison)
+			}
 			return claimed, nil
 		}
 		if q.isGroupRunningViolation(err) && attempt < maxClaimRetries {
@@ -322,7 +329,7 @@ func rankedDedup(src string) string {
     WHERE "group_key" = '' OR "rn" = 1`
 }
 
-func (q *Queue) dequeuePG(ctx context.Context, n int, nowStr, leaseUntil string) ([]jobs.Job, error) {
+func (q *Queue) dequeuePG(ctx context.Context, n int, nowStr, leaseUntil string) ([]jobs.Job, []poisonRow, error) {
 	p := q.newPH()
 	// The dedup runs over the locked set, not the base table: Postgres forbids
 	// FOR UPDATE alongside a window function in one query level, so the CTE
@@ -353,7 +360,7 @@ RETURNING `+claimedColumns,
 	)
 	rows, err := q.db.QueryContext(ctx, q.q(query), p.Args()...)
 	if err != nil {
-		return nil, fmt.Errorf("jobs/sql: dequeue: %w", err)
+		return nil, nil, fmt.Errorf("jobs/sql: dequeue: %w", err)
 	}
 	defer rows.Close()
 	return q.scanJobs(rows)
@@ -382,7 +389,7 @@ RETURNING `+claimedColumns,
 // to interleave in. Requires SQLite 3.35 (2021). The dedup subquery adds the
 // group_key guarantee (audit JB-2); the write lock covers concurrency, so no
 // retry is needed here.
-func (q *Queue) dequeueSQLite(ctx context.Context, n int, nowStr, leaseUntil string) ([]jobs.Job, error) {
+func (q *Queue) dequeueSQLite(ctx context.Context, n int, nowStr, leaseUntil string) ([]jobs.Job, []poisonRow, error) {
 	p := q.newPH()
 	// SQLite uses positional "?" placeholders, so every p.Add below is called in
 	// the exact left-to-right order its placeholder appears in the query: the two
@@ -415,7 +422,7 @@ RETURNING `+claimedColumns,
 	)
 	rows, err := q.db.QueryContext(ctx, q.q(query), p.Args()...)
 	if err != nil {
-		return nil, fmt.Errorf("jobs/sql: dequeue: %w", err)
+		return nil, nil, fmt.Errorf("jobs/sql: dequeue: %w", err)
 	}
 	defer rows.Close()
 	return q.scanJobs(rows)
@@ -705,8 +712,29 @@ func marshalHeaders(h map[string]string) (string, error) {
 	return string(b), err
 }
 
-func (q *Queue) scanJobs(rows *stdsql.Rows) ([]jobs.Job, error) {
+// poisonRow is a claimed row whose payload would not decode. Dequeue quarantines
+// these instead of failing the batch they were claimed with (audit JB-11).
+type poisonRow struct {
+	id  string
+	err error
+}
+
+// scanJobs decodes claimed rows. A row whose payload will not decode or decrypt
+// must not fail the batch: it is collected as a poisonRow for the caller to
+// quarantine and the remaining jobs are returned.
+//
+// Previously one such row made Dequeue return an error — and because the claim
+// had already committed (every row in the batch was 'running' with an attempt
+// spent), and nothing in this adapter reclaims a running row, every good job
+// claimed alongside the bad one was stranded there permanently: never executed,
+// never retried, never dead-lettered (audit JB-11).
+//
+// A rows.Scan failure stays fatal. That means the column set does not match what
+// this code expects — systemic rather than per-row — and it leaves no id to
+// quarantine by.
+func (q *Queue) scanJobs(rows *stdsql.Rows) ([]jobs.Job, []poisonRow, error) {
 	var out []jobs.Job
+	var poison []poisonRow
 	for rows.Next() {
 		var (
 			id, typ, payload, traceID, actorID, tenantID string
@@ -715,11 +743,12 @@ func (q *Queue) scanJobs(rows *stdsql.Rows) ([]jobs.Job, error) {
 		)
 		if err := rows.Scan(&id, &typ, &payload, &traceID, &actorID, &tenantID,
 			&maxRetry, &priority, &notBefore, &groupKey, &headers, &attempts); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		decoded, err := q.unmarshalPayload(payload)
 		if err != nil {
-			return nil, err
+			poison = append(poison, poisonRow{id: id, err: err})
+			continue
 		}
 		j := jobs.Job{
 			ID:        id,
@@ -741,7 +770,27 @@ func (q *Queue) scanJobs(rows *stdsql.Rows) ([]jobs.Job, error) {
 		}
 		out = append(out, j)
 	}
-	return out, rows.Err()
+	return out, poison, rows.Err()
+}
+
+// quarantine marks rows whose payload would not decode as dead, with the decode
+// failure as their last_error, and clears their lease. Without it a skipped row
+// would sit in 'running' forever — invisible to the worker, never reclaimed, with
+// no path out. Dead is the honest terminal state: the bytes cannot become valid,
+// so there is nothing to retry, and the row stays inspectable.
+//
+// Best-effort per row: this runs when Dequeue already has good jobs to hand back,
+// and failing the call would strand exactly the jobs the fix exists to save. A row
+// that cannot be quarantined simply stays as it was.
+func (q *Queue) quarantine(ctx context.Context, poison []poisonRow) {
+	for _, bad := range poison {
+		p := q.newPH()
+		_, _ = q.db.ExecContext(ctx, q.q(fmt.Sprintf(
+			`UPDATE "job_queue" SET "status"='dead',"last_error"=%s,"lease_until"=NULL,"updated_at"=%s WHERE "id"=%s`,
+			p.Add("jobs/sql: quarantined, payload will not decode: "+bad.err.Error()),
+			p.Add(ts(time.Now())), p.Add(bad.id),
+		)), p.Args()...)
+	}
 }
 
 func (q *Queue) scanJobStates(rows *stdsql.Rows) ([]jobs.JobState, error) {
@@ -762,9 +811,16 @@ func (q *Queue) scanJobStates(rows *stdsql.Rows) ([]jobs.JobState, error) {
 		); err != nil {
 			return nil, err
 		}
-		decoded, err := q.unmarshalPayload(payload)
-		if err != nil {
-			return nil, err
+		// An undecodable payload must not fail the listing. This is the path an
+		// operator uses to find a quarantined row (audit JB-11), so the row is kept
+		// and reported with no payload rather than dropped or turned into an error —
+		// erroring here would hide exactly the row being looked for.
+		decoded, decodeErr := q.unmarshalPayload(payload)
+		if decodeErr != nil {
+			decoded = nil
+			if lastErr == "" {
+				lastErr = decodeErr.Error()
+			}
 		}
 		j := jobs.Job{
 			ID:       id,

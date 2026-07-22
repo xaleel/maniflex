@@ -404,6 +404,15 @@ if err := jobssql.Migrate(ctx, db, "sqlite"); err != nil { /* ... */ } // "postg
   a job's type now requeues it (so another worker can claim it) instead of
   dead-lettering it — safe for a type-restricted worker sharing a table.
 
+- **A row that will not decode is quarantined, not fatal:** if a job's stored
+  payload cannot be decoded or decrypted — a rotated cipher key, a corrupted
+  value — that one row is marked `dead` with the reason in its `last_error`, and
+  the rest of the batch it was claimed with dispatches normally. Previously the
+  whole `Dequeue` failed, and because the claim had already committed, every good
+  job claimed alongside it was stranded as `running`. Quarantined rows stay
+  visible through `Inspector.List`/`Get` (with an empty payload) so you can see
+  what happened and re-enqueue if the cause was recoverable.
+
 - **Visibility timeout:** a claimed job is invisible to other workers until its
   lease expires, after which another `Dequeue` may reclaim it. The default is 5
   minutes; `WithLeaseDuration(d)` changes it. It must exceed how long a handler

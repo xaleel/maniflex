@@ -41,7 +41,7 @@ func leaseUntil(t *testing.T, db *stdsql.DB, table, id string) (time.Time, bool)
 	return tm, true
 }
 
-func claimOne(t *testing.T, q *jobssql.Queue, table string) string {
+func claimOne(t *testing.T, q *jobssql.Queue) string {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := q.Enqueue(ctx, jobs.Job{Type: "lease.test"}); err != nil {
@@ -64,7 +64,7 @@ func TestJobsSQLLease_WithLeaseDurationStampsCustomTimeout(t *testing.T) {
 	q := jobssql.New(db, jobssql.WithTableName(table), jobssql.WithLeaseDuration(90*time.Second))
 
 	t0 := time.Now()
-	id := claimOne(t, q, table)
+	id := claimOne(t, q)
 
 	until, ok := leaseUntil(t, db, table, id)
 	if !ok {
@@ -86,7 +86,7 @@ func TestJobsSQLLease_RenewNeverShortens(t *testing.T) {
 	}
 	q := jobssql.New(db, jobssql.WithTableName(table)) // default 5m lease
 
-	id := claimOne(t, q, table)
+	id := claimOne(t, q)
 	before, ok := leaseUntil(t, db, table, id)
 	if !ok {
 		t.Fatal("no lease after claim")

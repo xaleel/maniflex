@@ -538,10 +538,15 @@ Status values: `enqueued → running → succeeded | failed | dead | cancelled`.
 
 #### Scope
 
-By default, unauthenticated requests see all rows. When a caller is
-authenticated, the built-in force-filter restricts the list to their own
-`actor_id`; callers with the `admin` role see everything. Override the role
-name with `MountOptions.AdminRole`.
+The built-in force-filter restricts the list to the caller's own `actor_id` (and
+`tenant_id` when set); callers with the `admin` role see everything. Override the
+role name with `MountOptions.AdminRole`.
+
+A request with no authenticated caller is refused with `401`. These rows are
+per-actor, so there is no scope to apply without an identity — and answering
+without one would return every actor's and every tenant's job metadata. This
+means the endpoints are only useful behind whatever authentication your app
+installs; a nil `ctx.Auth` is treated as a misconfiguration, not as permission.
 
 ### Atomic enqueue with `jobs/sql`
 

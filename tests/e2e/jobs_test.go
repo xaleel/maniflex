@@ -29,6 +29,20 @@ func newJobsServer(t *testing.T) (srv *testutil.Server, sink jobs.StatusSink, q 
 	srv = testutil.NewServer(t, testutil.Options{
 		Models: []any{testutil.User{}},
 		Middleware: func(s *maniflex.Server) {
+			// Registered before Mount so it runs before the per-actor scope and
+			// populates the ctx.Auth that scope reads.
+			//
+			// These tests exercise the status endpoints themselves — lifecycle,
+			// polling, the write-blocker, listing and filtering — not their scoping,
+			// which forced_filter_preserve_test.go and jobs_status_anon_test.go
+			// cover. An admin identity bypasses the per-actor scope so they see every
+			// row, which is what they assert. They used to see every row without any
+			// identity at all, because an unauthenticated request skipped the scope
+			// entirely — that was the JB-12 leak, so the old pass was accidental.
+			s.Pipeline.Auth.Register(func(ctx *maniflex.ServerContext, next func() error) error {
+				ctx.Auth = &maniflex.AuthInfo{UserID: "test-admin", Roles: []string{"admin"}}
+				return next()
+			})
 			s2, q2, err := jobsmaniflex.Mount(s, raw)
 			if err != nil {
 				t.Fatalf("jobsmaniflex.Mount: %v", err)

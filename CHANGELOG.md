@@ -2,6 +2,7 @@
 
 ## v0.3.2
 
+- **Security:** `/job_statuses` refuses an unauthenticated caller instead of answering unscoped. The per-actor scope was skipped whenever `ctx.Auth == nil`, so wherever these routes were reachable without auth a list returned every actor's and every tenant's job metadata. No identity on a per-actor resource is now a `401`; the actor scope and the admin bypass are unchanged.
 - **Bugfix:** `db/sqlcore` on SQLite compares timestamps chronologically. `time.Time` was stored as variable-width `RFC3339Nano`, so within a second a whole-second stamp sorted *after* a fractional one — `created_at:gte:…` filters and `scheduled` due-checks could misfire by up to a second. Writes now use a fixed nine-digit fraction; filter values canonicalised to match. Postgres unaffected.
 - **Bugfix:** `jobs/sql` on SQLite compares timestamps chronologically. `not_before`/`lease_until` used `time.RFC3339Nano`, which drops trailing zeros, so within one second a whole-second stamp sorts *after* a fractional one under SQLite's lexicographic TEXT comparison — a scheduled job could fire up to a second early or late. Timestamps now use a fixed nine-digit fraction. Postgres unaffected.
 - **Bugfix:** `jobs/sql` no longer loses a whole batch to one undecodable row. A payload that would not decode made `scanJobs` error, so `Dequeue` returned nothing — but the claim had already committed, and nothing reclaims a `running` row, so every good job claimed alongside it was stranded forever: never run, never dead-lettered. Bad rows are now skipped and quarantined as `dead`.

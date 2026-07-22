@@ -51,8 +51,20 @@ func writeBlocker(ctx *maniflex.ServerContext, next func() error) error {
 // client chose.
 func makeForceFilter(adminRole string) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
-		if ctx.HasRole(adminRole) || ctx.Auth == nil {
+		if ctx.HasRole(adminRole) {
 			return next()
+		}
+		// Fail closed. This used to be `|| ctx.Auth == nil`, which skipped the scope
+		// entirely for an unauthenticated caller — so wherever these routes were
+		// reachable without auth, a list returned every actor's and every tenant's
+		// job metadata (audit JB-12). There is no actor to scope to without an
+		// identity, and the only safe reading of "no identity" on a per-actor
+		// resource is refusal, not an unscoped read. HasRole is nil-safe, so an
+		// anonymous caller reaches here rather than passing as an admin.
+		if ctx.Auth == nil {
+			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",
+				"job status records are scoped to the authenticated caller")
+			return nil
 		}
 		if ctx.Query == nil {
 			ctx.Query = &maniflex.QueryParams{Page: 1, Limit: 20}

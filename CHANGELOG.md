@@ -2,6 +2,7 @@
 
 ## v0.3.3
 
+- **Bugfix / Feature:** the hub now detects a WebSocket peer that stops answering. It pinged but never enforced a reply and set no read deadline, so a half-open connection kept its read pump blocked forever. A connection must now send something every `ReadTimeout` (default 2×`PingInterval`) or it is closed with 1001; any inbound frame refreshes it, pongs included. `ReadTimeoutDisabled` opts out.
 - **Bugfix:** an abruptly dropped WebSocket no longer leaks a goroutine and a `CLOSE_WAIT` socket. On EOF/RST the read pump returned without closing anything, leaving the writer parked on a channel nothing would close. A client that half-closed its write side but kept reading was permanent — every ping still succeeded, so nothing ever failed. Either pump now tears the connection down.
 
 ## v0.3.2 (2026-07-22)

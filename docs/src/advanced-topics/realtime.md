@@ -155,10 +155,20 @@ writes still succeeds, so before v0.3.3 such a connection was never reaped and
 its goroutine and `CLOSE_WAIT` socket were held for the life of the process.
 Either way `Hub.Stats().Connections` drops as soon as the peer goes away.
 
-Note that a client which merely goes quiet is **not** disconnected — the hub
-tears a connection down on a broken pipe, never on idleness. Detecting a peer
-that has stopped answering entirely (a half-open TCP connection after a network
-partition) is the read deadline's job, which the hub does not yet set.
+A peer that stops answering *without* closing — the half-open connection a
+network partition leaves behind — produces no error at all, so it is caught by
+a deadline instead. Every WebSocket connection must send something within
+`ReadTimeout` (default 2×`PingInterval`, so 60s) or it is closed with
+`1001 Going Away`. Any inbound frame refreshes it, including the pong a
+compliant client returns for the server's ping, so a connection that is merely
+idle is kept alive by the heartbeat alone and never needs application traffic.
+
+This is the one rule that can disconnect a client which is genuinely there: a
+hand-rolled client that ignores ping frames now has a connection lifetime of
+`ReadTimeout` rather than forever. Answering pings is the fix — RFC 6455
+requires it, and every mainstream client library does it for you. Where that
+isn't possible, set `ReadTimeout: realtime.ReadTimeoutDisabled`, understanding
+that half-open connections then accumulate undetected.
 
 ## Resumable streams (`lastEventId`)
 
@@ -259,6 +269,7 @@ handler — the hub is mounted by your code, so it isn't part of
 | `ResumeStore`    | nil (disabled)   | replay buffer for `lastEventId` resume               |
 | `ResumeBuffer`   | 0 (disabled)     | shortcut: install an in-memory store of this size    |
 | `PingInterval`   | 30s              | WS ping / SSE keepalive cadence                      |
+| `ReadTimeout`    | 2×`PingInterval` | WS dead-peer deadline; `ReadTimeoutDisabled` to opt out |
 | `SendBuffer`     | 64               | per-client outbound queue depth                      |
 | `SendTimeout`    | 5s               | slow-client kick threshold                           |
 | `MaxMessageSize` | 64 KiB           | inbound frame size limit                             |

@@ -184,6 +184,11 @@ func TestHub_ClientCloseFrame_ServerRepliesThenTearsDown(t *testing.T) {
 
 // TestHub_IdleClientIsNotTornDown is the over-reach guard: tearing down on any
 // pump exit must not tear down a connection whose pumps are simply idle.
+//
+// "Idle" here means answering the heartbeat and nothing else, which is what a
+// compliant client does — recvTimeout returns each ping as a pong. A client
+// that answers nothing at all is a different case, and RT-2's read deadline is
+// what decides it: see TestHub_SilentClient_ReapedByReadDeadline.
 func TestHub_IdleClientIsNotTornDown(t *testing.T) {
 	bus := inproc.New()
 	hub := mustHub(t, realtime.HubConfig{Bus: bus, PingInterval: 50 * time.Millisecond})
@@ -192,7 +197,11 @@ func TestHub_IdleClientIsNotTornDown(t *testing.T) {
 	c := dialWS(t, ts, "/ws")
 	c.subscribe("*")
 
-	time.Sleep(300 * time.Millisecond) // several ping intervals, no traffic
+	// Several ping intervals, and several read-deadline windows, with no
+	// traffic but the pongs.
+	if _, ok := c.recvTimeout(300 * time.Millisecond); ok {
+		t.Fatal("unexpected event during the idle window")
+	}
 
 	publish(t, bus, "thing.created", "thing/1")
 	msg, ok := c.recvTimeout(2 * time.Second)

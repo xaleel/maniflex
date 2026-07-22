@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path"
 	"strings"
 	"sync"
@@ -40,6 +41,15 @@ type HubConfig struct {
 	MaxMessageSize int64         // 0 → 64 KiB; inbound frame size limit
 	Origins        []string      // allowed Origins for WS upgrade; empty = allow all
 
+	// ReadTimeout bounds how long a WebSocket connection may go without
+	// sending anything before the hub treats the peer as dead and closes it.
+	// Any inbound frame refreshes it, including the pong a compliant client
+	// returns for the server's ping, so an idle-but-live connection is kept
+	// alive by the heartbeat alone. 0 → 2×PingInterval; ReadTimeoutDisabled
+	// switches it off, which leaves a half-open connection undetectable —
+	// use it only for clients that legitimately never speak.
+	ReadTimeout time.Duration
+
 	// ResumeStore buffers recently fanned-out events so a reconnecting client
 	// can replay what it missed (SSE Last-Event-ID, WS subscribe "after").
 	// nil → resume disabled (hot path unchanged). See ResumeBuffer for the
@@ -49,6 +59,10 @@ type HubConfig struct {
 	// NewHub installs NewMemoryResumeStore(ResumeBuffer).
 	ResumeBuffer int
 }
+
+// ReadTimeoutDisabled disables the inbound read deadline when assigned to
+// HubConfig.ReadTimeout.
+const ReadTimeoutDisabled time.Duration = -1
 
 // HubStats is a snapshot of hub metrics.
 type HubStats struct {
@@ -93,6 +107,12 @@ func NewHub(cfg HubConfig) (*Hub, error) {
 	}
 	if cfg.PingInterval <= 0 {
 		cfg.PingInterval = 30 * time.Second
+	}
+	// Two intervals, so a connection is only reaped after a ping has gone
+	// unanswered — one interval would race the heartbeat it depends on.
+	// Resolved after PingInterval so it tracks a configured cadence.
+	if cfg.ReadTimeout == 0 {
+		cfg.ReadTimeout = 2 * cfg.PingInterval
 	}
 	if cfg.ResumeStore == nil && cfg.ResumeBuffer > 0 {
 		cfg.ResumeStore = NewMemoryResumeStore(cfg.ResumeBuffer)
@@ -531,11 +551,27 @@ func (c *hubClient) readLoop() {
 		c.remove()
 		c.hub.wg.Done()
 	}()
+	if c.hub.cfg.ReadTimeout <= 0 {
+		// Disabled has to mean disabled: a hijacked connection carries whatever
+		// absolute deadline http.Server.ReadTimeout stamped on it before the
+		// upgrade, which would otherwise expire mid-stream and look like this
+		// feature misfiring.
+		c.conn.SetReadDeadline(time.Time{}) //nolint:errcheck
+	}
 	for {
 		f, err := c.recvFrame()
 		if err != nil {
-			if errors.Is(err, errFrameTooLarge) {
+			switch {
+			case errors.Is(err, errFrameTooLarge):
 				c.sendClose(wsClose1009)
+			case errors.Is(err, os.ErrDeadlineExceeded):
+				// Say why, rather than dropping the socket. On the half-open
+				// connection this exists to catch the frame goes nowhere and
+				// costs at most sendClose's 1s write deadline; but the client
+				// most likely to meet this rule is the other kind — reading
+				// fine, simply never speaking — and for that one it is the
+				// difference between a diagnosable close and a bare EOF.
+				c.sendClose(wsClose1001)
 			}
 			return
 		}
@@ -681,6 +717,15 @@ type wsRawFrame struct {
 }
 
 func (c *hubClient) recvFrame() (wsRawFrame, error) {
+	// One deadline per frame, set before the first read and therefore refreshed
+	// by every frame the client sends — including the pong answering the
+	// server's ping, which is the only traffic an idle-but-live client
+	// produces. It also bounds a client that sends a header and then stalls
+	// mid-frame, since it covers the whole frame rather than one read.
+	if d := c.hub.cfg.ReadTimeout; d > 0 {
+		c.conn.SetReadDeadline(time.Now().Add(d)) //nolint:errcheck
+	}
+
 	hdr := make([]byte, 2)
 	if _, err := io.ReadFull(c.br, hdr); err != nil {
 		return wsRawFrame{}, err

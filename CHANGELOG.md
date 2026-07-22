@@ -2,6 +2,7 @@
 
 ## v0.3.2
 
+- **Bugfix:** `db/sqlcore` creates Postgres foreign keys in every schema, not only the first one migrated. The existence probe queried `information_schema.table_constraints` with no `table_schema` predicate, and constraint names derive from table and column, so the same model in a second schema looked already migrated. Referential integrity and `onDelete` actions were silently absent there.
 - **Bugfix:** `jobs/sql` absorbs a contended group-key claim rather than failing the `Dequeue`. Two Postgres claimers can both see a key as free and both write it, so the unique index rejects the loser — by design. Three retries was too few: ~40% of runs surfaced the raw violation, which the worker logged as an error and stalled a second on. Now 8; a claim that still loses returns no jobs.
 - **Bugfix:** a job of an unhandled type no longer leaves its status row on `running`. The `Requeuer` path was fixed with the requeue bound, but the `Nack` fallback a Source without `Requeuer` takes was not, so the row read as executing forever on a worker that had already let the job go. It now records what `Nack` does — `failed`, or `dead` once the budget is spent.
 - **Bugfix:** `jobs/sql` recovers jobs from a crashed worker. The claim reads `status IN ('enqueued','failed')` and nothing ever moved a row back, so a worker that died mid-job left its rows `running` forever — never redelivered, retried or dead-lettered — and `lease_until` had no reader at all. `Dequeue` now sweeps lapsed leases first, and dead-letters a row whose retry budget is spent.

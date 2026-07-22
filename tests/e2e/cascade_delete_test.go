@@ -224,3 +224,43 @@ func TestCascadeDelete(t *testing.T) {
 		srv.GET("/cs_vendor_notes/" + noteID).AssertStatus(http.StatusOK)
 	})
 }
+
+// Audit NEW-4. A Postgres deployment that puts the same models in more than one
+// schema — schema-per-tenant, which postgres.SessionConfig.SchemaName exists to
+// support — got its foreign keys in whichever schema migrated first and silently
+// none thereafter. The adapter's constraint-existence probe queried
+// information_schema.table_constraints without a table_schema predicate, and
+// information_schema spans every schema the role can see; constraint names are
+// derived from table and column, so two schemas holding one model collide by
+// construction. The probe answered "already present" and the ALTER TABLE that
+// would have created the constraint here was skipped.
+//
+// Two servers is the whole reproduction: the e2e Postgres lane gives each its
+// own schema, so the second is the one that used to come out unprotected. This
+// is also why TestCascadeDelete's other subtests failed in varying combinations
+// on Postgres and each passed when run alone — only the first to migrate had a
+// foreign key.
+func TestCascadeDelete_ForeignKeysReachEverySchema(t *testing.T) {
+	t.Parallel()
+	skipUnlessPostgres(t)
+
+	first := cascadeServer(t)
+	second := cascadeServer(t)
+
+	// Establishes the baseline: the first schema to migrate was never the broken
+	// one, so a failure here means something other than NEW-4 is wrong.
+	first.POST("/cs_posts", map[string]any{"slug": "orphan-1", "author_id": "no-such-author"}).
+		AssertStatus(http.StatusConflict)
+
+	// The regression: same models, a second schema, same guarantee.
+	second.POST("/cs_posts", map[string]any{"slug": "orphan-2", "author_id": "no-such-author"}).
+		AssertStatus(http.StatusConflict)
+
+	// The onDelete actions ride on that same constraint, so confirm the second
+	// schema cascades rather than merely rejecting orphans.
+	author := second.POST("/cs_authors", map[string]any{"name": "A"}).ID()
+	post := second.POST("/cs_posts", map[string]any{"slug": "s1", "author_id": author})
+	post.AssertStatus(http.StatusCreated)
+	second.DELETE("/cs_authors/" + author).AssertStatus(http.StatusNoContent)
+	second.GET("/cs_posts/" + post.ID()).AssertStatus(http.StatusNotFound)
+}

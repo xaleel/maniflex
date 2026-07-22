@@ -175,11 +175,26 @@ func (a *Adapter) migratePostgresForeignKeys(ctx context.Context, reg maniflex.R
 }
 
 // constraintExists reports whether a named constraint is already defined on a
-// table (Postgres information_schema).
+// table in the schema this adapter is migrating (Postgres information_schema).
+//
+// The current_schema() predicate is load-bearing, not tidiness.
+// information_schema spans every schema the connecting role can see, and
+// constraint names are derived from table and column — so the same model in two
+// schemas produces the same constraint name on the same table name. Without the
+// predicate the probe answered "already present" for a constraint belonging to
+// somebody else's schema, and migratePostgresForeignKeys skipped the ALTER TABLE
+// for the schema it was actually migrating. The first schema to migrate got its
+// foreign keys and every later one silently got none, taking referential
+// integrity and the onDelete actions with them — in a schema-per-tenant
+// deployment, which SessionConfig.SchemaName exists to support (audit NEW-4).
+// This matches how the column probe in tableColumns already scopes itself.
 func (a *Adapter) constraintExists(ctx context.Context, table, name string) (bool, error) {
 	var n int
 	err := a.writeDb.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM information_schema.table_constraints WHERE table_name = $1 AND constraint_name = $2`,
+		`SELECT COUNT(*) FROM information_schema.table_constraints
+		  WHERE table_schema    = current_schema()
+		    AND table_name      = $1
+		    AND constraint_name = $2`,
 		table, name).Scan(&n)
 	if err != nil {
 		return false, err

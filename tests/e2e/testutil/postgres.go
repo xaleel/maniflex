@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -66,6 +67,10 @@ func adminAdapter() (maniflex.DBAdapter, error) {
 		pgAdmin, pgAdminErr = postgres.OpenWithConfig(dsn, "", &maniflex.Registry{},
 			postgres.PoolConfig{MaxOpenConns: 4}, postgres.PoolConfig{MaxOpenConns: 4},
 			postgres.SessionConfig{SchemaName: &pub})
+		if pgAdminErr != nil {
+			return
+		}
+		pgAdminErr = requireUTF8(pgAdmin)
 	})
 	return pgAdmin, pgAdminErr
 }
@@ -124,4 +129,39 @@ func openPostgres(t testing.TB, reg maniflex.RegistryAccessor) maniflex.DBAdapte
 	})
 
 	return scoped
+}
+
+// requireUTF8 rejects a target database that cannot store the suite's fixtures.
+//
+// The localization tests write Arabic and other non-Latin-1 text. A database
+// created under a Windows ANSI locale is WIN1252, and every such write fails
+// deep in the driver with `character with byte sequence 0x.. in encoding "UTF8"
+// has no equivalent in encoding "WIN1252"` — which surfaces to the test as an
+// opaque HTTP 500 on an unrelated-looking create. That produced 29 failures
+// across four test files with nothing pointing at the cause, so it is worth one
+// query at startup to say it plainly.
+func requireUTF8(db maniflex.DBAdapter) error {
+	rows, err := db.Raw(context.Background(),
+		`SELECT pg_encoding_to_char(encoding) FROM pg_database WHERE datname = current_database()`).Rows()
+	if err != nil {
+		return fmt.Errorf("testutil: read database encoding: %w", err)
+	}
+	if rows == nil {
+		return nil // adapter did not classify this as a query; skip the check
+	}
+	defer rows.Close()
+	var encoding string
+	if rows.Next() {
+		if err := rows.Scan(&encoding); err != nil {
+			return fmt.Errorf("testutil: scan database encoding: %w", err)
+		}
+	}
+	if strings.EqualFold(encoding, "UTF8") {
+		return nil
+	}
+	return fmt.Errorf("testutil: the Postgres lane needs a UTF8 database, but this one is %s. "+
+		"The suite writes non-Latin-1 text (the localization tests use Arabic), which such a "+
+		"database cannot store. Create one and point MANIFLEX_TEST_PG_DSN at it:\n"+
+		"  CREATE DATABASE maniflex_test WITH ENCODING 'UTF8' TEMPLATE template0 LC_COLLATE 'C' LC_CTYPE 'C';",
+		encoding)
 }

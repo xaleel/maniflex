@@ -310,6 +310,7 @@ func TestAutoMigrate(t *testing.T) {
 
 	t.Run("adds_nullable_column_with_explicit_default", func(t *testing.T) {
 		t.Parallel()
+		skipSQLiteFileDBOnPostgres(t)
 		path, cleanup := tempDB(t)
 		defer cleanup()
 

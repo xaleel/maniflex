@@ -96,6 +96,25 @@ its tables; an existing schema is left untouched (a role with `USAGE` but not
 (`[A-Za-z_][A-Za-z0-9_$]*`); `public` is assumed to always exist and is never
 re-created.
 
+Each schema is migrated independently and gets its own constraints, so foreign
+keys and their `onDelete` actions apply in every one. Before v0.3.2 they did
+not: the check for an existing constraint was not scoped to a schema, and
+constraint names are derived from table and column, so the same model in a
+second schema looked like it had already been migrated. Whichever schema ran
+`AutoMigrate` first got its foreign keys and every later one silently got none —
+losing referential integrity and `cascade`/`restrict`/`setNull` with them. If
+you ran a multi-schema deployment on an earlier version, verify the constraints
+are present before relying on them:
+
+```sql
+SELECT table_schema, table_name, constraint_name
+FROM information_schema.table_constraints
+WHERE constraint_type = 'FOREIGN KEY'
+ORDER BY table_schema, table_name;
+```
+
+Re-running `AutoMigrate` on the affected schemas adds what is missing.
+
 ## Read replicas
 
 When a read DSN is supplied, `OpList` and `OpRead` operations are routed to the

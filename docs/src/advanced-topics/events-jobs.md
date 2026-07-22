@@ -341,6 +341,20 @@ adapters is a one-line change.
 > that reason; an earlier variable-width format could fire a scheduled job up to
 > a second early or late whenever its `NotBefore` fell on a whole second.
 
+> **`jobs/sql` recovers jobs from a crashed worker.** A worker that dies after
+> claiming a job leaves the row `running` with a lease nobody is renewing.
+> `Dequeue` sweeps such rows before it claims, returning them to `enqueued` once
+> their lease has lapsed, so the job is redelivered rather than stranded. The
+> lease is a crash-detection window, not a job-duration limit — a live worker
+> keeps renewing — so only a worker that has stopped renewing lets its jobs age
+> out. A reclaim costs a retry attempt, which bounds a crash loop; a job whose
+> attempts have already reached `MaxRetry` is dead-lettered by the sweep instead
+> of being handed out again, with `last_error` recording the expired lease. That
+> case is a poison pill: the worker running it died, so the next one likely dies
+> the same way, and it never reaches the code that would otherwise dead-letter
+> it. The sweep is rate-limited to roughly a tenth of the lease, so crash
+> recovery lags the timeout slightly rather than costing a write on every poll.
+
 > **`jobs/redis` recovers jobs from a crashed worker.** A worker that dies after
 > claiming a job but before completing it leaves the job in the consumer group's
 > pending list. `Dequeue` reclaims such entries (via `XAUTOCLAIM`) once they have
@@ -451,6 +465,11 @@ if err := jobssql.Migrate(ctx, db, "sqlite"); err != nil { /* ... */ } // "postg
   ```go
   q := jobssql.New(db, jobssql.WithLeaseDuration(30*time.Minute))
   ```
+
+  The timeout is therefore also the crash-recovery window: it is how long a
+  dead worker's jobs wait before another one picks them up. Trading it off
+  against handler duration is the whole decision — too short re-runs live work,
+  too long delays recovery. Renewal is what lets you keep it short.
 
 ```go
 

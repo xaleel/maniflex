@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xaleel/maniflex"
@@ -170,6 +171,12 @@ type Queue struct {
 	lease  time.Duration // visibility timeout stamped on claim
 	kp     maniflex.KeyProvider
 	keyID  string
+
+	// reclaimMu guards lastReclaim, which throttles the expired-lease sweep at
+	// the top of Dequeue. Per-process state on purpose: the sweep is idempotent
+	// and racing replicas simply run it more often than one alone would.
+	reclaimMu   sync.Mutex
+	lastReclaim time.Time
 }
 
 // New creates a Queue backed by db. The dialect is auto-detected from
@@ -346,6 +353,11 @@ func (q *Queue) Dequeue(ctx context.Context, n int) ([]jobs.Job, error) {
 	if n <= 0 {
 		return nil, nil
 	}
+	// Recover a crashed worker's jobs before claiming new ones, as jobs/redis
+	// does with XAUTOCLAIM (audit JB-3/NEW-2). Best-effort: a failure here must
+	// not stall the queue, and the next Dequeue tries again.
+	q.reclaimExpired(ctx)
+
 	for attempt := 0; ; attempt++ {
 		now := time.Now()
 		leaseUntil := ts(now.Add(q.lease))
@@ -375,6 +387,81 @@ func (q *Queue) Dequeue(ctx context.Context, n int) ([]jobs.Job, error) {
 		}
 		return nil, err
 	}
+}
+
+// reclaimLastError is stamped on a job the sweep dead-letters. It says what
+// happened, because nothing else will: the worker that was running the job never
+// reached Nack, so last_error would otherwise be empty or stale.
+const reclaimLastError = "jobs/sql: lease expired with the retry budget spent — the worker holding this job stopped renewing (crash, OOM kill, or lost connection)"
+
+// reclaimExpired returns jobs whose lease has run out to the queue, and
+// dead-letters those that have no retry budget left.
+//
+// Without it a worker that died mid-job left its rows 'running' forever. The
+// claim predicate is `status IN ('enqueued','failed')` and nothing moved a row
+// back, so those jobs were never redelivered, never retried, never
+// dead-lettered, and invisible to every later Dequeue — silent permanent loss on
+// any unclean exit. It also made the whole lease mechanism write-only: Dequeue's
+// `lease_until < now` test only ever applied to rows that were already claimable,
+// so an expired lease on a running row meant nothing and WithLeaseDuration was
+// inert for the visibility timeout it documents (audit NEW-2).
+//
+// A row at or past its retry budget is dead-lettered rather than re-enqueued. It
+// is a poison pill by then: the worker running it died, so the next one probably
+// dies the same way, and because that worker never reaches Nack nothing else
+// would ever end the cycle — each reclaim would just increment attempts forever.
+// The budget default matches Nack's (a max_retry of 0 means 3).
+//
+// This is a visibility timeout, so it is at-least-once by construction: a worker
+// that is alive but has stopped renewing (a long GC pause, a wedged network) can
+// have its job reclaimed and run twice. That is what RenewLease and a lease
+// longer than the slowest handler are for. It cannot resurrect a *finished* job —
+// Ack and Nack move the row out of 'running', and the sweep only matches rows
+// still in it.
+func (q *Queue) reclaimExpired(ctx context.Context) {
+	if !q.shouldReclaim(time.Now()) {
+		return
+	}
+	p := q.newPH()
+	now := ts(time.Now())
+	// One statement, so a row is either re-queued or dead-lettered and never
+	// briefly neither. Postgres and SQLite agree on CASE and COALESCE/NULLIF.
+	const spent = `"attempts" >= COALESCE(NULLIF("max_retry", 0), 3)`
+	query := fmt.Sprintf(`
+UPDATE "job_queue"
+SET "status" = CASE WHEN %[1]s THEN 'dead' ELSE 'enqueued' END,
+    "last_error" = CASE WHEN %[1]s THEN %[2]s ELSE "last_error" END,
+    "lease_until" = NULL,
+    "updated_at" = %[3]s
+WHERE "status" = 'running' AND ("lease_until" IS NULL OR "lease_until" < %[4]s)`,
+		spent, p.Add(reclaimLastError), p.Add(now), p.Add(now),
+	)
+	// A running row always carries a lease — the claim stamps both in one
+	// statement — so the IS NULL arm should never match. It is there because a
+	// running row with no lease would otherwise be exactly the stuck row this
+	// function exists to free, and it matches how the claim predicate already
+	// reads the column.
+	_, _ = q.db.ExecContext(ctx, q.q(query), p.Args()...)
+}
+
+// shouldReclaim rate-limits the sweep to roughly a tenth of the lease, and
+// always lets the first call through.
+//
+// Dequeue is a poll loop, so an unthrottled sweep would issue a write statement
+// per poll on an otherwise idle queue — which on SQLite means taking the
+// database write lock to update nothing. A tenth of the lease bounds the extra
+// recovery latency at 10% of a timeout already measured in minutes. The upper
+// clamp keeps a deliberately long lease from parking the sweep for hours.
+func (q *Queue) shouldReclaim(now time.Time) bool {
+	every := min(q.lease/10, time.Minute)
+
+	q.reclaimMu.Lock()
+	defer q.reclaimMu.Unlock()
+	if !q.lastReclaim.IsZero() && now.Sub(q.lastReclaim) < every {
+		return false
+	}
+	q.lastReclaim = now
+	return true
 }
 
 // rankedDedup wraps src so it yields every empty-key job plus the single

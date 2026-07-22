@@ -45,7 +45,7 @@ func (selectiveCipher) Decrypt(c []byte) ([]byte, error) {
 // poisonQueue migrates a dedicated table and returns a cipher-backed queue.
 func poisonQueue(t *testing.T, db *stdsql.DB, table string) *jobssql.Queue {
 	t.Helper()
-	if err := jobssql.Migrate(context.Background(), db, "sqlite", jobssql.WithTableName(table)); err != nil {
+	if err := jobssql.Migrate(context.Background(), db, jobsDriver(), jobssql.WithTableName(table)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return jobssql.New(db, jobssql.WithTableName(table), jobssql.WithPayloadCipher(selectiveCipher{}))
@@ -66,7 +66,7 @@ func enqueueBody(t *testing.T, q *jobssql.Queue, body string) string {
 func jobRowState(t *testing.T, db *stdsql.DB, table, id string) (status string, lastErr, lease stdsql.NullString) {
 	t.Helper()
 	if err := db.QueryRow(
-		`SELECT status, last_error, lease_until FROM `+table+` WHERE id=?`, id,
+		ph(`SELECT status, last_error, lease_until FROM `+table+` WHERE id=?`), id,
 	).Scan(&status, &lastErr, &lease); err != nil {
 		t.Fatalf("read row %s: %v", id, err)
 	}

@@ -37,7 +37,7 @@ func TestJobsSQLKeyRotation_JobEnqueuedUnderOldKeyStillRuns(t *testing.T) {
 	db := rawJobsDB(t)
 	const table = "key_rotation"
 	ctx := context.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName(table)); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName(table)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	kp := rotationProvider(t, "MFXROT", "k1", "k2")
@@ -52,7 +52,7 @@ func TestJobsSQLKeyRotation_JobEnqueuedUnderOldKeyStillRuns(t *testing.T) {
 
 	// At rest it is an envelope, not the payload.
 	var stored string
-	if err := db.QueryRow(`SELECT payload FROM `+table+` WHERE id=?`, id).Scan(&stored); err != nil {
+	if err := db.QueryRow(ph(`SELECT payload FROM `+table+` WHERE id=?`), id).Scan(&stored); err != nil {
 		t.Fatalf("read payload: %v", err)
 	}
 	if !strings.HasPrefix(stored, "enc:") || strings.Contains(stored, "INV-7") {
@@ -81,7 +81,7 @@ func TestJobsSQLKeyRotation_UndecryptablePayloadIsQuarantinedNotDelivered(t *tes
 	db := rawJobsDB(t)
 	const table = "key_lost"
 	ctx := context.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName(table)); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName(table)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	kp := rotationProvider(t, "MFXHAVE", "k1")
@@ -109,7 +109,7 @@ func TestJobsSQLKeyRotation_UndecryptablePayloadIsQuarantinedNotDelivered(t *tes
 
 	var status string
 	var lastErr stdsql.NullString
-	if err := db.QueryRow(`SELECT status, last_error FROM `+table+` WHERE id=?`, id).
+	if err := db.QueryRow(ph(`SELECT status, last_error FROM `+table+` WHERE id=?`), id).
 		Scan(&status, &lastErr); err != nil {
 		t.Fatalf("read row: %v", err)
 	}

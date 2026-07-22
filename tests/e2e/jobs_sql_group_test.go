@@ -37,7 +37,7 @@ import (
 func seedGroupJobs(t *testing.T, db *stdsql.DB, table, groupKey string, n int) *jobssql.Queue {
 	t.Helper()
 	ctx := context.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName(table)); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName(table)); err != nil {
 		t.Fatalf("migrate %s: %v", table, err)
 	}
 	q := jobssql.New(db, jobssql.WithTableName(table))
@@ -123,7 +123,7 @@ func TestJobsSQLGroup_EmptyKeyJobsAreNotSerialised(t *testing.T) {
 func TestJobsSQLGroup_DistinctKeysClaimedTogether(t *testing.T) {
 	db := rawJobsDB(t)
 	ctx := context.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName("grp_multi_jobs")); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName("grp_multi_jobs")); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	q := jobssql.New(db, jobssql.WithTableName("grp_multi_jobs"))
@@ -165,7 +165,7 @@ func TestJobsSQLGroup_DistinctKeysClaimedTogether(t *testing.T) {
 func TestJobsSQLGroup_ConcurrentWorkersNeverDoubleRunAKey(t *testing.T) {
 	db := rawJobsDB(t)
 	ctx := context.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName("grp_conc_jobs")); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName("grp_conc_jobs")); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	q := jobssql.New(db, jobssql.WithTableName("grp_conc_jobs"))
@@ -238,14 +238,14 @@ func TestJobsSQLGroup_ConcurrentWorkersNeverDoubleRunAKey(t *testing.T) {
 func TestJobsSQLGroup_IndexForbidsTwoRunningPerKey(t *testing.T) {
 	db := rawJobsDB(t)
 	ctx := context.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName("grp_idx_jobs")); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName("grp_idx_jobs")); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 
 	insert := func(id, key, status string) error {
 		_, err := db.ExecContext(ctx,
-			`INSERT INTO grp_idx_jobs (id,type,payload,status,not_before,group_key,created_at,updated_at)
-			 VALUES (?,?,?,?,?,?,?,?)`,
+			ph(`INSERT INTO grp_idx_jobs (id,type,payload,status,not_before,group_key,created_at,updated_at)
+			 VALUES (?,?,?,?,?,?,?,?)`),
 			id, "t", "{}", status, "2020-01-01T00:00:00Z", key, "2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z")
 		return err
 	}

@@ -18,8 +18,8 @@ package e2e
 //	go test ./e2e/ -run TestJobsSQLClaim
 
 import (
-	stdsql "database/sql"
 	"context"
+	stdsql "database/sql"
 	"encoding/json"
 	"fmt"
 	"sync"
@@ -34,7 +34,7 @@ import (
 func seedJobs(t *testing.T, db *stdsql.DB, table string, n int) *jobssql.Queue {
 	t.Helper()
 	ctx := context.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName(table)); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName(table)); err != nil {
 		t.Fatalf("migrate %s: %v", table, err)
 	}
 	q := jobssql.New(db, jobssql.WithTableName(table))
@@ -221,21 +221,25 @@ func TestJobsSQLClaim_ClaimedRowsAreLeased(t *testing.T) {
 	}
 
 	for _, j := range got {
-		var status, lease string
+		// lease_until is TEXT on SQLite and TIMESTAMPTZ on Postgres, so it is
+		// scanned as a nullable value rather than COALESCEd to a string — the
+		// empty string is not a valid timestamp for Postgres to coalesce to.
+		var status string
+		var raw any
 		err := db.QueryRowContext(ctx,
-			`SELECT status, COALESCE(lease_until,'') FROM claim_lease_jobs WHERE id=?`, j.ID,
-		).Scan(&status, &lease)
+			ph(`SELECT status, lease_until FROM claim_lease_jobs WHERE id=?`), j.ID,
+		).Scan(&status, &raw)
 		if err != nil {
 			t.Fatalf("read back %s: %v", j.ID, err)
 		}
 		if status != "running" {
 			t.Errorf("job %s status = %q, want running", j.ID, status)
 		}
-		if lease == "" {
+		lease, ok := parseStampColumn(t, raw)
+		if !ok {
 			t.Errorf("job %s has no lease: nothing stops another worker taking it", j.ID)
-		}
-		if parsed, perr := time.Parse(time.RFC3339Nano, lease); perr == nil && !parsed.After(time.Now()) {
-			t.Errorf("job %s lease %v is already expired", j.ID, parsed)
+		} else if !lease.After(time.Now()) {
+			t.Errorf("job %s lease %v is already expired", j.ID, lease)
 		}
 	}
 }

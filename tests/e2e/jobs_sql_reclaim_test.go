@@ -31,7 +31,7 @@ import (
 func reclaimQueue(t *testing.T, table string, lease time.Duration) (*jobssql.Queue, *stdsql.DB) {
 	t.Helper()
 	db := rawJobsDB(t)
-	if err := jobssql.Migrate(context.Background(), db, "sqlite", jobssql.WithTableName(table)); err != nil {
+	if err := jobssql.Migrate(context.Background(), db, jobsDriver(), jobssql.WithTableName(table)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	return jobssql.New(db, jobssql.WithTableName(table), jobssql.WithLeaseDuration(lease)), db
@@ -39,7 +39,7 @@ func reclaimQueue(t *testing.T, table string, lease time.Duration) (*jobssql.Que
 
 func statusOf(t *testing.T, db *stdsql.DB, table, id string) (status, lastErr string) {
 	t.Helper()
-	if err := db.QueryRow(`SELECT status, last_error FROM `+table+` WHERE id=?`, id).
+	if err := db.QueryRow(ph(`SELECT status, last_error FROM `+table+` WHERE id=?`), id).
 		Scan(&status, &lastErr); err != nil {
 		t.Fatalf("read status: %v", err)
 	}

@@ -22,7 +22,7 @@ func insertTSJob(t *testing.T, table, id, notBefore string) func(now string) int
 	t.Helper()
 	db := rawJobsDB(t)
 	ctx := stdcontext.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName(table)); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName(table)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := db.ExecContext(ctx,
@@ -45,6 +45,7 @@ func insertTSJob(t *testing.T, table, id, notBefore string) func(now string) int
 // the same second arrives — the case the old variable-width format got wrong
 // (the whole-second string sorted after the fractional one).
 func TestJobsSQLTimestamp_WholeSecondJobIsDueAtFractionalLater(t *testing.T) {
+	skipUnlessSQLite(t, "asserts SQLite's lexicographic TEXT comparison of timestamps; Postgres uses TIMESTAMPTZ and orders them natively")
 	due := insertTSJob(t, "ts_whole", "j1", "2026-07-21T12:34:56.000000000Z")
 
 	if n := due("2026-07-21T12:34:56.500000000Z"); n != 1 {
@@ -55,6 +56,7 @@ func TestJobsSQLTimestamp_WholeSecondJobIsDueAtFractionalLater(t *testing.T) {
 // The inverse: a job scheduled a fraction into a second must NOT be due at a
 // whole-second instant earlier in that same second — no firing before its time.
 func TestJobsSQLTimestamp_FractionalJobIsNotDueAtWholeSecondEarlier(t *testing.T) {
+	skipUnlessSQLite(t, "asserts SQLite's lexicographic TEXT comparison of timestamps; Postgres uses TIMESTAMPTZ and orders them natively")
 	due := insertTSJob(t, "ts_frac", "j1", "2026-07-21T12:34:56.500000000Z")
 
 	if n := due("2026-07-21T12:34:56.000000000Z"); n != 0 {

@@ -28,7 +28,7 @@ import (
 func leaseUntil(t *testing.T, db *stdsql.DB, table, id string) (time.Time, bool) {
 	t.Helper()
 	var s stdsql.NullString
-	if err := db.QueryRow(`SELECT lease_until FROM `+table+` WHERE id=?`, id).Scan(&s); err != nil {
+	if err := db.QueryRow(ph(`SELECT lease_until FROM `+table+` WHERE id=?`), id).Scan(&s); err != nil {
 		t.Fatalf("read lease_until: %v", err)
 	}
 	if !s.Valid || s.String == "" {
@@ -58,7 +58,7 @@ func claimOne(t *testing.T, q *jobssql.Queue) string {
 func TestJobsSQLLease_WithLeaseDurationStampsCustomTimeout(t *testing.T) {
 	db := rawJobsDB(t)
 	const table = "lease_custom"
-	if err := jobssql.Migrate(context.Background(), db, "sqlite", jobssql.WithTableName(table)); err != nil {
+	if err := jobssql.Migrate(context.Background(), db, jobsDriver(), jobssql.WithTableName(table)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	q := jobssql.New(db, jobssql.WithTableName(table), jobssql.WithLeaseDuration(90*time.Second))
@@ -81,7 +81,7 @@ func TestJobsSQLLease_RenewNeverShortens(t *testing.T) {
 	db := rawJobsDB(t)
 	const table = "lease_renew"
 	ctx := context.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName(table)); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName(table)); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	q := jobssql.New(db, jobssql.WithTableName(table)) // default 5m lease

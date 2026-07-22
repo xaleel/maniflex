@@ -65,7 +65,7 @@ func TestRequeue_Inproc(t *testing.T) {
 func TestRequeue_SQL(t *testing.T) {
 	db := rawJobsDB(t)
 	ctx := context.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName("rq_jobs")); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName("rq_jobs")); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	q := jobssql.New(db, jobssql.WithTableName("rq_jobs"))
@@ -119,7 +119,7 @@ func TestRequeue_SQL(t *testing.T) {
 func TestRequeue_SQLHonoursDelay(t *testing.T) {
 	db := rawJobsDB(t)
 	ctx := context.Background()
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName("rq_delay_jobs")); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName("rq_delay_jobs")); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	q := jobssql.New(db, jobssql.WithTableName("rq_delay_jobs"))

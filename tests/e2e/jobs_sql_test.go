@@ -46,7 +46,7 @@ func TestJobsSQL_WithTableName(t *testing.T) {
 	db := rawJobsDB(t)
 	ctx := context.Background()
 
-	if err := jobssql.Migrate(ctx, db, "sqlite", jobssql.WithTableName("otp_jobs")); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver(), jobssql.WithTableName("otp_jobs")); err != nil {
 		t.Fatalf("migrate otp_jobs: %v", err)
 	}
 	q := jobssql.New(db, jobssql.WithTableName("otp_jobs"))
@@ -57,7 +57,7 @@ func TestJobsSQL_WithTableName(t *testing.T) {
 	}
 
 	var n int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM otp_jobs WHERE id=?`, id).Scan(&n); err != nil {
+	if err := db.QueryRowContext(ctx, ph(`SELECT COUNT(*) FROM otp_jobs WHERE id=?`), id).Scan(&n); err != nil {
 		t.Fatalf("count otp_jobs: %v", err)
 	}
 	if n != 1 {
@@ -74,7 +74,7 @@ func TestJobsSQL_PayloadCipher(t *testing.T) {
 	db := rawJobsDB(t)
 	ctx := context.Background()
 
-	if err := jobssql.Migrate(ctx, db, "sqlite"); err != nil {
+	if err := jobssql.Migrate(ctx, db, jobsDriver()); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
 	q := jobssql.New(db, jobssql.WithPayloadCipher(xorCipher{}))
@@ -85,7 +85,7 @@ func TestJobsSQL_PayloadCipher(t *testing.T) {
 	}
 
 	var stored string
-	if err := db.QueryRowContext(ctx, `SELECT payload FROM job_queue WHERE id=?`, id).Scan(&stored); err != nil {
+	if err := db.QueryRowContext(ctx, ph(`SELECT payload FROM job_queue WHERE id=?`), id).Scan(&stored); err != nil {
 		t.Fatalf("read payload: %v", err)
 	}
 	if !strings.HasPrefix(stored, "encq:") {

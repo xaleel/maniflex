@@ -404,6 +404,19 @@ if err := jobssql.Migrate(ctx, db, "sqlite"); err != nil { /* ... */ } // "postg
   a job's type now requeues it (so another worker can claim it) instead of
   dead-lettering it — safe for a type-restricted worker sharing a table.
 
+- **Visibility timeout:** a claimed job is invisible to other workers until its
+  lease expires, after which another `Dequeue` may reclaim it. The default is 5
+  minutes; `WithLeaseDuration(d)` changes it. It must exceed how long a handler
+  runs, or a still-running job is reclaimed and executed a second time — but a
+  long handler does not need a large value if the worker renews the lease, which
+  it does automatically. Renewal only ever extends: a renewal horizon shorter
+  than the current lease leaves it alone, so renewing can never make a job
+  reclaimable sooner than the timeout promises.
+
+  ```go
+  q := jobssql.New(db, jobssql.WithLeaseDuration(30*time.Minute))
+  ```
+
 ```go
 
 // Inside a pipeline middleware or action handler:

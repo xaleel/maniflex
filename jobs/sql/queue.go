@@ -58,6 +58,7 @@ type config struct {
 	table  string
 	cipher PayloadCipher
 	driver string // "" = auto-detect; "postgres" or "sqlite" to force
+	lease  time.Duration
 }
 
 func newConfig(opts []Option) config {
@@ -67,6 +68,9 @@ func newConfig(opts []Option) config {
 	}
 	if c.table == "" {
 		c.table = defaultTableName
+	}
+	if c.lease <= 0 {
+		c.lease = defaultLeaseDuration
 	}
 	return c
 }
@@ -92,6 +96,17 @@ func WithPayloadCipher(c PayloadCipher) Option { return func(cfg *config) { cfg.
 // so a wrong guess does not run slower — it fails outright (audit JB-6).
 func WithDriver(name string) Option { return func(c *config) { c.driver = name } }
 
+// WithLeaseDuration sets the visibility timeout: how long a claimed job stays
+// invisible to other workers before another Dequeue may reclaim it (its
+// lease_until is stamped now+d on claim). Default 5m.
+//
+// It must exceed how long a handler runs, or a still-running job is reclaimed and
+// executed a second time. A long-running handler does not need a large value if
+// the worker renews the lease — the Worker does this automatically for a Source
+// implementing jobs.LeaseRenewer — since renewal extends the lease and never
+// shortens it (audit JB-10). A non-positive value keeps the default.
+func WithLeaseDuration(d time.Duration) Option { return func(c *config) { c.lease = d } }
+
 // Queue is both a jobs.Queue (producer) and a jobs.Source (consumer).
 // It also implements jobs.Cancellable, jobs.Inspector, and jobs.LeaseRenewer.
 type Queue struct {
@@ -99,13 +114,14 @@ type Queue struct {
 	isPG   bool // true = Postgres, false = SQLite
 	table  string
 	cipher PayloadCipher
+	lease  time.Duration // visibility timeout stamped on claim
 }
 
 // New creates a Queue backed by db. The dialect is auto-detected from
 // db.Driver() unless WithDriver forces it.
 func New(db *stdsql.DB, opts ...Option) *Queue {
 	c := newConfig(opts)
-	return &Queue{db: db, isPG: resolveIsPG(c.driver, db), table: c.table, cipher: c.cipher}
+	return &Queue{db: db, isPG: resolveIsPG(c.driver, db), table: c.table, cipher: c.cipher, lease: c.lease}
 }
 
 // resolveIsPG decides the dialect: an explicit WithDriver value wins, otherwise
@@ -265,7 +281,7 @@ func (q *Queue) Dequeue(ctx context.Context, n int) ([]jobs.Job, error) {
 	}
 	for attempt := 0; ; attempt++ {
 		now := time.Now()
-		leaseUntil := ts(now.Add(defaultLeaseDuration))
+		leaseUntil := ts(now.Add(q.lease))
 		nowStr := ts(now)
 
 		var (
@@ -510,11 +526,26 @@ func (q *Queue) Dead(ctx context.Context, id string, jobErr error) error {
 
 func (q *Queue) RenewLease(ctx context.Context, id string, d time.Duration) error {
 	p := q.newPH()
-	until := ts(time.Now().Add(d))
-	now := ts(time.Now())
+	now := time.Now()
+	until := ts(now.Add(d))
+	nowStr := ts(now)
+
+	// Never shorten. A renewal extends a lease; it must not reduce one. The worker
+	// renews with a short horizon (LeaseRenew*3, 90s by default) that is smaller
+	// than the initial visibility timeout, so a plain assignment would *cut* a
+	// freshly claimed job's lease and let it be reclaimed far sooner than the
+	// timeout promises (audit JB-10). Take the later of the current lease and
+	// now+d. MAX/GREATEST compares the fixed-width timestamp text, which sorts
+	// chronologically (audit JB-7); COALESCE guards the NULL case — not expected on
+	// a running row, but a bare MAX(NULL, x) is NULL on SQLite, which would null the
+	// lease out and make the running job immediately reclaimable.
+	maxFn := "MAX"
+	if q.isPG {
+		maxFn = "GREATEST"
+	}
 	_, err := q.db.ExecContext(ctx, q.q(fmt.Sprintf(
-		`UPDATE "job_queue" SET "lease_until"=%s,"updated_at"=%s WHERE "id"=%s AND "status"='running'`,
-		p.Add(until), p.Add(now), p.Add(id),
+		`UPDATE "job_queue" SET "lease_until"=%s(COALESCE("lease_until", %s), %s),"updated_at"=%s WHERE "id"=%s AND "status"='running'`,
+		maxFn, p.Add(until), p.Add(until), p.Add(nowStr), p.Add(id),
 	)), p.Args()...)
 	return err
 }

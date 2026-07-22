@@ -39,6 +39,8 @@ github.com/xaleel/maniflex v0.3.0 h1:Dp3xbiu88UwJrLL3Vn1hf4DL7eN/VNfrLXOhM72TE38
 github.com/xaleel/maniflex v0.3.0/go.mod h1:yWuHLsAX/jMhD6UpPrSzPy5jluvkJwNM6NugaQqt9Ao=
 github.com/xaleel/maniflex v0.3.1 h1:P0I3+p0k17roZMbqtFqBkXic8iZ4soIUlcb2+9MK7+4=
 github.com/xaleel/maniflex v0.3.1/go.mod h1:yWuHLsAX/jMhD6UpPrSzPy5jluvkJwNM6NugaQqt9Ao=
+github.com/xaleel/maniflex v0.3.2 h1:STpPcHzQsry1KixFEC4E3IcXZWJIV2dnp1txyaYB71U=
+github.com/xaleel/maniflex v0.3.2/go.mod h1:yWuHLsAX/jMhD6UpPrSzPy5jluvkJwNM6NugaQqt9Ao=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
 go.opentelemetry.io/otel v1.44.0 h1:JjwHmHpA4iZ3wBxluu2fbbE7j4kqlE8jXyAyPXH7HqU=

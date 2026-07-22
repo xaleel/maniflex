@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.3.3
+
+- **Bugfix:** an abruptly dropped WebSocket no longer leaks a goroutine and a `CLOSE_WAIT` socket. On EOF/RST the read pump returned without closing anything, leaving the writer parked on a channel nothing would close. A client that half-closed its write side but kept reading was permanent — every ping still succeeded, so nothing ever failed. Either pump now tears the connection down.
+
 ## v0.3.2 (2026-07-22)
 
 - **Bugfix:** `db/sqlcore` creates Postgres foreign keys in every schema, not only the first one migrated. The existence probe queried `information_schema.table_constraints` with no `table_schema` predicate, and constraint names derive from table and column, so the same model in a second schema looked already migrated. Referential integrity and `onDelete` actions were silently absent there.

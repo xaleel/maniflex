@@ -453,28 +453,47 @@ type hubClient struct {
 	br         *bufio.Reader
 	principal  *Principal
 	out        chan []byte       // encoded WS frames; never closed by sender
-	done       chan struct{}     // closed by sendClose to wake the write loop
+	done       chan struct{}     // closed by close() to wake the write loop
 	writeMu    sync.Mutex       // serialises writes to conn
-	closeOnce  sync.Once        // ensures sendClose runs once
+	closeOnce  sync.Once        // ensures the teardown in close() runs once
+	frameOnce  sync.Once        // ensures the courtesy close frame is written once
 	removeOnce sync.Once        // ensures remove runs once
 	subs       map[string][]string // subID → []pattern
 	subMu      sync.RWMutex
 	subSeq     atomic.Uint64
 }
 
-// sendClose writes a close frame with the given status code, closes the
-// connection, and signals the write loop to exit. Safe to call concurrently.
-func (c *hubClient) sendClose(code uint16) {
+// close tears the connection down exactly once: it closes the socket and closes
+// done, which is the only thing that wakes writeLoop when it is parked on an
+// idle select. Safe to call concurrently and more than once.
+//
+// Both pumps call this on ANY exit, because neither can safely exit on its own:
+// a readLoop that returns on a plain EOF/RST without closing leaves writeLoop
+// pinging a peer that is gone, and a writeLoop that returns on a write error
+// leaves readLoop blocked in recvFrame, which sets no read deadline. The worst
+// case is a client that half-closes its write side but keeps reading: every
+// server ping still succeeds at the TCP level, so nothing ever fails and the
+// goroutine plus its CLOSE_WAIT fd are pinned for the life of the process.
+func (c *hubClient) close() {
 	c.closeOnce.Do(func() {
+		c.conn.Close()
+		close(c.done)
+	})
+}
+
+// sendClose writes a close frame with the given status code and then tears the
+// connection down. Safe to call concurrently, and after close() — the write
+// then fails on the closed socket, which is the intended best effort.
+func (c *hubClient) sendClose(code uint16) {
+	c.frameOnce.Do(func() {
 		payload := []byte{byte(code >> 8), byte(code)}
 		frame := wsEncodeFrame(wsClose, payload)
 		c.writeMu.Lock()
 		c.conn.SetWriteDeadline(time.Now().Add(time.Second))
 		c.conn.Write(frame) //nolint:errcheck
 		c.writeMu.Unlock()
-		c.conn.Close()
-		close(c.done)
 	})
+	c.close()
 }
 
 func (c *hubClient) remove() {
@@ -508,6 +527,7 @@ func (c *hubClient) sendJSON(v any) {
 
 func (c *hubClient) readLoop() {
 	defer func() {
+		c.close()
 		c.remove()
 		c.hub.wg.Done()
 	}()
@@ -533,6 +553,7 @@ func (c *hubClient) readLoop() {
 
 func (c *hubClient) writeLoop() {
 	defer func() {
+		c.close()
 		c.remove()
 		c.hub.wg.Done()
 	}()

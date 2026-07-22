@@ -144,6 +144,22 @@ their typical 30–60s idle timeouts) don't drop them:
   30s); compliant clients answer with a pong.
 - **SSE** — the server emits a `: keepalive` comment on the same interval.
 
+### Disconnects
+
+A WebSocket connection is served by a read pump and a write pump, and whichever
+one first notices the peer is gone closes the socket and stops the other. That
+holds for a clean close frame, an abrupt drop (EOF/RST), and a **half-close** —
+a client that shuts down its write side but keeps reading. The half-close is
+worth naming because nothing about it fails on its own: every ping the server
+writes still succeeds, so before v0.3.3 such a connection was never reaped and
+its goroutine and `CLOSE_WAIT` socket were held for the life of the process.
+Either way `Hub.Stats().Connections` drops as soon as the peer goes away.
+
+Note that a client which merely goes quiet is **not** disconnected — the hub
+tears a connection down on a broken pipe, never on idleness. Detecting a peer
+that has stopped answering entirely (a half-open TCP connection after a network
+partition) is the read deadline's job, which the hub does not yet set.
+
 ## Resumable streams (`lastEventId`)
 
 By default delivery is ephemeral: a client that disconnects misses whatever was

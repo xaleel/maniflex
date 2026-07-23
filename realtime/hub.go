@@ -689,6 +689,8 @@ func (c *hubClient) readLoop() {
 			switch {
 			case errors.Is(err, errFrameTooLarge):
 				c.sendClose(wsClose1009)
+			case errors.Is(err, errProtocol):
+				c.sendClose(wsClose1002)
 			case errors.Is(err, os.ErrDeadlineExceeded):
 				// Say why, rather than dropping the socket. On the half-open
 				// connection this exists to catch the frame goes nowhere and
@@ -877,9 +879,43 @@ func (c *hubClient) recvFrame() (wsRawFrame, error) {
 	if _, err := io.ReadFull(c.br, hdr); err != nil {
 		return wsRawFrame{}, err
 	}
+	fin := hdr[0]&0x80 != 0
+	rsv := hdr[0] & 0x70
 	opcode := hdr[0] & 0x0f
 	masked := hdr[1]&0x80 != 0
 	plen := int(hdr[1] & 0x7f)
+
+	// RFC 6455 framing checks, before reading any attacker-controlled length or
+	// payload — a violation closes the connection, so there is nothing to drain.
+	switch {
+	case rsv != 0:
+		// No extensions are negotiated (the upgrade advertises none), so a set
+		// RSV bit is a protocol error rather than a permessage-deflate frame.
+		return wsRawFrame{}, errProtocol
+	case !masked:
+		// §5.1: every client-to-server frame MUST be masked.
+		return wsRawFrame{}, errProtocol
+	case !fin:
+		// This hub requires single-frame messages; a fragment start is refused
+		// rather than reassembled. Its inbound vocabulary is small control JSON
+		// that no compliant client fragments.
+		return wsRawFrame{}, errProtocol
+	}
+	switch opcode {
+	case wsText, wsBinary, wsClose, wsPing, wsPong:
+		// ok
+	case wsContinuation:
+		// No message is ever in progress, since fragmentation is not supported.
+		return wsRawFrame{}, errProtocol
+	default:
+		// Every reserved opcode (0x3–0x7 data, 0xB–0xF control).
+		return wsRawFrame{}, errProtocol
+	}
+	// §5.5: a control frame's payload is at most 125 bytes, so it never uses the
+	// extended-length forms (plen 126/127 here).
+	if opcode&0x8 != 0 && plen > 125 {
+		return wsRawFrame{}, errProtocol
+	}
 
 	switch plen {
 	case 126:
@@ -1017,13 +1053,15 @@ func encodeSSEEvent(eventType, id string, data []byte) []byte {
 // ── WebSocket frame encoding (server → client, no masking) ───────────────────
 
 const (
-	wsText    byte = 0x1
-	wsBinary  byte = 0x2
-	wsClose   byte = 0x8
-	wsPing    byte = 0x9
-	wsPong    byte = 0xA
+	wsContinuation byte = 0x0
+	wsText         byte = 0x1
+	wsBinary       byte = 0x2
+	wsClose        byte = 0x8
+	wsPing         byte = 0x9
+	wsPong         byte = 0xA
 	wsClose1000 uint16 = 1000
 	wsClose1001 uint16 = 1001
+	wsClose1002 uint16 = 1002 // Protocol Error
 	wsClose1009 uint16 = 1009 // Message Too Big
 	wsClose1013 uint16 = 1013
 )
@@ -1033,6 +1071,12 @@ const (
 // 1009 close so a malicious client can't force the server to allocate a
 // multi-gigabyte buffer just to discover the frame is malformed.
 var errFrameTooLarge = errors.New("ws: frame exceeds MaxMessageSize")
+
+// errProtocol is returned by recvFrame for an RFC 6455 framing violation the
+// read loop answers with a 1002 (Protocol Error) close: an unmasked client
+// frame, a set RSV bit, a fragmented or continuation frame (this hub requires
+// single-frame messages), a reserved opcode, or an over-long control frame.
+var errProtocol = errors.New("ws: protocol error")
 
 // wsEncodeFrame encodes one server-to-client WebSocket frame (FIN=1, no mask).
 func wsEncodeFrame(opcode byte, payload []byte) []byte {

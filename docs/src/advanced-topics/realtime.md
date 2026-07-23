@@ -77,6 +77,13 @@ client → server                              server → client
 The `data` field is the full [CloudEvents](events-jobs.md) JSON document, so a
 browser can parse it with any CE SDK.
 
+Each message must arrive as a **single, masked** WebSocket frame — which is what
+every browser `WebSocket` sends. The hub does not reassemble fragmented
+messages: a fragmented or unmasked frame, a set RSV bit, a reserved opcode, or
+an over-long control frame is a protocol error and the connection is closed with
+`1002`. This is not a limitation in practice — the inbound vocabulary above is a
+few dozen bytes of JSON that no client fragments.
+
 ### SSE protocol
 
 SSE is push-only and subscribes via query parameters — ideal for corporate

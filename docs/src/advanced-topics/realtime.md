@@ -162,6 +162,28 @@ HubConfig{
 Return `(true, &copy)` to deliver a transformed event — the hub clones before
 mutation so each client sees its own view.
 
+### What the payload contains
+
+The hub forwards an event's `Data` **verbatim** — it does no field redaction of
+its own. For events produced by the framework, that is safe by construction:
+`events.Emit` runs each record through `maniflex.RedactRecord` before it reaches
+the bus, stripping hidden, write-only and encrypted columns (and the `_hmac`
+companion of an encrypted-unique column), so a subscriber never sees the
+plaintext of a secret field. The same redacted bytes are what the `ResumeStore`
+buffers, so a replay carries no more than the live delivery did.
+
+Two consequences worth stating plainly:
+
+- If you publish your **own** events (calling `bus.Publish` directly, or
+  building an `events.Event` by hand), nothing redacts that payload for you.
+  Run the record through `maniflex.RedactRecord(model, record)` before
+  attaching it, exactly as `events.Emit` does.
+- `Visibility` is **authorisation, not secret-scrubbing**. Use it to decide
+  *who* may see an event (tenant isolation, per-role suppression), not to strip
+  fields that should never be on the wire — those are already gone by the time
+  the hook runs, and relying on an opt-in hook to remove secrets means a hub
+  configured without one would leak them.
+
 ## Heartbeat
 
 Idle connections are kept alive automatically so L7 proxies (ALB, NGINX, with

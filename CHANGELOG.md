@@ -2,6 +2,7 @@
 
 ## v0.3.4
 
+- **Feature:** `scheduled.Config.Locker` opts the in-process `Runner` into leader election, so `Start` on N replicas sweeps once per interval, not N times. Without it a set-field transition fired `OnSetField` on every replica, duplicating events/audit rows. The Locker (same shape as `jobs/cron`) gates each tick on an atomic per-interval claim; errors fail open. Nil keeps today's behaviour.
 - **Bugfix:** a `scheduled` row that is already gone no longer poisons its whole batch. A 0-row action returned `ErrNotFound` and rolled the per-model tx back, so a same-row `hard-delete` + `set-field` deleted the row, failed the update, and re-read the same rows every tick — starving its other due rows forever. Such an action is now an idempotent skip (`Report.Skipped`); real errors abort.
 - **Bugfix / Reliability:** a panicking `scheduled` task no longer silently kills all scheduled work. A panic in an `OnDelete`/`OnSetField` hook or deep in a model's sweep unwound the loop goroutine — `Stop` still returned cleanly, so every model stopped being swept for the process's life. Panics are now recovered per hook, per model (into `Report.Errors`) and at the tick, logged with a stack.
 

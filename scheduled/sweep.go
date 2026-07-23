@@ -38,8 +38,9 @@ type modelResult struct {
 // transaction so the tick is atomic per model.
 //
 // Reads happen before the transaction opens (a committed snapshot); writes all
-// happen inside it. Every action is idempotent, so this is safe to re-run and
-// safe across concurrent replicas.
+// happen inside it. Every write is idempotent — safe to re-run and to run on
+// concurrent replicas — though without a Config.Locker a set-field transition
+// still fires its hook once per replica that commits it.
 func (r *Runner) sweepModel(ctx context.Context, meta *maniflex.ModelMeta, now time.Time) (res modelResult, err error) {
 	// A panic in the adapter, MapToRecord, or a Tx op is contained here as a
 	// per-model error so Sweep records it and moves on to the next model rather

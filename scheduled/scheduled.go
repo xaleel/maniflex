@@ -8,7 +8,9 @@
 // New returns a usable no-op Runner so callers can wire it unconditionally.
 //
 // The package depends only on maniflex; the durable/distributed path is wired by
-// the caller with jobs/cron (see scheduled/jobsx).
+// the caller with jobs/cron (see scheduled/jobsx). To run Start on several
+// replicas without firing hooks N times, pass a Config.Locker for leader
+// election, or run Start in exactly one process.
 package scheduled
 
 import (
@@ -22,12 +24,33 @@ import (
 	"github.com/xaleel/maniflex"
 )
 
+// Locker elects one replica per tick, so a Runner started on N replicas sweeps
+// once per interval instead of N times. It is the in-process analogue of the
+// jobs/cron Locker and has the same contract.
+//
+// Acquire must be atomic across replicas and report true to exactly one caller
+// per key: Redis SET key val NX PX ttl, an INSERT on a unique column, a Postgres
+// advisory lock — whatever the deployment already runs. There is deliberately no
+// release: the lock records "this interval has been swept", so it must outlive
+// the tick and expire with its ttl; releasing it would let another replica that
+// ticks within the same interval sweep again.
+type Locker interface {
+	Acquire(ctx context.Context, key string, ttl time.Duration) (bool, error)
+}
+
 // Config tunes the Runner. All fields are optional.
 type Config struct {
 	Interval  time.Duration    // tick interval; default 1m
 	BatchSize int              // max rows per model per spec per tick; default 500
 	Logger    *slog.Logger     // default slog.Default()
 	Clock     func() time.Time // injectable; default time.Now (UTC). Tests override.
+
+	// Locker, if set, gates each tick so only one replica sweeps per interval.
+	// Without it — the default — every replica running Start sweeps: writes stay
+	// idempotent (a second replica's action matches 0 rows and is skipped), but a
+	// set-field transition fires OnSetField once per replica. Set a Locker for
+	// single-firing hooks across replicas, or run Start in exactly one process.
+	Locker Locker
 
 	// Hooks fire once per affected row after the per-model tx commits. Use them
 	// to publish events / write an audit trail. They run outside the tx.
@@ -162,6 +185,10 @@ func (r *Runner) tick(ctx context.Context) {
 		}
 	}()
 
+	if !r.claim(ctx) {
+		return // another replica owns this interval
+	}
+
 	rep, err := r.Sweep(ctx)
 	if err != nil {
 		r.cfg.Logger.Error("scheduled: sweep failed", slog.String("error", err.Error()))
@@ -170,6 +197,29 @@ func (r *Runner) tick(ctx context.Context) {
 	for _, e := range rep.Errors {
 		r.cfg.Logger.Error("scheduled: per-model sweep error", slog.String("error", e.Error()))
 	}
+}
+
+// claim asks the configured Locker whether this replica owns the current tick.
+// With no Locker (the default) every replica sweeps. The key is the tick time
+// truncated to Interval, so replicas ticking a few seconds apart still agree on
+// one owner per interval; the ttl is one Interval — long enough to outlive the
+// firing, short enough to free the next interval. A Locker error fails open: a
+// lock outage must not silently stop all scheduled work. Only the loop's tick is
+// gated; the exported Sweep (jobsx / admin) always runs.
+func (r *Runner) claim(ctx context.Context) bool {
+	if r.cfg.Locker == nil {
+		return true
+	}
+	key := "scheduled:sweep:" + r.cfg.Clock().Truncate(r.cfg.Interval).UTC().Format(time.RFC3339)
+	ok, err := r.cfg.Locker.Acquire(ctx, key, r.cfg.Interval)
+	if err != nil {
+		r.cfg.Logger.Warn("scheduled: locker error; sweeping anyway (fail-open)",
+			slog.String("key", key),
+			slog.String("error", err.Error()),
+		)
+		return true
+	}
+	return ok
 }
 
 // Sweep runs exactly one pass over all scheduled models and returns a report.

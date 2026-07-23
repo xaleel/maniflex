@@ -109,6 +109,7 @@ unconditionally and pay no cost.
 | `BatchSize` | `500` | maximum rows processed per (model, spec) per tick |
 | `Logger` | `slog.Default()` | structured log sink |
 | `Clock` | `time.Now().UTC` | injectable; tests override |
+| `Locker` | nil | leader election: gate each tick so one replica sweeps per interval (see [Distributed runners](#distributed-runners)) |
 | `OnDelete` | nil | callback `func(model, id string)` after a delete commits |
 | `OnSetField` | nil | callback `func(model, id, field, to string)` after a set-field commits |
 
@@ -166,16 +167,37 @@ internal ticker is the wrong fit. `Sweep` blocks until the pass completes.
 
 ## Distributed runners
 
-A single runner per cluster is enough for most workloads — the operations
-it performs (soft-delete, status flip) are idempotent. Two runners
-processing the same batch simultaneously would do redundant work but no
-incorrect work.
+A single runner per cluster is enough for most workloads. Two runners
+sweeping the same batch do redundant *work* but their *writes* stay
+correct: a soft-delete or set-field that the other replica already
+applied matches zero rows and is skipped (`Report.Skipped`), never
+double-applied. The one thing that is *not* idempotent is the **hooks** —
+a set-field transition fires `OnSetField` on every replica that commits
+it, so N replicas mean up to N duplicate events or audit rows.
 
-For at-most-once semantics in a multi-process deployment, run the
-runner in only one replica (a leader-elected pod, a sidecar, a separate
-deployment). Or use the `scheduled/jobsx` adapter, which bridges the
-runner to a `jobs` queue so the sweep is enqueued as a durable job and
-dispatched by the worker pool:
+For single-firing hooks across replicas you have three options:
+
+1. **Run `Start` in exactly one replica** (a leader-elected pod, a
+   sidecar, a separate deployment). Simplest when your platform already
+   elects a leader.
+2. **Pass a `Config.Locker`** — the in-process analogue of the
+   `jobs/cron` locker. It gates each tick behind an atomic claim keyed on
+   the interval, so only one replica sweeps per tick; the others skip.
+   Nil (the default) keeps every replica sweeping. A lock backend outage
+   fails open — a claim error sweeps anyway rather than stalling all
+   scheduled work.
+
+   ```go
+   runner, _ := scheduled.New(server, scheduled.Config{
+       Locker: myLocker, // Acquire(ctx, key, ttl) (bool, error)
+   })
+   ```
+
+   Any single-winner primitive works: `SET key val NX PX ttl` on Redis,
+   an `INSERT` on a unique column, a Postgres advisory lock.
+3. **Use the `scheduled/jobsx` adapter**, which bridges the runner to a
+   `jobs` queue so the sweep is enqueued as a durable job and dispatched
+   by the worker pool — exactly one worker picks up any given tick:
 
 ```go
 import (

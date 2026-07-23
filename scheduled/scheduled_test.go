@@ -2,6 +2,7 @@ package scheduled_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"sync"
@@ -33,6 +34,44 @@ func (p *panicFindAdapter) FindMany(ctx context.Context, model *maniflex.ModelMe
 		panic("scheduled-test: injected FindMany panic for " + model.Name)
 	}
 	return p.DBAdapter.FindMany(ctx, model, q)
+}
+
+// memLocker grants each key to exactly one caller (single-winner) and records
+// how many times it was consulted (attempts) and how many grants it made, so a
+// test can prove both replicas actually contended the same interval key.
+type memLocker struct {
+	mu       sync.Mutex
+	held     map[string]struct{}
+	attempts int
+	grants   int
+}
+
+func newMemLocker() *memLocker { return &memLocker{held: map[string]struct{}{}} }
+
+func (l *memLocker) Acquire(_ context.Context, key string, _ time.Duration) (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.attempts++
+	if _, ok := l.held[key]; ok {
+		return false, nil
+	}
+	l.held[key] = struct{}{}
+	l.grants++
+	return true, nil
+}
+
+func (l *memLocker) counts() (attempts, grants int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.attempts, l.grants
+}
+
+// errLocker fails every Acquire, to exercise the fail-open path.
+type errLocker struct{ n atomic.Int64 }
+
+func (l *errLocker) Acquire(context.Context, string, time.Duration) (bool, error) {
+	l.n.Add(1)
+	return false, errors.New("scheduled-test: lock backend down")
 }
 
 // ── Test models ───────────────────────────────────────────────────────────────
@@ -754,6 +793,107 @@ func TestSweep_PoisonBatch_DoesNotRecur(t *testing.T) {
 	}
 	if row, _ := ts.findByID(t, "Poison", otherID); row["label"] != "done" {
 		t.Errorf("independent row should stay done, got %v", row["label"])
+	}
+}
+
+// ── Leader election via Locker (SCHED-3) ────────────────────────────────────
+
+// With a shared Locker, two replicas ticking the same interval elect one sweeper
+// between them, so a set-field transition fires OnSetField once, not once per
+// replica.
+func TestRunner_WithLocker_OneReplicaSweepsPerInterval(t *testing.T) {
+	ts := newTestServer(t, []any{Article{}}, 0)
+	ts.createArticle(t, "draft", ptr(past()), nil, nil) // due for set-field draft→published
+
+	lock := newMemLocker()
+	var fired atomic.Int64
+	mkRunner := func() *scheduled.Runner {
+		r, err := scheduled.New(ts.server, scheduled.Config{
+			Interval:   10 * time.Second, // only the immediate t0 tick fires within the test
+			Clock:      ts.nowFunc,       // both replicas share an instant → the same interval key
+			Locker:     lock,
+			Logger:     discardLogger(),
+			OnSetField: func(_, _, _, _ string) { fired.Add(1) },
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	a, b := mkRunner(), mkRunner()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	a.Start(ctx)
+	b.Start(ctx)
+	defer a.Stop()
+	defer b.Stop()
+
+	// Wait until both replicas have contended the lock on their t0 tick.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if att, _ := lock.counts(); att >= 2 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	att, grants := lock.counts()
+	if att < 2 {
+		t.Fatalf("both replicas should have contended the lock, got %d attempts", att)
+	}
+	if grants != 1 {
+		t.Errorf("exactly one replica should win the interval, got %d grants", grants)
+	}
+
+	// The winner sweeps once; the loser skipped. OnSetField must fire exactly once.
+	fdeadline := time.Now().Add(time.Second)
+	for time.Now().Before(fdeadline) {
+		if fired.Load() == 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := fired.Load(); got != 1 {
+		t.Errorf("OnSetField should fire once across both replicas, got %d", got)
+	}
+}
+
+// A Locker outage must not silently stop all scheduled work: claim fails open and
+// the tick sweeps anyway.
+func TestRunner_LockerError_FailsOpen(t *testing.T) {
+	ts := newTestServer(t, []any{Article{}}, 0)
+	ts.createArticle(t, "draft", nil, ptr(past()), nil) // due for soft-delete
+
+	lock := &errLocker{}
+	var deleted atomic.Int64
+	runner, err := scheduled.New(ts.server, scheduled.Config{
+		Interval: 10 * time.Second,
+		Clock:    ts.nowFunc,
+		Locker:   lock,
+		Logger:   discardLogger(),
+		OnDelete: func(_, _ string) { deleted.Add(1) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runner.Start(ctx)
+	defer runner.Stop()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if deleted.Load() >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if deleted.Load() != 1 {
+		t.Fatalf("a Locker error must fail open and sweep: want 1 delete, got %d", deleted.Load())
+	}
+	if lock.n.Load() == 0 {
+		t.Error("the Locker was never consulted — the test proves nothing")
 	}
 }
 

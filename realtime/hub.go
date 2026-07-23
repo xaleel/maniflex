@@ -105,7 +105,7 @@ type Hub struct {
 	kickN   atomic.Int64 // slow-consumer kicks
 	cancel  events.Cancel
 	closed  atomic.Bool
-	wg      sync.WaitGroup // tracks WS read+write goroutines only
+	wg      sync.WaitGroup // WS read+write pumps and each SSE handler goroutine
 	resume  ResumeStore    // nil when resume is disabled
 }
 
@@ -191,7 +191,7 @@ func (h *Hub) admit() bool {
 func (h *Hub) release() { h.connN.Add(-1) }
 
 // Shutdown closes all client connections, cancels the bus subscription, and
-// waits for all WS goroutines to exit (or ctx to expire).
+// waits for every WS pump and SSE handler goroutine to exit (or ctx to expire).
 // Safe to call multiple times.
 func (h *Hub) Shutdown(ctx context.Context) error {
 	if !h.closed.CompareAndSwap(false, true) {
@@ -371,12 +371,17 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 			hub:        h,
 			w:          w,
 			flusher:    flusher,
+			rc:         http.NewResponseController(w),
 			principal:  principal,
 			patterns:   patterns,
 			out:        make(chan []byte, h.cfg.SendBuffer),
 			shutdownCh: make(chan struct{}),
 		}
 		h.clients.Store(sc, struct{}{})
+		// Track this handler goroutine so Shutdown drains it, not only the WS
+		// pumps. The bounded write deadline in sc.write is what keeps that drain
+		// from stalling on a client that has stopped reading.
+		h.wg.Add(1)
 		// connN was already incremented by admit(); the defer below balances it.
 		// Defer the cleanup so a panic inside sc.run doesn't leak the entry
 		// in h.clients or leave h.connN over-counted (which would block
@@ -384,13 +389,15 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 		defer func() {
 			h.clients.Delete(sc)
 			h.connN.Add(-1)
+			h.wg.Done()
 		}()
 
 		// Resume: replay events the client missed before entering the live
-		// loop. Registration above already queues live events into sc.out, so
-		// replay (written directly here) precedes them and the seam is at
-		// worst at-least-once — clients drop anything ≤ their last cursor.
-		h.replaySSE(w, flusher, sc, r)
+		// loop. Registration above already queues live events into sc.out, but
+		// only the channel — replay writes to the wire directly, ahead of the
+		// live drain in sc.run, so the backfill precedes newer events. The seam
+		// is at worst at-least-once — clients drop anything ≤ their last cursor.
+		h.replaySSE(sc, r)
 
 		sc.run(r.Context()) // blocks until disconnect or shutdown
 	}
@@ -505,7 +512,7 @@ func (h *Hub) deliverSSE(sc *sseClient, e events.Event, cursor string) {
 // is disabled or the client presents no cursor. If the cursor is too old (or
 // from a previous hub epoch) it emits a single `resync` event so the client
 // refetches state instead of silently skipping the gap.
-func (h *Hub) replaySSE(w http.ResponseWriter, flusher http.Flusher, sc *sseClient, r *http.Request) {
+func (h *Hub) replaySSE(sc *sseClient, r *http.Request) {
 	if h.resume == nil {
 		return
 	}
@@ -515,8 +522,7 @@ func (h *Hub) replaySSE(w http.ResponseWriter, flusher http.Flusher, sc *sseClie
 	}
 	evs, ok := h.resume.Replay(last)
 	if !ok {
-		io.WriteString(w, "event: resync\ndata: {}\n\n") //nolint:errcheck
-		flusher.Flush()
+		sc.write([]byte("event: resync\ndata: {}\n\n")) //nolint:errcheck
 		return
 	}
 	for _, be := range evs {
@@ -531,9 +537,13 @@ func (h *Hub) replaySSE(w http.ResponseWriter, flusher http.Flusher, sc *sseClie
 		if err != nil {
 			continue
 		}
-		w.Write(encodeSSEEvent("", be.Cursor, data)) //nolint:errcheck
+		// Stop the backlog on the first failed write: the client has gone away
+		// (or stalled past the deadline), and continuing would re-arm the
+		// deadline and block again per remaining event.
+		if err := sc.write(encodeSSEEvent("", be.Cursor, data)); err != nil {
+			return
+		}
 	}
-	flusher.Flush()
 }
 
 // lastEventID returns the resume cursor a reconnecting SSE client presents,
@@ -922,6 +932,7 @@ type sseClient struct {
 	hub        *Hub
 	w          http.ResponseWriter
 	flusher    http.Flusher
+	rc         *http.ResponseController
 	principal  *Principal
 	patterns   []string
 	out        chan []byte
@@ -930,8 +941,31 @@ type sseClient struct {
 	kickOnce   sync.Once // counts a slow-consumer kick at most once
 }
 
+// sseWriteTimeout bounds a single SSE write, the analogue of the WebSocket
+// writeRaw deadline. Without it a client that stops reading pins the handler
+// goroutine on w.Write forever — the replay backlog and every live event write
+// alike — and, because Shutdown waits on that goroutine, holds shutdown open too.
+// A var, not a const, only so tests can shorten it; production never sets it.
+var sseWriteTimeout = 10 * time.Second
+
 func (sc *sseClient) shutdown() {
 	sc.shutOnce.Do(func() { close(sc.shutdownCh) })
+}
+
+// write sends b to the client under a bounded write deadline and flushes.
+// Returns the write error so the caller can stop rather than loop on a client
+// that has gone away. SetWriteDeadline is best-effort: a ResponseWriter that
+// does not support it degrades to the previous unbounded behaviour rather than
+// failing the write.
+func (sc *sseClient) write(b []byte) error {
+	if sc.rc != nil {
+		sc.rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)) //nolint:errcheck
+	}
+	if _, err := sc.w.Write(b); err != nil {
+		return err
+	}
+	sc.flusher.Flush()
+	return nil
 }
 
 func (sc *sseClient) run(ctx context.Context) {
@@ -945,11 +979,13 @@ func (sc *sseClient) run(ctx context.Context) {
 	for {
 		select {
 		case frame := <-sc.out:
-			sc.w.Write(frame) //nolint:errcheck
-			sc.flusher.Flush()
+			if err := sc.write(frame); err != nil {
+				return // client gone or stalled past the write deadline
+			}
 		case <-keepalive.C:
-			io.WriteString(sc.w, ": keepalive\n\n") //nolint:errcheck
-			sc.flusher.Flush()
+			if err := sc.write([]byte(": keepalive\n\n")); err != nil {
+				return
+			}
 		case <-ctx.Done():
 			return
 		case <-sc.shutdownCh:

@@ -336,11 +336,17 @@ broker load doesn't scale with connection count.
 
 ## Graceful shutdown
 
-`Hub.Shutdown(ctx)` stops accepting connections, sends a `1001 Going Away` close
-to every client, drains in-flight writes until the deadline, then cancels the
-bus subscription. Call it alongside `*http.Server.Shutdown` from the same signal
-handler — the hub is mounted by your code, so it isn't part of
-`server.Shutdown`.
+`Hub.Shutdown(ctx)` stops accepting connections, signals every client to close
+(a `1001 Going Away` frame to WebSocket clients), and waits for every connection
+goroutine — both WebSocket pumps **and** SSE handlers — to drain, until `ctx`
+expires. It then cancels the bus subscription. Call it alongside
+`*http.Server.Shutdown` from the same signal handler — the hub is mounted by
+your code, so it isn't part of `server.Shutdown`.
+
+Every SSE write carries a bounded deadline, so a client that has stopped reading
+cannot pin its handler goroutine — and therefore cannot hold `Shutdown` open —
+past that deadline. This applies to the live stream, the keepalive comment, and
+the `lastEventId` replay backlog alike.
 
 ## HubConfig reference
 

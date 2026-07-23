@@ -280,6 +280,25 @@ configured, replays from its cursor — so nothing is lost. A client kept
 connected while its events were discarded would have a gap it could never learn
 about, which is the worse failure.
 
+## Connection & subscription limits
+
+Both limits are unbounded by default. Set them once a hub is exposed to
+untrusted clients — each connection costs goroutines, a socket, and buffers, and
+each subscription adds to the per-event fan-out cost.
+
+- **`MaxConnections`** caps the live connection count — the same number
+  `Stats().Connections` reports, so it bounds WebSocket and SSE **together**.
+  Once full, a new WebSocket upgrade or SSE request is refused with
+  `503 Service Unavailable` before any connection resources are committed; the
+  slot is returned when a connection closes.
+- **`MaxSubscriptionsPerConn`** caps how many subscriptions one WebSocket
+  connection may hold at a time. A `subscribe` past the cap is answered with a
+  `TOO_MANY_SUBSCRIPTIONS` error and the connection stays open; an
+  `unsubscribe` frees a slot. This bounds a single client's per-event work,
+  which grows with its subscription count. It has no SSE equivalent — an SSE
+  client subscribes once, at connect, so its fan-out cost is fixed by the
+  patterns in the connecting URL.
+
 ## Scaling out
 
 The hub is single-process by design; cross-replica fan-out is the bus's job:
@@ -316,4 +335,6 @@ handler — the hub is mounted by your code, so it isn't part of
 | `SendBuffer`     | 64               | per-client outbound queue depth                      |
 | `SendTimeout`    | —                | **deprecated, ignored**; fan-out no longer waits     |
 | `MaxMessageSize` | 64 KiB           | inbound frame size limit                             |
+| `MaxConnections` | 0 (unlimited)    | shared WS+SSE connection cap; over it → `503`        |
+| `MaxSubscriptionsPerConn` | 0 (unlimited) | per-WS subscription cap; over it → `TOO_MANY_SUBSCRIPTIONS` |
 | `Origins`        | allow-all        | allowed `Origin` values for both WS and SSE          |

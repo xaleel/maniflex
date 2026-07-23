@@ -40,6 +40,21 @@ type HubConfig struct {
 	MaxMessageSize int64         // 0 → 64 KiB; inbound frame size limit
 	Origins        []string      // allowed Origins for WS + SSE; empty = allow all
 
+	// MaxConnections caps how many live WebSocket + SSE connections the hub
+	// holds at once. 0 → unlimited. Once reached, a new WebSocket upgrade or
+	// SSE request is refused with 503 before any connection resources are
+	// committed. The count is the same one Stats().Connections reports, so the
+	// cap bounds both transports together.
+	MaxConnections int
+
+	// MaxSubscriptionsPerConn caps how many concurrent subscriptions a single
+	// WebSocket connection may hold. 0 → unlimited. A subscribe past the cap is
+	// refused with a TOO_MANY_SUBSCRIPTIONS error and the connection stays open;
+	// an unsubscribe frees a slot. It bounds one client's per-event fan-out
+	// cost, which is O(subscriptions). SSE has no equivalent — an SSE client
+	// subscribes once, at connect.
+	MaxSubscriptionsPerConn int
+
 	// Deprecated: SendTimeout is ignored and has no replacement.
 	//
 	// It used to bound how long fan-out would wait for room in a client's
@@ -150,6 +165,31 @@ func (h *Hub) Stats() HubStats {
 	}
 }
 
+// admit reserves a connection slot, returning false when MaxConnections is set
+// and already reached. It is the one place that increments connN, so the cap
+// and the count Stats reports can never disagree. In steady state the slot is
+// returned by remove() (WebSocket) or the SSE cleanup defer; release() covers
+// the failure paths in between, before either of those is wired up.
+func (h *Hub) admit() bool {
+	if h.cfg.MaxConnections <= 0 {
+		h.connN.Add(1)
+		return true
+	}
+	for {
+		n := h.connN.Load()
+		if int(n) >= h.cfg.MaxConnections {
+			return false
+		}
+		if h.connN.CompareAndSwap(n, n+1) {
+			return true
+		}
+	}
+}
+
+// release gives back a slot reserved by admit when the connection fails to come
+// up before its steady-state decrement is in place.
+func (h *Hub) release() { h.connN.Add(-1) }
+
 // Shutdown closes all client connections, cancels the bus subscription, and
 // waits for all WS goroutines to exit (or ctx to expire).
 // Safe to call multiple times.
@@ -214,8 +254,19 @@ func (h *Hub) Handler() http.HandlerFunc {
 			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 			return
 		}
+
+		// Connection cap. Reserve the slot before hijacking so a full hub can
+		// still answer with a clean 503; release it on any failure before the
+		// pumps take over, since only they (via remove) decrement in steady
+		// state.
+		if !h.admit() {
+			http.Error(w, "too many connections", http.StatusServiceUnavailable)
+			return
+		}
+
 		conn, brw, err := hj.Hijack()
 		if err != nil {
+			h.release()
 			http.Error(w, "hijack failed", http.StatusInternalServerError)
 			return
 		}
@@ -226,10 +277,12 @@ func (h *Hub) Handler() http.HandlerFunc {
 			"Connection: Upgrade\r\n" +
 			"Sec-WebSocket-Accept: " + wsAcceptKey(key) + "\r\n\r\n"
 		if _, err := io.WriteString(brw, resp); err != nil {
+			h.release()
 			conn.Close()
 			return
 		}
 		if err := brw.Flush(); err != nil {
+			h.release()
 			conn.Close()
 			return
 		}
@@ -245,7 +298,7 @@ func (h *Hub) Handler() http.HandlerFunc {
 			subs:      make(map[string][]string),
 		}
 		h.clients.Store(c, struct{}{})
-		h.connN.Add(1)
+		// connN was already incremented by admit(); remove() balances it.
 
 		h.wg.Add(2)
 		go c.readLoop()
@@ -299,6 +352,14 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 			return
 		}
 
+		// Connection cap. Admit before committing the 200 so a full hub can
+		// answer 503; nothing between here and the cleanup defer can fail, so
+		// the defer alone balances the reservation.
+		if !h.admit() {
+			http.Error(w, "too many connections", http.StatusServiceUnavailable)
+			return
+		}
+
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Connection", "keep-alive")
@@ -316,7 +377,7 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 			shutdownCh: make(chan struct{}),
 		}
 		h.clients.Store(sc, struct{}{})
-		h.connN.Add(1)
+		// connN was already incremented by admit(); the defer below balances it.
 		// Defer the cleanup so a panic inside sc.run doesn't leak the entry
 		// in h.clients or leave h.connN over-counted (which would block
 		// Shutdown indefinitely as it waits for connN to reach 0).
@@ -726,8 +787,19 @@ func (c *hubClient) handleSubscribe(raw map[string]json.RawMessage) {
 		return
 	}
 
-	subID := fmt.Sprintf("s_%d", c.subSeq.Add(1))
+	// Per-connection subscription cap, checked and applied under the same lock
+	// so two concurrent subscribes cannot both slip past a nearly-full map.
 	c.subMu.Lock()
+	if max := c.hub.cfg.MaxSubscriptionsPerConn; max > 0 && len(c.subs) >= max {
+		c.subMu.Unlock()
+		c.sendJSON(map[string]any{
+			"op":   "error",
+			"code": "TOO_MANY_SUBSCRIPTIONS",
+			"msg":  fmt.Sprintf("subscription limit reached (%d); unsubscribe first", max),
+		})
+		return
+	}
+	subID := fmt.Sprintf("s_%d", c.subSeq.Add(1))
 	c.subs[subID] = allowed
 	c.subMu.Unlock()
 

@@ -2,6 +2,7 @@
 
 ## v0.3.3
 
+- **Bugfix:** the realtime `Visibility` hook now runs once per client per event, as documented — not once per matching subscription. `deliverWS` evaluated it inside the per-subID loop, so a client subscribed to one event type through several overlapping patterns ran the (user-supplied) hook redundantly. Its inputs are only principal and event, so delivery to every matching sub is unchanged.
 - **Bugfix:** the WebSocket read path enforces RFC 6455 framing. It took the opcode from the low nibble, ignored FIN/RSV, and did not require the mask bit — so an unmasked frame was silently accepted and a fragmented message mis-parsed (first fragment dispatched whole, continuations dropped). Inbound messages must now be single masked frames; a violation is closed 1002.
 - **Bugfix:** a non-reading SSE client can no longer pin its handler goroutine — or block hub shutdown forever. Every SSE write (live stream, keepalive, and the `lastEventId` replay backlog) now carries a bounded deadline like the WebSocket side, where the replay and live writes were unbounded. `Shutdown` also now waits for SSE handler goroutines, not only the WebSocket pumps.
 - **Security (hardening):** the realtime hub is verified end-to-end not to leak secrets. v0.3.2 closed the leak at source but checked only the bus; new e2e tests assert the delivered WS + SSE payloads, the ResumeStore replay and the Visibility transform all strip encrypted, write-only and hidden fields. The hub forwards `Data` verbatim, so a hand-built event must redact itself.

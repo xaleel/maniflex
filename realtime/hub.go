@@ -432,11 +432,22 @@ func (h *Hub) deliverWS(c *hubClient, e events.Event, cursor string) {
 	}
 	c.subMu.RUnlock()
 
+	if len(matchingSubs) == 0 {
+		return
+	}
+
+	// Visibility depends only on the principal and the event, not the
+	// subscription, so evaluate it once per client rather than once per matching
+	// subID — a client subscribed to one event type through several overlapping
+	// patterns otherwise ran the (user-supplied) hook redundantly, once per sub.
+	// Guarded by the emptiness check above so a client with no match still never
+	// invokes the hook, as before.
+	ev, deliver := h.applyVisibility(c.principal, e)
+	if !deliver {
+		return
+	}
+
 	for _, subID := range matchingSubs {
-		ev, deliver := h.applyVisibility(c.principal, e)
-		if !deliver {
-			continue
-		}
 		if !h.enqueueWS(c, subID, cursor, ev) {
 			return // client was kicked
 		}

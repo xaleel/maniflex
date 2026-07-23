@@ -319,7 +319,8 @@ delegate the actual work to a job queue.
 
 ## Operational checklist
 
-- One runner per cluster, started once, stopped on shutdown.
+- One runner per cluster, started once, stopped on shutdown. `Start` is
+  idempotent — a duplicate call is a safe no-op, never a second loop.
 - Set `Interval` to the desired granularity — `1m` is plenty for most
   workflows; tighten if you have sub-minute deadlines.
 - Set `BatchSize` to a value the database can absorb in one transaction

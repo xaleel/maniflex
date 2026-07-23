@@ -86,6 +86,7 @@ type Runner struct {
 	cfg    Config
 
 	mu      sync.Mutex
+	started bool
 	stopped bool
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -135,12 +136,18 @@ func New(server *maniflex.Server, cfg Config) (*Runner, error) {
 // Start launches the tick loop in a background goroutine. Returns immediately.
 // One tick runs at t0 before the first interval elapses so a just-booted
 // replica catches a backlog without waiting a full Interval.
+//
+// Start is idempotent: a second call while the runner is already running (or
+// after Stop) is a no-op. Without this guard a second Start would spawn a second
+// concurrent loop and overwrite the first's cancel func, leaking that loop —
+// Stop could no longer reach it.
 func (r *Runner) Start(ctx context.Context) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.stopped {
+	if r.started || r.stopped {
 		return
 	}
+	r.started = true
 	loopCtx, cancel := context.WithCancel(ctx)
 	r.cancel = cancel
 	r.wg.Add(1)

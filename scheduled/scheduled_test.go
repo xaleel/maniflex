@@ -690,6 +690,50 @@ func TestRunner_Stop_Clean(t *testing.T) {
 	}
 }
 
+// A second Start must be a no-op (SCHED-6): it must not spawn a second loop
+// (double sweeps) nor overwrite the first loop's cancel func (which would leak
+// that loop and hang Stop forever).
+func TestRunner_DoubleStart_SingleLoop(t *testing.T) {
+	ts := newTestServer(t, []any{Article{}}, 0)
+	ts.createArticle(t, "draft", nil, ptr(past()), nil) // a due soft-delete row
+
+	// Each Sweep calls Clock exactly once, so this counts ticks across all loops.
+	var sweeps atomic.Int64
+	runner, err := scheduled.New(ts.server, scheduled.Config{
+		Interval: 10 * time.Second, // only the t0 tick fires within the test
+		Clock:    func() time.Time { sweeps.Add(1); return now() },
+		Logger:   discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := context.Background() // never cancelled: only Stop can end the loop
+	runner.Start(ctx)
+	runner.Start(ctx) // must be ignored
+
+	// Wait for the single loop's t0 tick, then give any erroneous second loop a
+	// chance to run its own before asserting.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && sweeps.Load() == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := sweeps.Load(); got != 1 {
+		t.Errorf("a second Start spawned a second loop: want 1 sweep, got %d", got)
+	}
+
+	// Stop must return: with a leaked second loop its cancel was lost, so Stop
+	// would cancel only that loop and block on the first forever.
+	done := make(chan struct{})
+	go func() { runner.Stop(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop() did not return — a second Start leaked a loop whose cancel was lost")
+	}
+}
+
 func TestRunner_ContextCancel_StopsLoop(t *testing.T) {
 	ts := newTestServer(t, []any{Plain{}}, 0)
 	runner, err := scheduled.New(ts.server, scheduled.Config{

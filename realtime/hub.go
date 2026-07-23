@@ -38,7 +38,7 @@ type HubConfig struct {
 	PingInterval   time.Duration // 0 → 30s; SSE keepalive comment cadence
 	SendBuffer     int           // 0 → 64; per-client outbound queue depth
 	MaxMessageSize int64         // 0 → 64 KiB; inbound frame size limit
-	Origins        []string      // allowed Origins for WS upgrade; empty = allow all
+	Origins        []string      // allowed Origins for WS + SSE; empty = allow all
 
 	// Deprecated: SendTimeout is ignored and has no replacement.
 	//
@@ -188,12 +188,12 @@ func (h *Hub) Handler() http.HandlerFunc {
 			return
 		}
 
-		// Origin check.
-		if len(h.cfg.Origins) > 0 {
-			if !originAllowed(r.Header.Get("Origin"), h.cfg.Origins) {
-				http.Error(w, "forbidden origin", http.StatusForbidden)
-				return
-			}
+		// Origin check. A browser is required by RFC 6455 to send Origin on
+		// every WebSocket handshake, so an absent one is not a browser and is
+		// refused when Origins is set — see originRefused on why SSE differs.
+		if h.originRefused(r, true) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
 		}
 
 		// Authenticate before upgrading.
@@ -258,6 +258,15 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if h.closed.Load() {
 			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+
+		// Origin check. Unlike the WebSocket handshake, a same-origin
+		// EventSource sends no Origin header at all, so an absent one must be
+		// allowed here or every same-origin SSE client breaks the moment
+		// Origins is set — see originRefused.
+		if h.originRefused(r, false) {
+			http.Error(w, "forbidden origin", http.StatusForbidden)
 			return
 		}
 
@@ -968,6 +977,31 @@ func patternAllowed(pattern string, allowList []string) bool {
 		}
 	}
 	return false
+}
+
+// originRefused reports whether a connection should be rejected on Origin
+// grounds. It is a no-op unless HubConfig.Origins is set — an empty allowlist
+// allows all, preserving the zero-config default.
+//
+// The two transports differ on an absent Origin, and the difference is forced
+// by the browser, not a preference. A WebSocket handshake always carries Origin
+// (RFC 6455 §4.1), so requireOrigin is true there and an absent one is refused:
+// it is not a browser, and demanding the header is real hardening. A
+// same-origin EventSource sends no Origin at all — the Fetch standard appends
+// it only for cors/websocket requests — so requireOrigin is false for SSE and
+// an absent Origin is allowed; refusing it would 403 every ordinary same-origin
+// SSE client the instant Origins is configured. A present Origin is checked
+// against the list either way, which is what actually catches a cross-origin
+// browser, since a browser always sends Origin on a cross-origin request.
+func (h *Hub) originRefused(r *http.Request, requireOrigin bool) bool {
+	if len(h.cfg.Origins) == 0 {
+		return false
+	}
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return requireOrigin
+	}
+	return !originAllowed(origin, h.cfg.Origins)
 }
 
 // originAllowed reports whether the request Origin header value is in the list.

@@ -115,6 +115,33 @@ hub, _ := realtime.NewHub(realtime.HubConfig{
 or the `Sec-WebSocket-Protocol: access_token.<token>` subprotocol. `Composite`
 tries several authenticators in order.
 
+### Origin checking
+
+Set `Origins` to restrict which web origins may open a connection; leave it
+empty (the default) to allow all. It gates **both** transports — the WebSocket
+handshake and the SSE stream. This matters most when the hub authenticates from
+an ambient credential such as a cookie, where the browser attaches it
+automatically: without an Origin check a page on any origin could open a
+connection with the victim's credentials (the realtime equivalent of CSRF).
+
+The two transports treat a **missing** `Origin` header differently, and the
+difference is dictated by the browser:
+
+- A **WebSocket** handshake always carries `Origin` (RFC 6455), so a missing one
+  means the caller is not a browser and is **refused** when `Origins` is set. If
+  you connect from a non-browser WebSocket client — a mobile app, a backend
+  relay — either send an allowed `Origin` yourself or leave `Origins` empty.
+- A same-origin **`EventSource`** sends **no** `Origin` header at all (the Fetch
+  standard adds it only to CORS and WebSocket requests), so a missing one is
+  **allowed** — otherwise every ordinary same-origin SSE client would break the
+  moment you configure `Origins`. A *present* but unlisted origin is refused,
+  which is what a cross-origin browser always sends.
+
+Origin is one layer, not the whole story. Because SSE is an ordinary CORS
+request, a cross-origin page also cannot *read* the stream unless your app's own
+CORS configuration permits it; the `Origins` check additionally stops the
+connection being established at all.
+
 ### Per-event authorisation
 
 `AllowPatterns` controls which topics a client may subscribe to; `Visibility`
@@ -289,4 +316,4 @@ handler — the hub is mounted by your code, so it isn't part of
 | `SendBuffer`     | 64               | per-client outbound queue depth                      |
 | `SendTimeout`    | —                | **deprecated, ignored**; fan-out no longer waits     |
 | `MaxMessageSize` | 64 KiB           | inbound frame size limit                             |
-| `Origins`        | allow-all        | allowed `Origin` values for the WS upgrade           |
+| `Origins`        | allow-all        | allowed `Origin` values for both WS and SSE          |

@@ -58,6 +58,17 @@ type Plain struct {
 	Name string `json:"name" db:"name"`
 }
 
+// Poison declares a hard-delete spec BEFORE a set-field spec, so a row due for
+// both is, within one tick, hard-deleted and then handed a doomed set-field on
+// the now-missing id — the SCHED-2 poison-batch shape. (meta.Scheduled preserves
+// field declaration order, as the Banner chained-transition test relies on.)
+type Poison struct {
+	maniflex.BaseModel
+	Label   string     `json:"label"    db:"label"`
+	PurgeAt *time.Time `json:"purge_at" db:"purge_at" mfx:"scheduled;hard-delete"`
+	FlipAt  *time.Time `json:"flip_at"  db:"flip_at"  mfx:"scheduled;field=label;to=done"`
+}
+
 // ── Test server ───────────────────────────────────────────────────────────────
 
 type testServer struct {
@@ -149,6 +160,23 @@ func (ts *testServer) createBanner(t *testing.T, color string, start, end *time.
 	row, err := ts.db.Create(context.Background(), meta, data)
 	if err != nil {
 		t.Fatalf("create banner: %v", err)
+	}
+	return maniflex.RecordToMap(meta, row)["id"].(string)
+}
+
+func (ts *testServer) createPoison(t *testing.T, label string, purgeAt, flipAt *time.Time) string {
+	t.Helper()
+	data := map[string]any{"label": label}
+	if purgeAt != nil {
+		data["purge_at"] = maniflex.CanonicalTime(*purgeAt)
+	}
+	if flipAt != nil {
+		data["flip_at"] = maniflex.CanonicalTime(*flipAt)
+	}
+	meta := ts.meta(t, "Poison")
+	row, err := ts.db.Create(context.Background(), meta, data)
+	if err != nil {
+		t.Fatalf("create poison: %v", err)
 	}
 	return maniflex.RecordToMap(meta, row)["id"].(string)
 }
@@ -667,6 +695,65 @@ func TestSweep_Concurrent_NoDoubleAction(t *testing.T) {
 	}
 	if len(remaining) != 0 {
 		t.Errorf("want 0 active rows after concurrent sweeps, got %d", len(remaining))
+	}
+}
+
+// ── ErrNotFound is a per-row skip, not a batch abort (SCHED-2) ──────────────
+
+// A row due for both a hard-delete and a set-field is deleted, then the doomed
+// set-field on the now-missing id is skipped — it must not roll back the batch
+// and starve the model's other due rows.
+func TestSweep_SameRowMultiSpec_DoesNotPoisonBatch(t *testing.T) {
+	ts := newTestServer(t, []any{Poison{}}, 0)
+	// The poison row: due for hard-delete (purge_at) AND set-field (flip_at).
+	poisonID := ts.createPoison(t, "todo", ptr(past()), ptr(past()))
+	// An independent row due only for the set-field — it must still drain.
+	otherID := ts.createPoison(t, "todo", nil, ptr(past()))
+
+	rep := ts.sweep(t) // ts.sweep fails on a top-level error; a skip is not one
+
+	if _, err := ts.findByID(t, "Poison", poisonID); err != maniflex.ErrNotFound {
+		t.Errorf("poison row should be hard-deleted, findByID err = %v (want ErrNotFound)", err)
+	}
+	other, err := ts.findByID(t, "Poison", otherID)
+	if err != nil {
+		t.Fatalf("independent row missing: %v", err)
+	}
+	if other["label"] != "done" {
+		t.Errorf("independent row starved by the poison batch: label = %v, want done", other["label"])
+	}
+	if rep.Deleted != 1 {
+		t.Errorf("Report.Deleted want 1 (the poison row), got %d", rep.Deleted)
+	}
+	if rep.Updated != 1 {
+		t.Errorf("Report.Updated want 1 (the independent row), got %d", rep.Updated)
+	}
+	if rep.Skipped != 1 {
+		t.Errorf("Report.Skipped want 1 (the doomed set-field on the deleted row), got %d", rep.Skipped)
+	}
+	if len(rep.Errors) != 0 {
+		t.Errorf("a skipped row must not surface as an error: %v", rep.Errors)
+	}
+}
+
+// The poison scenario must actually drain: a second sweep is a clean no-op, not
+// a re-poisoned batch that re-reads and re-fails the identical rows forever.
+func TestSweep_PoisonBatch_DoesNotRecur(t *testing.T) {
+	ts := newTestServer(t, []any{Poison{}}, 0)
+	ts.createPoison(t, "todo", ptr(past()), ptr(past()))
+	otherID := ts.createPoison(t, "todo", nil, ptr(past()))
+
+	ts.sweep(t) // first sweep drains both rows
+
+	rep := ts.sweep(t) // second sweep: nothing left to do
+	if rep.Deleted != 0 || rep.Updated != 0 || rep.Skipped != 0 {
+		t.Errorf("second sweep should be a clean no-op, got %+v", rep)
+	}
+	if len(rep.Errors) != 0 {
+		t.Errorf("second sweep produced errors: %v", rep.Errors)
+	}
+	if row, _ := ts.findByID(t, "Poison", otherID); row["label"] != "done" {
+		t.Errorf("independent row should stay done, got %v", row["label"])
 	}
 }
 

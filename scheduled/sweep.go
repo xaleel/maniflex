@@ -2,6 +2,7 @@ package scheduled
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime/debug"
@@ -28,6 +29,7 @@ type hookCall struct {
 type modelResult struct {
 	deleted int
 	updated int
+	skipped int // rows an action could no longer touch (0 rows) — idempotent no-ops
 	hooks   []hookCall
 }
 
@@ -84,7 +86,17 @@ func (r *Runner) sweepModel(ctx context.Context, meta *maniflex.ModelMeta, now t
 
 	res = modelResult{}
 	for _, w := range work {
-		if err := r.applyAction(ctx, tx, meta, w.id, w.spec, &res); err != nil {
+		err := r.applyAction(ctx, tx, meta, w.id, w.spec, &res)
+		if errors.Is(err, maniflex.ErrNotFound) {
+			// The row was already actioned earlier this tick (a delete short-
+			// circuiting a later same-row spec), already soft-deleted, or removed
+			// by a concurrent replica — an idempotent no-op, not a batch failure.
+			// Skip it: one gone row must not roll the whole model batch back and
+			// starve every other due row forever (SCHED-2).
+			res.skipped++
+			continue
+		}
+		if err != nil {
 			return modelResult{}, fmt.Errorf("scheduled: model %s apply: %w", meta.Name, err)
 		}
 	}

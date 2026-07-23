@@ -39,6 +39,7 @@ type Config struct {
 type Report struct {
 	Deleted  int
 	Updated  int
+	Skipped  int // rows whose action matched 0 rows (already gone) — skipped, not errored
 	PerModel map[string]ModelCount
 	Errors   []error // non-fatal per-model errors; Sweep continues past them
 }
@@ -187,6 +188,7 @@ func (r *Runner) Sweep(ctx context.Context) (Report, error) {
 		}
 		rep.Deleted += res.deleted
 		rep.Updated += res.updated
+		rep.Skipped += res.skipped
 		if res.deleted != 0 || res.updated != 0 {
 			rep.PerModel[meta.Name] = ModelCount{Deleted: res.deleted, Updated: res.updated}
 		}

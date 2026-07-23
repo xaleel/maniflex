@@ -136,11 +136,19 @@ For each registered model with scheduled specs, in turn:
 5. Fire `OnDelete` / `OnSetField` hooks for each row, in order.
 6. Move to the next model.
 
-The per-model transaction means a single bad row aborts only that
-model's batch, not the whole sweep. Errors are appended to the tick's
-`Report.Errors` and logged. A panic inside a model's sweep (from an
-adapter, `MapToRecord`, or a transaction op) is contained the same way:
-it is recovered into a `Report.Errors` entry, the transaction rolls
+A row an action can no longer touch — already deleted this tick by a
+prior spec on the same row, already soft-deleted, or removed by a
+concurrent replica — matches zero rows. That is an idempotent no-op, not
+a failure: the row is skipped (counted in `Report.Skipped`) and the batch
+continues. Without this, a same-row `hard-delete` + `set-field` would
+delete the row, fail the follow-up update, roll the whole batch back, and
+re-read the identical rows next tick — starving the model forever.
+
+The per-model transaction means a single genuinely bad row aborts only
+that model's batch, not the whole sweep. Errors are appended to the
+tick's `Report.Errors` and logged. A panic inside a model's sweep (from
+an adapter, `MapToRecord`, or a transaction op) is contained the same
+way: it is recovered into a `Report.Errors` entry, the transaction rolls
 back, and the remaining models are still swept.
 
 ### `Sweep` for one-shot ticks

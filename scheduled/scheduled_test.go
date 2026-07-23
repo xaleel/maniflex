@@ -440,6 +440,36 @@ func TestSweep_ClockBoundary_ExactlyNow(t *testing.T) {
 	}
 }
 
+// A due time a fraction of a second in the future, within the same whole second
+// as now, must not even be selected by the due-check (SCHED-7 / JB-7 sibling).
+// now() is a whole second, so under the old variable-width RFC3339Nano bound its
+// zero fraction was dropped to "…00Z"; SQLite's lexicographic TEXT compare then
+// sorted the fractional, still-in-the-future stored value ("…00.5…Z", '.' < 'Z')
+// *before* the bound, so Phase 1 selected it up to ~1s early. The canonical
+// fixed-width bound (NEW-1) makes both sides equal-width so the compare is
+// chronological.
+//
+// The assertion is on Report.Skipped, not just Deleted: the Phase-2 stillDue
+// re-check (SCHED-4) would catch a wrongly-selected future row and skip it, so a
+// Deleted==0 test alone would still pass with the buggy bound. Skipped==0 pins
+// that the due-check itself never selected the row.
+func TestSweep_SubSecondBoundary_NotSelectedEarly(t *testing.T) {
+	ts := newTestServer(t, []any{Article{}}, 0)
+	// expires_at 500ms after now, same whole second → not yet due.
+	id := ts.createArticle(t, "draft", nil, ptr(now().Add(500*time.Millisecond)), nil)
+
+	rep := ts.sweep(t)
+	if rep.Deleted != 0 {
+		t.Errorf("a due time 0.5s in the future fired early: Deleted=%d", rep.Deleted)
+	}
+	if rep.Skipped != 0 {
+		t.Errorf("the due-check selected a row 0.5s in the future (lexicographic boundary): Skipped=%d", rep.Skipped)
+	}
+	if _, err := ts.findByID(t, "Article", id); err != nil {
+		t.Errorf("row was soft-deleted ~0.5s early: findByID err = %v (want nil)", err)
+	}
+}
+
 // ── Chained transitions (Banner) ──────────────────────────────────────────────
 
 func TestSweep_ChainedTransitions_BothPast(t *testing.T) {

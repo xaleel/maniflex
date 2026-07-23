@@ -114,7 +114,9 @@ unconditionally and pay no cost.
 
 The two hooks fire once per affected row, after the per-model transaction
 has committed. They run outside the transaction, so a hook panic does
-not roll back the write.
+not roll back the write. A panicking hook is also recovered and logged
+(with a stack trace); it does not strand the model's remaining hooks,
+abort later models, or kill the background loop — the sweep continues.
 
 ### What one tick does
 
@@ -136,7 +138,10 @@ For each registered model with scheduled specs, in turn:
 
 The per-model transaction means a single bad row aborts only that
 model's batch, not the whole sweep. Errors are appended to the tick's
-`Report.Errors` and logged.
+`Report.Errors` and logged. A panic inside a model's sweep (from an
+adapter, `MapToRecord`, or a transaction op) is contained the same way:
+it is recovered into a `Report.Errors` entry, the transaction rolls
+back, and the remaining models are still swept.
 
 ### `Sweep` for one-shot ticks
 

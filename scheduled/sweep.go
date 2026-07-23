@@ -3,6 +3,8 @@ package scheduled
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/xaleel/maniflex"
@@ -17,9 +19,9 @@ const (
 // hookCall is a deferred user-hook invocation, recorded while a model's tx is
 // open and fired only after that tx commits.
 type hookCall struct {
-	kind         int
-	model, id    string
-	field, to    string
+	kind      int
+	model, id string
+	field, to string
 }
 
 // modelResult is the outcome of one sweepModel call.
@@ -36,7 +38,22 @@ type modelResult struct {
 // Reads happen before the transaction opens (a committed snapshot); writes all
 // happen inside it. Every action is idempotent, so this is safe to re-run and
 // safe across concurrent replicas.
-func (r *Runner) sweepModel(ctx context.Context, meta *maniflex.ModelMeta, now time.Time) (modelResult, error) {
+func (r *Runner) sweepModel(ctx context.Context, meta *maniflex.ModelMeta, now time.Time) (res modelResult, err error) {
+	// A panic in the adapter, MapToRecord, or a Tx op is contained here as a
+	// per-model error so Sweep records it and moves on to the next model rather
+	// than aborting the whole tick. The deferred tx.Rollback below is registered
+	// later, so it runs first on unwind — a mid-tx panic leaves nothing partial.
+	defer func() {
+		if p := recover(); p != nil {
+			r.cfg.Logger.Error("scheduled: model sweep panicked; recovered",
+				slog.String("model", meta.Name),
+				slog.Any("panic", p),
+				slog.String("stack", string(debug.Stack())),
+			)
+			res, err = modelResult{}, fmt.Errorf("scheduled: model %s panicked: %v", meta.Name, p)
+		}
+	}()
+
 	// ── Phase 1: collect due rows (reads, no tx) ──────────────────────────────
 	type todo struct {
 		id   string
@@ -65,7 +82,7 @@ func (r *Runner) sweepModel(ctx context.Context, meta *maniflex.ModelMeta, now t
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
 
-	res := modelResult{}
+	res = modelResult{}
 	for _, w := range work {
 		if err := r.applyAction(ctx, tx, meta, w.id, w.spec, &res); err != nil {
 			return modelResult{}, fmt.Errorf("scheduled: model %s apply: %w", meta.Name, err)

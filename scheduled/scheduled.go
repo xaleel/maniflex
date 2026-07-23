@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -146,6 +147,20 @@ func (r *Runner) loop(ctx context.Context) {
 }
 
 func (r *Runner) tick(ctx context.Context) {
+	// Final backstop: a panic anywhere in the tick (e.g. in the injected Clock
+	// or Sweep's own bookkeeping) must not unwind the loop goroutine — that
+	// would silently stop every scheduled model for the life of the process.
+	// Per-model and per-hook panics are already contained further down; this
+	// only catches what slips past them, keeping the ticker alive.
+	defer func() {
+		if p := recover(); p != nil {
+			r.cfg.Logger.Error("scheduled: tick panicked; loop preserved",
+				slog.Any("panic", p),
+				slog.String("stack", string(debug.Stack())),
+			)
+		}
+	}()
+
 	rep, err := r.Sweep(ctx)
 	if err != nil {
 		r.cfg.Logger.Error("scheduled: sweep failed", slog.String("error", err.Error()))
@@ -184,6 +199,19 @@ func (r *Runner) Sweep(ctx context.Context) (Report, error) {
 }
 
 func (r *Runner) fireHook(h hookCall) {
+	// A user hook is arbitrary code: recover its panic so it can't unwind the
+	// sweep and strand this model's remaining hooks (or later models).
+	defer func() {
+		if p := recover(); p != nil {
+			r.cfg.Logger.Error("scheduled: hook panicked; recovered",
+				slog.String("model", h.model),
+				slog.String("id", h.id),
+				slog.Any("panic", p),
+				slog.String("stack", string(debug.Stack())),
+			)
+		}
+	}()
+
 	switch h.kind {
 	case hookDelete:
 		if r.cfg.OnDelete != nil {

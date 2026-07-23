@@ -2,6 +2,8 @@ package scheduled_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +13,27 @@ import (
 	"github.com/xaleel/maniflex/db/sqlite"
 	"github.com/xaleel/maniflex/scheduled"
 )
+
+// discardLogger silences the ERROR lines the recover sites emit, so a test that
+// deliberately triggers a panic doesn't spew a stack trace over `go test`.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// panicFindAdapter wraps a real DBAdapter and panics in FindMany for one model,
+// standing in for a panic thrown by an adapter, MapToRecord, or a Tx op deep
+// inside sweepModel. Every other method is promoted from the embedded adapter.
+type panicFindAdapter struct {
+	maniflex.DBAdapter
+	model string
+}
+
+func (p *panicFindAdapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, q *maniflex.QueryParams) ([]any, int64, error) {
+	if model.Name == p.model {
+		panic("scheduled-test: injected FindMany panic for " + model.Name)
+	}
+	return p.DBAdapter.FindMany(ctx, model, q)
+}
 
 // ── Test models ───────────────────────────────────────────────────────────────
 
@@ -644,5 +667,125 @@ func TestSweep_Concurrent_NoDoubleAction(t *testing.T) {
 	}
 	if len(remaining) != 0 {
 		t.Errorf("want 0 active rows after concurrent sweeps, got %d", len(remaining))
+	}
+}
+
+// ── Panic recovery (SCHED-1) ────────────────────────────────────────────────
+
+// A panicking user hook must not unwind the sweep: it stays contained to that
+// one hook call, so the row's tx still commits and the model's remaining hooks
+// still fire. (fireHook recover.)
+func TestSweep_PanickingHook_DoesNotStrandOtherRows(t *testing.T) {
+	ts := newTestServer(t, []any{Article{}}, 0)
+	ts.createArticle(t, "draft", nil, ptr(past()), nil)
+	ts.createArticle(t, "draft", nil, ptr(past()), nil)
+
+	var calls atomic.Int64
+	runner, err := scheduled.New(ts.server, scheduled.Config{
+		Interval: time.Hour,
+		Clock:    ts.nowFunc,
+		Logger:   discardLogger(),
+		OnDelete: func(_, _ string) {
+			calls.Add(1)
+			panic("scheduled-test: hook boom")
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Without the recover the first hook's panic unwinds Sweep entirely — this
+	// call would panic and crash the test goroutine.
+	rep, err := runner.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("Sweep returned an error: %v", err)
+	}
+	if rep.Deleted != 2 {
+		t.Errorf("both rows committed before hooks: want Deleted 2, got %d", rep.Deleted)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("both hooks must fire despite the first panicking: want 2 calls, got %d", got)
+	}
+}
+
+// A panic deep inside one model's sweep must be contained to that model: Sweep
+// records it as a per-model error and still sweeps the other models. (sweepModel
+// recover.)
+func TestSweep_PanickingModel_IsolatedAndReported(t *testing.T) {
+	ts := newTestServer(t, []any{Article{}, Banner{}}, 0)
+	ts.createArticle(t, "draft", nil, ptr(past()), nil) // Article: will panic in FindMany
+	bannerID := ts.createBanner(t, "green", ptr(past()), nil)
+
+	// Swap the runner's adapter for one that panics on Article's FindMany.
+	ts.server.SetDB(&panicFindAdapter{DBAdapter: ts.db, model: "Article"})
+	runner, err := scheduled.New(ts.server, scheduled.Config{
+		Interval: time.Hour,
+		Clock:    ts.nowFunc,
+		Logger:   discardLogger(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Without the recover Article's panic unwinds Sweep and this call crashes.
+	rep, err := runner.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("Sweep returned a top-level error: %v", err)
+	}
+	if len(rep.Errors) != 1 {
+		t.Fatalf("want exactly one per-model error for the panicking model, got %d: %v", len(rep.Errors), rep.Errors)
+	}
+	// The other model was still swept to completion.
+	if rep.Updated != 1 {
+		t.Errorf("the non-panicking model must still be swept: want Updated 1, got %d", rep.Updated)
+	}
+	row, _ := ts.findByID(t, "Banner", bannerID)
+	if row["color"] != "red" {
+		t.Errorf("Banner should have been updated despite Article panicking: color = %v", row["color"])
+	}
+}
+
+// A panic in the tick itself (here via the injected Clock, above sweepModel and
+// fireHook) must not kill the loop goroutine: a later tick still sweeps due
+// rows. (tick backstop.)
+func TestRunner_Loop_SurvivesPanickingTick(t *testing.T) {
+	ts := newTestServer(t, []any{Article{}}, 0)
+	ts.createArticle(t, "draft", nil, ptr(past()), nil)
+
+	var clockCalls atomic.Int64
+	fixed := now()
+	clock := func() time.Time {
+		if clockCalls.Add(1) == 1 {
+			panic("scheduled-test: clock boom on the first tick")
+		}
+		return fixed
+	}
+
+	var deleted atomic.Int64
+	runner, err := scheduled.New(ts.server, scheduled.Config{
+		Interval: 40 * time.Millisecond,
+		Clock:    clock,
+		Logger:   discardLogger(),
+		OnDelete: func(_, _ string) { deleted.Add(1) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runner.Start(ctx)
+	defer runner.Stop()
+
+	// The t0 tick panics in Clock; a subsequent tick (~40ms later) must succeed.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if deleted.Load() >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if deleted.Load() < 1 {
+		t.Fatal("loop died after a panicking tick: the due row was never swept")
 	}
 }

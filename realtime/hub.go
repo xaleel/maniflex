@@ -99,14 +99,38 @@ type HubStats struct {
 // Mount Handler() at your WebSocket path and SSEHandler() at your SSE path.
 // Zero registration on maniflex.Config — add it only when you need real-time.
 type Hub struct {
-	cfg     HubConfig
-	clients sync.Map     // *hubClient → struct{} and *sseClient → struct{}
-	connN   atomic.Int64 // active connections
-	kickN   atomic.Int64 // slow-consumer kicks
-	cancel  events.Cancel
+	cfg        HubConfig
+	clients    sync.Map     // *hubClient → struct{} and *sseClient → struct{}
+	connN      atomic.Int64 // active connections
+	kickN      atomic.Int64 // slow-consumer kicks
+	capRejectN atomic.Int64 // connections refused at MaxConnections (for throttled logging)
+	originRejN atomic.Int64 // connections refused on Origin (for throttled logging)
+	cancel     events.Cancel
 	closed  atomic.Bool
 	wg      sync.WaitGroup // WS read+write pumps and each SSE handler goroutine
 	resume  ResumeStore    // nil when resume is disabled
+}
+
+// logThrottled emits msg at WARN on the first occurrence and every 128th after,
+// carrying the running count. Connection-refusal reasons (a full hub, a hostile
+// Origin) can arrive at the event rate under load or attack — exactly when
+// logging is most dangerous — so they leave a bounded trail rather than a line
+// per attempt.
+func logThrottled(logger *slog.Logger, counter *atomic.Int64, msg string, attrs ...any) {
+	if n := counter.Add(1); n == 1 || n%128 == 0 {
+		logger.Warn(msg, append([]any{"count", n}, attrs...)...)
+	}
+}
+
+// connLogger returns a child logger tagged with a connection's identity, so the
+// per-connection lines (a slow-consumer kick, a protocol close) correlate. It
+// carries metadata only — never event payloads — per the RT-6 redaction rule.
+func (h *Hub) connLogger(transport, remote string, p *Principal) *slog.Logger {
+	user := ""
+	if p != nil {
+		user = p.UserID
+	}
+	return h.cfg.Logger.With("transport", transport, "remote", remote, "user", user)
 }
 
 // NewHub creates a Hub and subscribes it to the bus.
@@ -216,6 +240,8 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 	case <-done:
 		return nil
 	case <-ctx.Done():
+		h.cfg.Logger.Warn("realtime: shutdown timed out before all connections drained",
+			"remaining", h.connN.Load())
 		return ctx.Err()
 	}
 }
@@ -232,6 +258,8 @@ func (h *Hub) Handler() http.HandlerFunc {
 		// every WebSocket handshake, so an absent one is not a browser and is
 		// refused when Origins is set — see originRefused on why SSE differs.
 		if h.originRefused(r, true) {
+			logThrottled(h.cfg.Logger, &h.originRejN, "realtime: connection refused, origin not allowed",
+				"transport", "ws", "origin", r.Header.Get("Origin"), "remote", r.RemoteAddr)
 			http.Error(w, "forbidden origin", http.StatusForbidden)
 			return
 		}
@@ -260,6 +288,8 @@ func (h *Hub) Handler() http.HandlerFunc {
 		// pumps take over, since only they (via remove) decrement in steady
 		// state.
 		if !h.admit() {
+			logThrottled(h.cfg.Logger, &h.capRejectN, "realtime: connection refused, hub at capacity",
+				"transport", "ws", "max", h.cfg.MaxConnections, "remote", r.RemoteAddr)
 			http.Error(w, "too many connections", http.StatusServiceUnavailable)
 			return
 		}
@@ -291,6 +321,7 @@ func (h *Hub) Handler() http.HandlerFunc {
 			hub:       h,
 			conn:      conn,
 			br:        brw.Reader,
+			logger:    h.connLogger("ws", conn.RemoteAddr().String(), principal),
 			principal: principal,
 			out:       make(chan []byte, h.cfg.SendBuffer),
 			done:      make(chan struct{}),
@@ -319,6 +350,8 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 		// allowed here or every same-origin SSE client breaks the moment
 		// Origins is set — see originRefused.
 		if h.originRefused(r, false) {
+			logThrottled(h.cfg.Logger, &h.originRejN, "realtime: connection refused, origin not allowed",
+				"transport", "sse", "origin", r.Header.Get("Origin"), "remote", r.RemoteAddr)
 			http.Error(w, "forbidden origin", http.StatusForbidden)
 			return
 		}
@@ -356,6 +389,8 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 		// answer 503; nothing between here and the cleanup defer can fail, so
 		// the defer alone balances the reservation.
 		if !h.admit() {
+			logThrottled(h.cfg.Logger, &h.capRejectN, "realtime: connection refused, hub at capacity",
+				"transport", "sse", "max", h.cfg.MaxConnections, "remote", r.RemoteAddr)
 			http.Error(w, "too many connections", http.StatusServiceUnavailable)
 			return
 		}
@@ -372,6 +407,7 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 			w:          w,
 			flusher:    flusher,
 			rc:         http.NewResponseController(w),
+			logger:     h.connLogger("sse", r.RemoteAddr, principal),
 			principal:  principal,
 			patterns:   patterns,
 			out:        make(chan []byte, h.cfg.SendBuffer),
@@ -412,14 +448,28 @@ func (h *Hub) fanout(e events.Event) {
 		cursor = h.resume.Append(e)
 	}
 	h.clients.Range(func(k, _ any) bool {
-		switch c := k.(type) {
-		case *hubClient:
-			h.deliverWS(c, e, cursor)
-		case *sseClient:
-			h.deliverSSE(c, e, cursor)
-		}
+		h.deliverOne(k, e, cursor)
 		return true
 	})
+}
+
+// deliverOne dispatches one event to one client, recovering from a panic so a
+// single client — most likely a panicking user Visibility hook, which runs
+// inline here in the shared bus-subscriber goroutine — cannot take down delivery
+// for every other client, or the goroutine itself.
+func (h *Hub) deliverOne(k any, e events.Event, cursor string) {
+	defer func() {
+		if r := recover(); r != nil {
+			h.cfg.Logger.Error("realtime: recovered from panic while delivering event",
+				"panic", r, "event_type", e.Type)
+		}
+	}()
+	switch c := k.(type) {
+	case *hubClient:
+		h.deliverWS(c, e, cursor)
+	case *sseClient:
+		h.deliverSSE(c, e, cursor)
+	}
 }
 
 func (h *Hub) deliverWS(c *hubClient, e events.Event, cursor string) {
@@ -486,7 +536,11 @@ func (h *Hub) enqueueWS(c *hubClient, subID, cursor string, ev events.Event) boo
 		// Counted once per client, not once per dropped event: the client stays
 		// registered until its pumps exit, so every event in the meantime lands
 		// here and would otherwise inflate the metric by the event rate.
-		c.kickOnce.Do(func() { h.kickN.Add(1) })
+		c.kickOnce.Do(func() {
+			h.kickN.Add(1)
+			c.logger.Warn("realtime: dropping slow consumer (outbound buffer full)",
+				"buffer", cap(c.out))
+		})
 		c.kick(wsClose1013)
 		return false
 	}
@@ -513,7 +567,11 @@ func (h *Hub) deliverSSE(sc *sseClient, e events.Event, cursor string) {
 	select {
 	case sc.out <- encodeSSEEvent("", cursor, data):
 	default:
-		sc.kickOnce.Do(func() { h.kickN.Add(1) })
+		sc.kickOnce.Do(func() {
+			h.kickN.Add(1)
+			sc.logger.Warn("realtime: dropping slow consumer (outbound buffer full)",
+				"buffer", cap(sc.out))
+		})
 		sc.shutdown()
 	}
 }
@@ -587,6 +645,7 @@ type hubClient struct {
 	hub        *Hub
 	conn       net.Conn
 	br         *bufio.Reader
+	logger     *slog.Logger
 	principal  *Principal
 	out        chan []byte       // encoded WS frames; never closed by sender
 	done       chan struct{}     // closed by close() to wake the write loop
@@ -701,6 +760,7 @@ func (c *hubClient) readLoop() {
 			case errors.Is(err, errFrameTooLarge):
 				c.sendClose(wsClose1009)
 			case errors.Is(err, errProtocol):
+				c.logger.Warn("realtime: closing connection on protocol error", "reason", err.Error())
 				c.sendClose(wsClose1002)
 			case errors.Is(err, os.ErrDeadlineExceeded):
 				// Say why, rather than dropping the socket. On the half-open
@@ -902,30 +962,30 @@ func (c *hubClient) recvFrame() (wsRawFrame, error) {
 	case rsv != 0:
 		// No extensions are negotiated (the upgrade advertises none), so a set
 		// RSV bit is a protocol error rather than a permessage-deflate frame.
-		return wsRawFrame{}, errProtocol
+		return wsRawFrame{}, fmt.Errorf("%w: RSV bit set", errProtocol)
 	case !masked:
 		// §5.1: every client-to-server frame MUST be masked.
-		return wsRawFrame{}, errProtocol
+		return wsRawFrame{}, fmt.Errorf("%w: unmasked client frame", errProtocol)
 	case !fin:
 		// This hub requires single-frame messages; a fragment start is refused
 		// rather than reassembled. Its inbound vocabulary is small control JSON
 		// that no compliant client fragments.
-		return wsRawFrame{}, errProtocol
+		return wsRawFrame{}, fmt.Errorf("%w: fragmented message", errProtocol)
 	}
 	switch opcode {
 	case wsText, wsBinary, wsClose, wsPing, wsPong:
 		// ok
 	case wsContinuation:
 		// No message is ever in progress, since fragmentation is not supported.
-		return wsRawFrame{}, errProtocol
+		return wsRawFrame{}, fmt.Errorf("%w: unexpected continuation frame", errProtocol)
 	default:
 		// Every reserved opcode (0x3–0x7 data, 0xB–0xF control).
-		return wsRawFrame{}, errProtocol
+		return wsRawFrame{}, fmt.Errorf("%w: reserved opcode 0x%x", errProtocol, opcode)
 	}
 	// §5.5: a control frame's payload is at most 125 bytes, so it never uses the
 	// extended-length forms (plen 126/127 here).
 	if opcode&0x8 != 0 && plen > 125 {
-		return wsRawFrame{}, errProtocol
+		return wsRawFrame{}, fmt.Errorf("%w: control frame too long", errProtocol)
 	}
 
 	switch plen {
@@ -980,6 +1040,7 @@ type sseClient struct {
 	w          http.ResponseWriter
 	flusher    http.Flusher
 	rc         *http.ResponseController
+	logger     *slog.Logger
 	principal  *Principal
 	patterns   []string
 	out        chan []byte

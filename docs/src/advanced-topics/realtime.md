@@ -355,6 +355,28 @@ cannot pin its handler goroutine — and therefore cannot hold `Shutdown` open �
 past that deadline. This applies to the live stream, the keepalive comment, and
 the `lastEventId` replay backlog alike.
 
+## Observability
+
+Set `Logger` (a `*slog.Logger`; defaults to `slog.Default()`) to surface the
+events an operator needs. The hub logs the signals that matter and stays quiet
+on healthy traffic:
+
+- **`WARN`** — a slow consumer dropped (its buffer filled), a connection refused
+  because the hub is at `MaxConnections` or its `Origin` isn't allowed, a
+  malformed frame closed as a protocol error, and a `Shutdown` that timed out
+  before draining. The two refusal cases are **throttled** — the first, then
+  every 128th, with a running count — so a flood or a scan can't drown the log.
+- **`ERROR`** — a panic recovered while delivering an event, which in practice
+  means a panicking `Visibility` hook (it runs inline in the fan-out). The hub
+  recovers per client, so one bad hook is logged and skipped rather than taking
+  down delivery for every other client.
+
+Ordinary disconnect churn — a dead peer reaped on the read deadline, an auth
+failure, a client that simply went away — is **not** logged; it's expected and
+would only add noise. Log lines carry connection metadata only — transport,
+remote address, user id, close reason — and **never** an event payload,
+matching the redaction rule above.
+
 ## HubConfig reference
 
 | Field            | Default          | Purpose                                              |

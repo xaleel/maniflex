@@ -128,7 +128,8 @@ For each registered model with scheduled specs, in turn:
    The `from=` qualifier becomes an additional `AND field = 'value'`
    clause.
 2. Open a per-model transaction.
-3. Apply the action to each row in the batch:
+3. For each row in the batch, lock it (`SELECT … FOR UPDATE`) and
+   re-check the due predicate against the locked row before acting:
    - `soft-delete` → `UPDATE table SET deleted_at = now() WHERE id = ?`
    - `hard-delete` → `DELETE FROM table WHERE id = ?` (via the adapter's
      `HardDelete` if available)
@@ -136,6 +137,14 @@ For each registered model with scheduled specs, in turn:
 4. Commit the transaction.
 5. Fire `OnDelete` / `OnSetField` hooks for each row, in order.
 6. Move to the next model.
+
+The due predicate is read in step 1 outside any transaction, so step 3
+re-asserts it under the row lock before mutating. If a user moved the
+`from=` field off its guard value, or nulled/pushed the timestamp to
+un-schedule the row, in the window between the read and the write, the
+row is no longer due and is skipped — the sweep never clobbers that
+concurrent edit. On Postgres the lock is `FOR UPDATE`; on SQLite the
+whole transaction is serialized (`BEGIN IMMEDIATE`).
 
 A row an action can no longer touch — already deleted this tick by a
 prior spec on the same row, already soft-deleted, or removed by a

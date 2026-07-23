@@ -74,6 +74,26 @@ func (l *errLocker) Acquire(context.Context, string, time.Duration) (bool, error
 	return false, errors.New("scheduled-test: lock backend down")
 }
 
+// editOnFindAdapter simulates a concurrent user edit that lands between the
+// sweep's Phase-1 due read and its Phase-2 write: the first FindMany that
+// actually surfaces a row for the target model runs edit() (through the real
+// adapter, its own committed write) before the sweep proceeds to the tx. The
+// sweep therefore carries a stale snapshot into Phase 2.
+type editOnFindAdapter struct {
+	maniflex.DBAdapter
+	model string
+	once  sync.Once
+	edit  func()
+}
+
+func (a *editOnFindAdapter) FindMany(ctx context.Context, meta *maniflex.ModelMeta, q *maniflex.QueryParams) ([]any, int64, error) {
+	rows, n, err := a.DBAdapter.FindMany(ctx, meta, q)
+	if err == nil && meta.Name == a.model && len(rows) > 0 {
+		a.once.Do(a.edit)
+	}
+	return rows, n, err
+}
+
 // ── Test models ───────────────────────────────────────────────────────────────
 
 type Article struct {
@@ -793,6 +813,84 @@ func TestSweep_PoisonBatch_DoesNotRecur(t *testing.T) {
 	}
 	if row, _ := ts.findByID(t, "Poison", otherID); row["label"] != "done" {
 		t.Errorf("independent row should stay done, got %v", row["label"])
+	}
+}
+
+// ── Write-time re-validation closes the TOCTOU (SCHED-4) ────────────────────
+
+// A user moves the guard field off `from` after the sweep's Phase-1 read; the
+// Phase-2 write must re-assert the guard under the row lock and skip, not force
+// the transition over the user's edit.
+func TestSweep_SetField_ConcurrentGuardEdit_NotClobbered(t *testing.T) {
+	ts := newTestServer(t, []any{Article{}}, 0)
+	id := ts.createArticle(t, "draft", ptr(past()), nil, nil) // due for set-field draft→published
+
+	adapter := &editOnFindAdapter{DBAdapter: ts.db, model: "Article", edit: func() {
+		meta := ts.meta(t, "Article")
+		rec, _ := maniflex.MapToRecord(meta, map[string]any{"status": "archived"})
+		if _, err := ts.db.Update(context.Background(), meta, id, rec, map[string]struct{}{"status": {}}); err != nil {
+			t.Errorf("concurrent edit failed: %v", err)
+		}
+	}}
+	ts.server.SetDB(adapter)
+	runner, err := scheduled.New(ts.server, scheduled.Config{Interval: time.Hour, Clock: ts.nowFunc, Logger: discardLogger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := runner.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+
+	row, err := ts.findByID(t, "Article", id)
+	if err != nil {
+		t.Fatalf("findByID: %v", err)
+	}
+	if row["status"] != "archived" {
+		t.Errorf("concurrent edit clobbered: status = %v, want archived (the user's edit)", row["status"])
+	}
+	if rep.Updated != 0 {
+		t.Errorf("the row was no longer due at write time; want Updated 0, got %d", rep.Updated)
+	}
+	if rep.Skipped != 1 {
+		t.Errorf("want Skipped 1 (re-validated as not due), got %d", rep.Skipped)
+	}
+}
+
+// A user un-schedules a soft-delete (pushes its timestamp into the future) after
+// Phase 1; the Phase-2 write must re-check the timestamp under the lock and skip,
+// not delete the row anyway.
+func TestSweep_SoftDelete_ConcurrentUnschedule_NotDeleted(t *testing.T) {
+	ts := newTestServer(t, []any{Article{}}, 0)
+	id := ts.createArticle(t, "draft", nil, ptr(past()), nil) // due for soft-delete via expires_at
+
+	adapter := &editOnFindAdapter{DBAdapter: ts.db, model: "Article", edit: func() {
+		meta := ts.meta(t, "Article")
+		rec, _ := maniflex.MapToRecord(meta, map[string]any{"expires_at": maniflex.CanonicalTime(future())})
+		if _, err := ts.db.Update(context.Background(), meta, id, rec, map[string]struct{}{"expires_at": {}}); err != nil {
+			t.Errorf("concurrent un-schedule failed: %v", err)
+		}
+	}}
+	ts.server.SetDB(adapter)
+	runner, err := scheduled.New(ts.server, scheduled.Config{Interval: time.Hour, Clock: ts.nowFunc, Logger: discardLogger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep, err := runner.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+
+	if _, err := ts.findByID(t, "Article", id); err != nil {
+		t.Errorf("the un-scheduled row was deleted anyway: findByID err = %v (want nil)", err)
+	}
+	if rep.Deleted != 0 {
+		t.Errorf("want Deleted 0, got %d", rep.Deleted)
+	}
+	if rep.Skipped != 1 {
+		t.Errorf("want Skipped 1 (re-validated as not due), got %d", rep.Skipped)
 	}
 }
 

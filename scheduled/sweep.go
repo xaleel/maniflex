@@ -87,13 +87,15 @@ func (r *Runner) sweepModel(ctx context.Context, meta *maniflex.ModelMeta, now t
 
 	res = modelResult{}
 	for _, w := range work {
-		err := r.applyAction(ctx, tx, meta, w.id, w.spec, &res)
+		err := r.applyAction(ctx, tx, meta, w.id, w.spec, now, &res)
 		if errors.Is(err, maniflex.ErrNotFound) {
 			// The row was already actioned earlier this tick (a delete short-
-			// circuiting a later same-row spec), already soft-deleted, or removed
-			// by a concurrent replica — an idempotent no-op, not a batch failure.
-			// Skip it: one gone row must not roll the whole model batch back and
-			// starve every other due row forever (SCHED-2).
+			// circuiting a later same-row spec), already soft-deleted, removed by a
+			// concurrent replica, or no longer due once locked (a concurrent edit
+			// moved the guard off `from` or un-scheduled it — SCHED-4). Any of these
+			// is an idempotent no-op, not a batch failure. Skip it: one gone row
+			// must not roll the whole model batch back and starve every other due
+			// row forever (SCHED-2).
 			res.skipped++
 			continue
 		}
@@ -137,10 +139,25 @@ func (r *Runner) dueQuery(spec maniflex.ScheduledSpec, now time.Time) *maniflex.
 
 // applyAction performs one spec's action against one row inside tx and records
 // the deferred hook.
+//
+// The Phase-1 due read ran outside any transaction, so before mutating we lock
+// the row with FindByIDForUpdate and re-assert the due predicate against the
+// locked state (stillDue). This closes the write-time TOCTOU (SCHED-4): a user
+// who moved the guard field off `from`, or nulled the timestamp to un-schedule,
+// after Phase 1 is not silently clobbered. A row that is gone or no longer due
+// returns ErrNotFound and funnels into the caller's skip path (SCHED-2).
 func (r *Runner) applyAction(
 	ctx context.Context, tx maniflex.Tx, meta *maniflex.ModelMeta,
-	id string, spec maniflex.ScheduledSpec, res *modelResult,
+	id string, spec maniflex.ScheduledSpec, now time.Time, res *modelResult,
 ) error {
+	locked, err := tx.FindByIDForUpdate(ctx, meta, id)
+	if err != nil {
+		return err // ErrNotFound (gone / soft-deleted) → skipped by the caller
+	}
+	if !stillDue(meta, locked, spec, now) {
+		return maniflex.ErrNotFound // guard moved or un-scheduled since Phase 1 → skip
+	}
+
 	switch spec.Action {
 	case maniflex.SchedSoftDelete:
 		if err := tx.Delete(ctx, meta, id); err != nil {
@@ -172,4 +189,62 @@ func (r *Runner) applyAction(
 		})
 	}
 	return nil
+}
+
+// stillDue re-checks a locked row against the spec's due predicate — the same
+// conditions dueQuery applied in Phase 1, re-asserted now that the row is locked
+// so a concurrent edit landed since the Phase-1 read cannot be clobbered.
+func stillDue(meta *maniflex.ModelMeta, record any, spec maniflex.ScheduledSpec, now time.Time) bool {
+	m := maniflex.RecordToMap(meta, record)
+
+	// The scheduled timestamp must still be non-null and in the past — a user may
+	// have nulled or pushed it to un-schedule the row.
+	col, ok := asTime(m[spec.Column])
+	if !ok || col.After(now) {
+		return false
+	}
+
+	// A set-field action must still satisfy its guard — a user may have moved the
+	// field off `from`, or another sweep already set it to `to`.
+	if spec.Action == maniflex.SchedSetField {
+		cur := asString(m[spec.Field])
+		if spec.HasFrom {
+			return cur == spec.From
+		}
+		return cur != spec.To
+	}
+	return true
+}
+
+// asTime coerces a scheduled column value (a *time.Time from the record bridge)
+// to a time.Time, reporting false for a nil pointer or an unexpected type.
+func asTime(v any) (time.Time, bool) {
+	switch t := v.(type) {
+	case *time.Time:
+		if t == nil {
+			return time.Time{}, false
+		}
+		return *t, true
+	case time.Time:
+		return t, true
+	}
+	return time.Time{}, false
+}
+
+// asString renders a guard-field value the way dueQuery's OpEq/OpNeq filter
+// compares it: enum/status columns arrive as string (or *string), and any other
+// scalar falls back to its default formatting.
+func asString(v any) string {
+	switch s := v.(type) {
+	case string:
+		return s
+	case *string:
+		if s == nil {
+			return ""
+		}
+		return *s
+	case nil:
+		return ""
+	}
+	return fmt.Sprint(v)
 }

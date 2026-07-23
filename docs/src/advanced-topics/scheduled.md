@@ -273,6 +273,36 @@ runner. It flows through the model's normal middleware:
 This is intentional — a status change is a status change, regardless of
 whether a human or the runner triggered it.
 
+## Security: scheduled actions run privileged and un-scoped
+
+The runner sweeps through the **raw DB adapter**, not the request
+pipeline. It has no `ServerContext` and no authenticated principal, so it
+bypasses every **request-level** scope your middleware normally enforces —
+tenant partitioning (`ctx.Auth.TenantID`), owner/row-level filters, and
+auth checks. The consequences:
+
+- **A scheduled action applies to _every_ tenant's due rows, not one
+  tenant's.** A `mfx:"scheduled;soft-delete"` on a tenant-partitioned
+  model soft-deletes all tenants' expired rows globally; a `set-field`
+  flips the field on every matching row across all tenants.
+- **Hooks receive no tenant/owner context.** `OnDelete(model, id)` and
+  `OnSetField(model, id, field, to)` get the model name and row id only —
+  not the principal, tenant, or owner the row belongs to.
+
+This is inherent to a background sweep: there is no request, so there is
+no caller to scope to. Treat the runner and its hooks as **privileged**.
+
+**What still applies:** DB-layer middleware wired into the adapter —
+`Versioned` history, `db.AuditLog`, `mfx:"encrypted"` — runs as usual,
+because it lives below the request pipeline (versioned rows record
+`actor_id = NULL`, as above). Only request-level scoping is skipped.
+
+If a model needs per-tenant scheduling *policy*, encode it in the row
+itself — a per-row timestamp and guard are already tenant-local — or gate
+the action inside the hook (which knows the id and can look the row up
+under the right scope). Do not rely on the sweep to honour a tenant
+boundary; it does not see one.
+
 ## When to use scheduled fields
 
 | Need | Fit |

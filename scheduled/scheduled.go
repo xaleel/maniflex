@@ -11,6 +11,10 @@
 // the caller with jobs/cron (see scheduled/jobsx). To run Start on several
 // replicas without firing hooks N times, pass a Config.Locker for leader
 // election, or run Start in exactly one process.
+//
+// The runner sweeps privileged and un-scoped: it uses the raw DB adapter, not
+// the request pipeline, so it bypasses request-level tenant/owner/auth scoping
+// and acts on every tenant's due rows. Treat it and its hooks as privileged.
 package scheduled
 
 import (
@@ -53,7 +57,9 @@ type Config struct {
 	Locker Locker
 
 	// Hooks fire once per affected row after the per-model tx commits. Use them
-	// to publish events / write an audit trail. They run outside the tx.
+	// to publish events / write an audit trail. They run outside the tx, and
+	// receive no tenant/owner/principal context — the sweep is un-scoped (see the
+	// package doc), so a hook that needs a tenant must look it up from the id.
 	OnDelete   func(model, id string)
 	OnSetField func(model, id, field, to string)
 }

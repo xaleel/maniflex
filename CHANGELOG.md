@@ -2,6 +2,7 @@
 
 ## v0.3.4
 
+- **Docs:** documented that the `scheduled` runner sweeps privileged and un-scoped — it uses the raw DB adapter, not the request pipeline, so it bypasses tenant/owner/auth scoping and acts on every tenant's due rows, and `OnDelete`/`OnSetField` get no tenant/owner context. Behaviour unchanged; a new Security section (and godoc) explains why and how to keep per-tenant policy per-row.
 - **Bugfix:** the `scheduled` sweep no longer clobbers a concurrent edit. The write re-checked nothing, so a `set-field` whose guard a user moved off `from` was still forced to `published`, and a row un-scheduled by nulling its timestamp was still deleted. Each row is now locked (`FindByIDForUpdate`) and re-checked as still-due before the write; one no longer due is skipped.
 - **Feature:** `scheduled.Config.Locker` opts the in-process `Runner` into leader election, so `Start` on N replicas sweeps once per interval, not N times. Without it a set-field transition fired `OnSetField` on every replica, duplicating events/audit rows. The Locker (same shape as `jobs/cron`) gates each tick on an atomic per-interval claim; errors fail open. Nil keeps today's behaviour.
 - **Bugfix:** a `scheduled` row that is already gone no longer poisons its whole batch. A 0-row action returned `ErrNotFound` and rolled the per-model tx back, so a same-row `hard-delete` + `set-field` deleted the row, failed the update, and re-read the same rows every tick — starving its other due rows forever. Such an action is now an idempotent skip (`Report.Skipped`); real errors abort.

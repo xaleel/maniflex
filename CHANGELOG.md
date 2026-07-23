@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.3
+## v0.3.3 (2026-07-23)
 
 - **Feature / Reliability:** the realtime hub now uses its `Logger`, defaulted then never read — a hub dropped connections silently. It logs WARN on a slow-consumer kick, a connection refused at `MaxConnections` or on `Origin` (throttled), a protocol close, and a shutdown timeout; and recovers per client from a `Visibility`-hook panic (ERROR) so one bad hook no longer kills delivery for all.
 - **Bugfix:** the realtime `Visibility` hook now runs once per client per event, as documented — not once per matching subscription. `deliverWS` evaluated it inside the per-subID loop, so a client subscribed to one event type through several overlapping patterns ran the (user-supplied) hook redundantly. Its inputs are only principal and event, so delivery to every matching sub is unchanged.

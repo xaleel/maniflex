@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.3.4
+## v0.3.4 (2026-07-24)
 
 - **Feature:** the `scheduled` sweep signals a backlog it can't drain in one tick. Each tick processes at most `BatchSize` rows per (model, spec); a larger due set drained silently at `BatchSize`/`Interval` rows with no indication rows were left behind. A tick that hits the cap now sets `Report.Truncated` and logs a WARN naming the model, so a backlog building faster than it drains is visible.
 - **Bugfix:** `scheduled.Runner.Start` is now idempotent. It guarded only on `stopped`, so a second `Start` spawned a second concurrent loop (double sweeps) and overwrote the first loop's cancel func — `Stop` could then reach only the second loop and blocked forever on the leaked first. A duplicate `Start` (while running, or after `Stop`) is now a no-op.

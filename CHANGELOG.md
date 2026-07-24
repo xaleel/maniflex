@@ -2,6 +2,7 @@
 
 ## v0.3.4
 
+- **Feature:** the `scheduled` sweep signals a backlog it can't drain in one tick. Each tick processes at most `BatchSize` rows per (model, spec); a larger due set drained silently at `BatchSize`/`Interval` rows with no indication rows were left behind. A tick that hits the cap now sets `Report.Truncated` and logs a WARN naming the model, so a backlog building faster than it drains is visible.
 - **Bugfix:** `scheduled.Runner.Start` is now idempotent. It guarded only on `stopped`, so a second `Start` spawned a second concurrent loop (double sweeps) and overwrote the first loop's cancel func — `Stop` could then reach only the second loop and blocked forever on the leaked first. A duplicate `Start` (while running, or after `Stop`) is now a no-op.
 - **Docs:** documented that the `scheduled` runner sweeps privileged and un-scoped — it uses the raw DB adapter, not the request pipeline, so it bypasses tenant/owner/auth scoping and acts on every tenant's due rows, and `OnDelete`/`OnSetField` get no tenant/owner context. Behaviour unchanged; a new Security section (and godoc) explains why and how to keep per-tenant policy per-row.
 - **Bugfix:** the `scheduled` sweep no longer clobbers a concurrent edit. The write re-checked nothing, so a `set-field` whose guard a user moved off `from` was still forced to `published`, and a row un-scheduled by nulling its timestamp was still deleted. Each row is now locked (`FindByIDForUpdate`) and re-checked as still-due before the write; one no longer due is skipped.

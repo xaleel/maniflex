@@ -106,7 +106,7 @@ unconditionally and pay no cost.
 | Field | Default | Purpose |
 |---|---|---|
 | `Interval` | `1m` | how often the loop ticks |
-| `BatchSize` | `500` | maximum rows processed per (model, spec) per tick |
+| `BatchSize` | `500` | maximum rows processed per (model, spec) per tick; a larger backlog sets `Report.Truncated` and logs a WARN |
 | `Logger` | `slog.Default()` | structured log sink |
 | `Clock` | `time.Now().UTC` | injectable; tests override |
 | `Locker` | nil | leader election: gate each tick so one replica sweeps per interval (see [Distributed runners](#distributed-runners)) |
@@ -173,6 +173,12 @@ log.Printf("deleted %d, updated %d across %d models",
 
 Useful in tests and for cron-driven deployments where the framework's
 internal ticker is the wrong fit. `Sweep` blocks until the pass completes.
+
+Each tick processes at most `BatchSize` rows per (model, spec); a larger
+backlog drains over successive ticks. When that happens the tick sets
+`Report.Truncated` and logs a WARN, so a backlog building faster than it
+drains is visible rather than silent. Act on it by raising `BatchSize`,
+tightening `Interval`, or draining out-of-band with `Sweep`.
 
 ## Distributed runners
 

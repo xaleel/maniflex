@@ -66,11 +66,12 @@ type Config struct {
 
 // Report is the outcome of one Sweep, per model and aggregate.
 type Report struct {
-	Deleted  int
-	Updated  int
-	Skipped  int // rows whose action matched 0 rows (already gone) — skipped, not errored
-	PerModel map[string]ModelCount
-	Errors   []error // non-fatal per-model errors; Sweep continues past them
+	Deleted   int
+	Updated   int
+	Skipped   int  // rows whose action matched 0 rows (already gone) — skipped, not errored
+	Truncated bool // a spec's due set exceeded BatchSize this tick; a backlog remains, draining over later ticks
+	PerModel  map[string]ModelCount
+	Errors    []error // non-fatal per-model errors; Sweep continues past them
 }
 
 // ModelCount is the per-model tally inside a Report.
@@ -252,6 +253,9 @@ func (r *Runner) Sweep(ctx context.Context) (Report, error) {
 		rep.Deleted += res.deleted
 		rep.Updated += res.updated
 		rep.Skipped += res.skipped
+		if res.truncated {
+			rep.Truncated = true
+		}
 		if res.deleted != 0 || res.updated != 0 {
 			rep.PerModel[meta.Name] = ModelCount{Deleted: res.deleted, Updated: res.updated}
 		}

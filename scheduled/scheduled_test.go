@@ -1,10 +1,12 @@
 package scheduled_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -519,6 +521,74 @@ func TestSweep_BatchSize_Cap(t *testing.T) {
 	rep2 := ts.sweep(t)
 	if rep2.Deleted != 3 {
 		t.Errorf("second sweep: want 3 deleted (remainder), got %d", rep2.Deleted)
+	}
+}
+
+// ── Truncation signal (SCHED-8) ─────────────────────────────────────────────
+
+// A backlog larger than BatchSize sets Report.Truncated and logs a WARN, so an
+// operator running the background loop (which discards the Report) still learns
+// the sweep is pacing behind; once the backlog drains the flag clears.
+func TestSweep_Truncated_SignalsBacklog(t *testing.T) {
+	const batch = 5
+	ts := newTestServer(t, []any{Article{}}, batch)
+	for range batch + 3 { // 8 due rows — a backlog past BatchSize
+		ts.createArticle(t, "draft", nil, ptr(past()), nil)
+	}
+
+	var buf bytes.Buffer
+	runner, err := scheduled.New(ts.server, scheduled.Config{
+		Interval:  time.Hour,
+		BatchSize: batch,
+		Clock:     ts.nowFunc,
+		Logger:    slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rep1, err := runner.Sweep(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep1.Deleted != batch {
+		t.Errorf("first sweep: want %d deleted, got %d", batch, rep1.Deleted)
+	}
+	if !rep1.Truncated {
+		t.Error("a backlog > BatchSize must set Report.Truncated")
+	}
+	if !strings.Contains(buf.String(), "backlog") {
+		t.Errorf("a truncated sweep should log a WARN naming the backlog; got %q", buf.String())
+	}
+
+	rep2, err := runner.Sweep(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep2.Deleted != 3 {
+		t.Errorf("second sweep: want 3 deleted (remainder), got %d", rep2.Deleted)
+	}
+	if rep2.Truncated {
+		t.Error("no backlog remains; Report.Truncated should be false")
+	}
+}
+
+// Exactly BatchSize due rows drain fully in one tick, so Truncated must stay
+// false — the reason dueQuery reads BatchSize+1 rather than assuming a full page
+// means "more remain".
+func TestSweep_Truncated_ExactBatchSizeNotTruncated(t *testing.T) {
+	const batch = 5
+	ts := newTestServer(t, []any{Article{}}, batch)
+	for range batch { // exactly BatchSize
+		ts.createArticle(t, "draft", nil, ptr(past()), nil)
+	}
+
+	rep := ts.sweep(t)
+	if rep.Deleted != batch {
+		t.Errorf("want %d deleted, got %d", batch, rep.Deleted)
+	}
+	if rep.Truncated {
+		t.Error("exactly BatchSize rows drain fully; Truncated must be false (not a false positive)")
 	}
 }
 

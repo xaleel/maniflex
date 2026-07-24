@@ -27,10 +27,11 @@ type hookCall struct {
 
 // modelResult is the outcome of one sweepModel call.
 type modelResult struct {
-	deleted int
-	updated int
-	skipped int // rows an action could no longer touch (0 rows) — idempotent no-ops
-	hooks   []hookCall
+	deleted   int
+	updated   int
+	skipped   int  // rows an action could no longer touch (0 rows) — idempotent no-ops
+	truncated bool // a spec's due set exceeded BatchSize; only BatchSize drained this tick
+	hooks     []hookCall
 }
 
 // sweepModel sweeps one model: it claims due rows for every scheduled spec via
@@ -63,6 +64,7 @@ func (r *Runner) sweepModel(ctx context.Context, meta *maniflex.ModelMeta, now t
 		spec maniflex.ScheduledSpec
 	}
 	var work []todo
+	truncated := false
 
 	for _, spec := range meta.Scheduled() {
 		q := r.dueQuery(spec, now)
@@ -70,9 +72,22 @@ func (r *Runner) sweepModel(ctx context.Context, meta *maniflex.ModelMeta, now t
 		if err != nil {
 			return modelResult{}, fmt.Errorf("scheduled: model %s find due rows: %w", meta.Name, err)
 		}
+		// dueQuery reads one row beyond BatchSize: an overflow means this spec has
+		// a backlog this tick can't fully drain. Process only BatchSize, and flag it
+		// so the tick isn't silently pacing behind (SCHED-8).
+		if len(rows) > r.cfg.BatchSize {
+			rows = rows[:r.cfg.BatchSize]
+			truncated = true
+		}
 		for _, row := range rows {
 			work = append(work, todo{id: fmt.Sprint(maniflex.RecordToMap(meta, row)["id"]), spec: spec})
 		}
+	}
+	if truncated {
+		r.cfg.Logger.Warn("scheduled: due backlog exceeds BatchSize; only BatchSize rows drain this tick",
+			slog.String("model", meta.Name),
+			slog.Int("batch_size", r.cfg.BatchSize),
+		)
 	}
 	if len(work) == 0 {
 		return modelResult{}, nil
@@ -85,7 +100,7 @@ func (r *Runner) sweepModel(ctx context.Context, meta *maniflex.ModelMeta, now t
 	}
 	defer tx.Rollback() //nolint:errcheck // no-op after a successful Commit
 
-	res = modelResult{}
+	res = modelResult{truncated: truncated}
 	for _, w := range work {
 		err := r.applyAction(ctx, tx, meta, w.id, w.spec, now, &res)
 		if errors.Is(err, maniflex.ErrNotFound) {
@@ -134,7 +149,10 @@ func (r *Runner) dueQuery(spec maniflex.ScheduledSpec, now time.Time) *maniflex.
 			})
 		}
 	}
-	return &maniflex.QueryParams{Page: 1, Limit: r.cfg.BatchSize, Filters: filters}
+	// Read one past BatchSize so sweepModel can tell a full batch (exactly
+	// BatchSize due, drained fully) from a backlog (more than BatchSize due) and
+	// set Report.Truncated without a false positive at exactly BatchSize (SCHED-8).
+	return &maniflex.QueryParams{Page: 1, Limit: r.cfg.BatchSize + 1, Filters: filters}
 }
 
 // applyAction performs one spec's action against one row inside tx and records

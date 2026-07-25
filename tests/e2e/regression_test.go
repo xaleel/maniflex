@@ -369,7 +369,7 @@ func TestCritical_CacheMiddleware(t *testing.T) {
 		return testutil.NewServer(t, testutil.Options{
 			Middleware: func(s *maniflex.Server) {
 				s.Pipeline.Response.Register(
-					response.Cache(300),
+					response.Cache(response.CacheConfig{MaxAge: 300}),
 					maniflex.ForOperation(maniflex.OpRead, maniflex.OpList),
 					maniflex.AtPosition(maniflex.After),
 				)
@@ -383,7 +383,7 @@ func TestCritical_CacheMiddleware(t *testing.T) {
 		id := srv.MustID(srv.CreateUser("U", "cc@x.com", "viewer"))
 		resp := srv.GET("/users/" + id)
 		resp.AssertStatus(http.StatusOK)
-		testutil.AssertEqual(t, "Cache-Control", resp.Header.Get("Cache-Control"), "public, max-age=300")
+		testutil.AssertEqual(t, "Cache-Control", resp.Header.Get("Cache-Control"), "private, max-age=300")
 	})
 
 	t.Run("cache_control_set_on_list", func(t *testing.T) {

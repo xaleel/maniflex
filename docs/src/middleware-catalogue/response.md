@@ -65,16 +65,55 @@ server.Pipeline.Response.Register(
 
 ### `Cache`
 
-Sets `Cache-Control: public, max-age=N` on successful reads. Register at
+Sets an explicit cache policy and ETag on reads. The zero policy is
+`private, max-age=0`; shared caches are never enabled implicitly. Register at
 `maniflex.After` so the framework's own headers do not override yours:
 
 ```go
 server.Pipeline.Response.Register(
-    response.Cache(300),  // 5 minutes
+    response.Cache(response.CacheConfig{
+        MaxAge: 300, // private, 5 minutes
+        Vary:   []string{"Authorization"},
+    }),
     maniflex.ForOperation(maniflex.OpRead, maniflex.OpList),
     maniflex.AtPosition(maniflex.After),
 )
 ```
+
+`CacheConfig` supports:
+
+- `Private: true` — only a browser/user-agent cache may store the response.
+  This is the default when no storage mode is selected.
+- `NoStore: true` — no cache may store the response. This also disables ETags
+  and `If-None-Match` handling.
+- `Public: true` — explicitly permits shared proxy/CDN storage.
+- `MaxAge` — freshness lifetime in seconds.
+- `Vary` — request-header names that form part of the representation’s cache
+  key; values are canonicalized, deduplicated, and merged with existing
+  entries such as CORS’s `Vary: Origin`.
+
+`Public`, `Private`, and `NoStore` are mutually exclusive. Public caching is a
+security decision, not a performance default:
+
+```go
+server.Pipeline.Response.Register(
+    response.Cache(response.CacheConfig{
+        Public: true,
+        MaxAge: 60,
+        Vary:   []string{"Accept-Encoding"},
+    }),
+    maniflex.ForModel("PublicArticle"),
+    maniflex.ForOperation(maniflex.OpRead, maniflex.OpList),
+    maniflex.AtPosition(maniflex.After),
+)
+```
+
+Do not set `Public` on authenticated, tenant-filtered, role-dependent, or
+dynamically redacted responses unless every authorization input is included in
+the shared cache key and the proxy/CDN is verified to honor it. Common inputs
+include `Authorization`, `Cookie`, tenant headers, locale, and negotiated
+representation headers. When that guarantee is difficult to prove, use the
+private default or `NoStore`.
 
 ## Body transforms
 

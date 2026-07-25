@@ -377,7 +377,7 @@ db.Invalidate(cache, func(ctx) []string { return ["keys", ...] })  // AtPosition
 response.CORSHeaders("https://app.example.com")  // validates preflight; origins required; "*" panics with credentials
 
 // RESPONSE (Response step)
-response.Cache(300)                          // AtPosition(After)
+response.Cache(response.CacheConfig{MaxAge: 300}) // private by default; AtPosition(After)
 response.TransformField("avatar_url", func(v any) any { return cdn+v.(string) })
 response.RedactField("phone", func(ctx) bool { return !ctx.HasRole("support") })
 response.Envelope(func(ctx, data, meta) any { return ... })

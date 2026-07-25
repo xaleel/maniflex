@@ -245,8 +245,15 @@ func isHTTPToken(value string) bool {
 }
 
 func addVary(header http.Header, value string) {
+	if value == "*" {
+		header.Set("Vary", "*")
+		return
+	}
 	for _, line := range header.Values("Vary") {
 		for _, existing := range strings.Split(line, ",") {
+			if strings.TrimSpace(existing) == "*" {
+				return
+			}
 			if strings.EqualFold(strings.TrimSpace(existing), value) {
 				return
 			}
@@ -268,15 +275,73 @@ func writeCORSFailure(w http.ResponseWriter, status int, code string) {
 
 // ── Cache ─────────────────────────────────────────────────────────────────────
 
-// Cache sets Cache-Control and ETag headers on read responses.
+// CacheConfig defines who may store a response and which request headers form
+// its cache key.
+type CacheConfig struct {
+	// Public explicitly permits shared caches (CDNs and proxies) to store the
+	// response. This is never inferred. Do not enable it for authenticated,
+	// tenant-scoped, or dynamically redacted data unless every authorization
+	// input is represented in Vary and honored by the shared cache.
+	Public bool
+
+	// Private permits only a user-agent cache to store the response. It is the
+	// default when Public and NoStore are false, so the zero config is safe for
+	// authenticated APIs. Setting it explicitly can make intent clearer.
+	Private bool
+
+	// NoStore forbids all caches from storing the response. It cannot be
+	// combined with Public, Private, or a non-zero MaxAge. NoStore responses do
+	// not receive an ETag and do not honor If-None-Match.
+	NoStore bool
+
+	// MaxAge is the freshness lifetime in seconds. Zero means immediately stale
+	// and still permits validation with ETag unless NoStore is true.
+	MaxAge int
+
+	// Vary names request headers that affect the representation. Values are
+	// canonicalized, deduplicated, and merged with existing Vary entries.
+	Vary []string
+}
+
+// Cache sets an explicit Cache-Control policy on read and list responses and
+// adds ETag validation to successful, storable responses. The zero CacheConfig
+// is private with max-age=0. Shared/public caching always requires Public: true.
+//
 // It is a no-op on write operations (create, update, delete).
 //
 //	server.Pipeline.Response.Register(
-//	    response.Cache(300), // 5 minutes
+//	    response.Cache(response.CacheConfig{
+//	        MaxAge: 300, // private, 5 minutes
+//	        Vary:   []string{"Authorization"},
+//	    }),
 //	    maniflex.ForOperation(maniflex.OpRead, maniflex.OpList),
 //	    maniflex.AtPosition(maniflex.After),
 //	)
-func Cache(maxAgeSeconds int) maniflex.MiddlewareFunc {
+func Cache(cfg CacheConfig) maniflex.MiddlewareFunc {
+	if cfg.MaxAge < 0 {
+		panic("response.Cache: MaxAge must not be negative")
+	}
+	policies := 0
+	for _, selected := range []bool{cfg.Public, cfg.Private, cfg.NoStore} {
+		if selected {
+			policies++
+		}
+	}
+	if policies > 1 {
+		panic("response.Cache: Public, Private, and NoStore are mutually exclusive")
+	}
+	if cfg.NoStore && cfg.MaxAge != 0 {
+		panic("response.Cache: NoStore cannot be combined with MaxAge")
+	}
+	vary := normalizeVary(cfg.Vary)
+
+	cacheControl := fmt.Sprintf("private, max-age=%d", cfg.MaxAge)
+	if cfg.Public {
+		cacheControl = fmt.Sprintf("public, max-age=%d", cfg.MaxAge)
+	} else if cfg.NoStore {
+		cacheControl = "no-store"
+	}
+
 	return func(ctx *maniflex.ServerContext, next func() error) error {
 		if err := next(); err != nil {
 			return err
@@ -284,11 +349,21 @@ func Cache(maxAgeSeconds int) maniflex.MiddlewareFunc {
 		if ctx.Operation != maniflex.OpRead && ctx.Operation != maniflex.OpList {
 			return nil
 		}
-		if ctx.Response == nil || ctx.Response.StatusCode >= 400 {
+		if ctx.Response == nil {
 			return nil
 		}
-		ctx.Writer.Header().Set("Cache-Control",
-			fmt.Sprintf("public, max-age=%d", maxAgeSeconds))
+		ctx.Writer.Header().Set("Cache-Control", cacheControl)
+		for _, value := range vary {
+			addVary(ctx.Writer.Header(), value)
+		}
+		if cfg.NoStore {
+			return nil
+		}
+
+		status := ctx.Response.StatusCode
+		if status != 0 && (status < http.StatusOK || status >= http.StatusMultipleChoices) {
+			return nil
+		}
 
 		// Compute a lightweight ETag from the response data
 		if ctx.Response.Data != nil {
@@ -306,6 +381,33 @@ func Cache(maxAgeSeconds int) maniflex.MiddlewareFunc {
 		}
 		return nil
 	}
+}
+
+func normalizeVary(values []string) []string {
+	normalized := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	hasWildcard := false
+	for _, raw := range values {
+		value := strings.TrimSpace(raw)
+		if value == "*" {
+			hasWildcard = true
+		} else {
+			value = canonicalCORSHeader(value)
+			if value == "" || !isHTTPToken(value) {
+				panic(fmt.Sprintf("response.Cache: invalid Vary header %q", raw))
+			}
+		}
+		key := strings.ToLower(value)
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	if hasWildcard && len(normalized) != 1 {
+		panic(`response.Cache: Vary "*" cannot be combined with other header names`)
+	}
+	return normalized
 }
 
 // ── TransformField ────────────────────────────────────────────────────────────

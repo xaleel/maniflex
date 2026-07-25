@@ -11,6 +11,8 @@ package e2e
 // leaving a developer to wonder where their rows went.
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -21,10 +23,15 @@ import (
 )
 
 // badOpSrv scopes Article by org_id through a filter with a misspelt operator.
-func badOpSrv(t *testing.T) *testutil.Server {
+func badOpSrv(t *testing.T, loggers ...*slog.Logger) *testutil.Server {
 	t.Helper()
+	var logger *slog.Logger
+	if len(loggers) > 0 {
+		logger = loggers[0]
+	}
 	return testutil.NewServer(t, testutil.Options{
 		Models: []any{Article{}},
+		Logger: logger,
 		Middleware: func(s *maniflex.Server) {
 			s.Pipeline.DB.Register(
 				func(ctx *maniflex.ServerContext, next func() error) error {
@@ -48,7 +55,10 @@ func badOpSrv(t *testing.T) *testutil.Server {
 }
 
 func TestBadFilterOperator_RefusesRequest(t *testing.T) {
-	srv := badOpSrv(t)
+	var logs bytes.Buffer
+	srv := badOpSrv(t, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+		Level: slog.LevelError,
+	})))
 	asA := map[string]string{"X-Org": "tenant-a"}
 
 	resp := srv.GET("/articles", asA)
@@ -56,10 +66,15 @@ func TestBadFilterOperator_RefusesRequest(t *testing.T) {
 		t.Fatalf("status = %d, want 500 — an unrenderable scope was served instead of "+
 			"refused\nbody: %s", resp.Status, resp.Body)
 	}
-	// The message has to name the operator, or the developer is left bisecting
-	// middleware to find out why their rows vanished.
-	if body := string(resp.Body); !strings.Contains(body, "equals") {
-		t.Errorf("error body does not name the bad operator: %s", body)
+	// SEC-02 keeps programmer diagnostics out of a framework-owned 500, while
+	// retaining the misspelt operator in the correlated server log.
+	if body := string(resp.Body); strings.Contains(body, "equals") ||
+		!strings.Contains(body, "internal server error") {
+		t.Errorf("error body was not redacted: %s", body)
+	}
+	if got := logs.String(); !strings.Contains(got, "equals") ||
+		!strings.Contains(got, "request_id=") {
+		t.Errorf("private operator diagnostic and request ID must be logged; got:\n%s", got)
 	}
 }
 

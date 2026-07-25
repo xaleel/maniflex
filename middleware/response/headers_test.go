@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/xaleel/maniflex"
 	"github.com/xaleel/maniflex/middleware/response"
 )
 
@@ -190,6 +191,180 @@ func TestCORSHeaders_PlainOptionsContinuesToRoute(t *testing.T) {
 	if rec.Code != http.StatusNoContent {
 		t.Errorf("status = %d, want 204", rec.Code)
 	}
+}
+
+func TestCache_DefaultPolicyIsPrivate(t *testing.T) {
+	t.Parallel()
+	ctx, rec := runCache(t, response.CacheConfig{}, maniflex.OpRead, http.StatusOK)
+
+	if got := rec.Header().Get("Cache-Control"); got != "private, max-age=0" {
+		t.Errorf("Cache-Control = %q, want private default", got)
+	}
+	if rec.Header().Get("ETag") == "" {
+		t.Error("private storable response is missing ETag")
+	}
+	if ctx.Response.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", ctx.Response.StatusCode)
+	}
+}
+
+func TestCache_PublicRequiresExplicitPolicyAndMergesVary(t *testing.T) {
+	t.Parallel()
+	cfg := response.CacheConfig{
+		Public: true,
+		MaxAge: 300,
+		Vary:   []string{"authorization", "Origin", "AUTHORIZATION"},
+	}
+	_, rec := runCacheWithHeader(t, cfg, maniflex.OpList, http.StatusOK, http.Header{
+		"Vary": []string{"Accept-Encoding, Origin"},
+	})
+
+	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=300" {
+		t.Errorf("Cache-Control = %q, want explicit public policy", got)
+	}
+	vary := strings.Join(rec.Header().Values("Vary"), ", ")
+	for _, want := range []string{"Accept-Encoding", "Origin", "Authorization"} {
+		if !headerValueContains(vary, want) {
+			t.Errorf("Vary = %q, missing %q", vary, want)
+		}
+	}
+	if countHeaderValue(vary, "Origin") != 1 || countHeaderValue(vary, "Authorization") != 1 {
+		t.Errorf("Vary values were not deduplicated: %q", vary)
+	}
+}
+
+func TestCache_VaryWildcardSupersedesHeaderNames(t *testing.T) {
+	t.Parallel()
+
+	_, existingWildcard := runCacheWithHeader(t,
+		response.CacheConfig{Vary: []string{"Authorization"}},
+		maniflex.OpRead,
+		http.StatusOK,
+		http.Header{"Vary": []string{"*"}},
+	)
+	if got := existingWildcard.Header().Get("Vary"); got != "*" {
+		t.Errorf("existing wildcard Vary = %q, want *", got)
+	}
+
+	_, configuredWildcard := runCacheWithHeader(t,
+		response.CacheConfig{Vary: []string{"*"}},
+		maniflex.OpRead,
+		http.StatusOK,
+		http.Header{"Vary": []string{"Origin"}},
+	)
+	if got := configuredWildcard.Header().Get("Vary"); got != "*" {
+		t.Errorf("configured wildcard Vary = %q, want *", got)
+	}
+}
+
+func TestCache_NoStoreDisablesValidators(t *testing.T) {
+	t.Parallel()
+	ctx, rec := runCacheWithHeader(t,
+		response.CacheConfig{NoStore: true},
+		maniflex.OpRead,
+		http.StatusOK,
+		http.Header{"If-None-Match": []string{`"*"`}},
+	)
+
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store", got)
+	}
+	if got := rec.Header().Get("ETag"); got != "" {
+		t.Errorf("no-store response received ETag %q", got)
+	}
+	if ctx.Response.StatusCode != http.StatusOK {
+		t.Errorf("no-store response honored If-None-Match: status = %d, want 200",
+			ctx.Response.StatusCode)
+	}
+}
+
+func TestCache_PrivatePolicyAlsoProtectsReadErrors(t *testing.T) {
+	t.Parallel()
+	_, rec := runCache(t, response.CacheConfig{MaxAge: 60}, maniflex.OpRead, http.StatusNotFound)
+	if got := rec.Header().Get("Cache-Control"); got != "private, max-age=60" {
+		t.Errorf("Cache-Control = %q, want private policy on cacheable 404", got)
+	}
+	if rec.Header().Get("ETag") != "" {
+		t.Error("error response must not receive a representation ETag")
+	}
+}
+
+func TestCache_IsNoOpForWrites(t *testing.T) {
+	t.Parallel()
+	_, rec := runCache(t, response.CacheConfig{Public: true, MaxAge: 60},
+		maniflex.OpCreate, http.StatusCreated)
+	if got := rec.Header().Get("Cache-Control"); got != "" {
+		t.Errorf("write response Cache-Control = %q, want empty", got)
+	}
+}
+
+func TestCache_RejectsContradictoryPolicy(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  response.CacheConfig
+	}{
+		{"public and private", response.CacheConfig{Public: true, Private: true}},
+		{"public and no-store", response.CacheConfig{Public: true, NoStore: true}},
+		{"no-store with max-age", response.CacheConfig{NoStore: true, MaxAge: 1}},
+		{"negative max-age", response.CacheConfig{MaxAge: -1}},
+		{"invalid vary", response.CacheConfig{Vary: []string{"Bad Header"}}},
+		{"wildcard vary mix", response.CacheConfig{Vary: []string{"*", "Authorization"}}},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			assertPanics(t, tc.name, func() { response.Cache(tc.cfg) })
+		})
+	}
+}
+
+func runCache(t *testing.T, cfg response.CacheConfig, operation maniflex.Operation, status int) (*maniflex.ServerContext, *httptest.ResponseRecorder) {
+	t.Helper()
+	return runCacheWithHeader(t, cfg, operation, status, nil)
+}
+
+func runCacheWithHeader(t *testing.T, cfg response.CacheConfig, operation maniflex.Operation, status int, header http.Header) (*maniflex.ServerContext, *httptest.ResponseRecorder) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/docs/42", nil)
+	for name, values := range header {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
+	}
+	rec := httptest.NewRecorder()
+	if values := header.Values("Vary"); len(values) > 0 {
+		rec.Header()["Vary"] = append([]string(nil), values...)
+	}
+	ctx := &maniflex.ServerContext{
+		Request:   req,
+		Writer:    rec,
+		Operation: operation,
+	}
+	err := response.Cache(cfg)(ctx, func() error {
+		ctx.Response = &maniflex.APIResponse{
+			StatusCode: status,
+			Data:       map[string]any{"id": "42", "owner": "user-a"},
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("cache middleware: %v", err)
+	}
+	return ctx, rec
+}
+
+func headerValueContains(list, want string) bool {
+	return countHeaderValue(list, want) > 0
+}
+
+func countHeaderValue(list, want string) int {
+	count := 0
+	for _, value := range strings.Split(list, ",") {
+		if strings.EqualFold(strings.TrimSpace(value), want) {
+			count++
+		}
+	}
+	return count
 }
 
 func assertPanics(t *testing.T, name string, fn func()) {

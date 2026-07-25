@@ -39,7 +39,7 @@ func newOptLockServer(t *testing.T) *testutil.Server {
 		},
 		Middleware: func(s *maniflex.Server) {
 			s.Pipeline.Response.Register(
-				response.Cache(0), // max-age=0 — we only care about ETags, not caching
+				response.Cache(response.CacheConfig{}), // private max-age=0; only ETag matters here
 				maniflex.ForModel("optDoc"),
 				maniflex.ForOperation(maniflex.OpRead),
 				maniflex.AtPosition(maniflex.After),
@@ -324,7 +324,7 @@ func TestOptimisticLock_ConcurrentSameETagOnlyOneWins(t *testing.T) {
 		},
 		Middleware: func(s *maniflex.Server) {
 			s.Pipeline.Response.Register(
-				response.Cache(0),
+				response.Cache(response.CacheConfig{}),
 				maniflex.ForModel("optDoc"),
 				maniflex.ForOperation(maniflex.OpRead),
 				maniflex.AtPosition(maniflex.After),

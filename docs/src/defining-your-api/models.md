@@ -187,7 +187,7 @@ JSON response body), so clients can use the header from a preceding GET directly
 server.MustRegister(Invoice{}, maniflex.ModelConfig{OptimisticLock: true})
 
 server.Pipeline.Response.Register(
-    response.Cache(300),
+    response.Cache(response.CacheConfig{MaxAge: 300}),
     maniflex.ForModel("Invoice"),
     maniflex.ForOperation(maniflex.OpRead),
     maniflex.AtPosition(maniflex.After),

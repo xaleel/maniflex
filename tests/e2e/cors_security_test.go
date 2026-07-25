@@ -39,7 +39,7 @@ func TestCORSPreflightRunsBeforeJWTAndSupportsOptimisticLocking(t *testing.T) {
 			// the Auth pipeline.
 			s.Pipeline.Auth.Register(auth.JWTAuth(secret))
 			s.Pipeline.Response.Register(
-				response.Cache(0),
+				response.Cache(response.CacheConfig{}),
 				maniflex.ForModel("optDoc"),
 				maniflex.ForOperation(maniflex.OpRead),
 				maniflex.AtPosition(maniflex.After),

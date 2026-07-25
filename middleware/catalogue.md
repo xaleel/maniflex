@@ -55,7 +55,7 @@ s.Pipeline.DB.Register(db.CacheQuery(cache, db.CacheConfig{TTL: 5 * time.Minute,
 cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares, response.CORSHeaders("https://app.example.com"))
 
 // ── Response ──────────────────────────────────────────────────────────────────
-s.Pipeline.Response.Register(response.Cache(300), maniflex.ForOperation(maniflex.OpRead, maniflex.OpList), maniflex.AtPosition(maniflex.After))
+s.Pipeline.Response.Register(response.Cache(response.CacheConfig{MaxAge: 300}), maniflex.ForOperation(maniflex.OpRead, maniflex.OpList), maniflex.AtPosition(maniflex.After))
 s.Pipeline.Response.Register(response.TransformField("avatar_url", func(v any) any { return cdnBase + v.(string) }))
 s.Pipeline.Response.Register(response.RedactField("phone", func(ctx *maniflex.ServerContext) bool { return !ctx.HasRole("support") }))
 s.Pipeline.Response.Register(response.Envelope(func(ctx *maniflex.ServerContext, data any, meta \*maniflex.ResponseMeta) any { return map[string]any{"result": data} }))

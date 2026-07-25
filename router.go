@@ -30,6 +30,12 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 	if cfg.TrustProxyHeaders {
 		r.Use(chiMiddleware.RealIP)
 	}
+	for i, mw := range cfg.HTTPMiddlewares {
+		if mw == nil {
+			panic(fmt.Sprintf("maniflex: Config.HTTPMiddlewares[%d] must not be nil", i))
+		}
+		r.Use(mw)
+	}
 
 	r.Route(cfg.PathPrefix, func(r chi.Router) {
 		// Health-check

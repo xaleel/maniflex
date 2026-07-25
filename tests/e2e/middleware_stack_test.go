@@ -693,11 +693,9 @@ func TestMiddlewareStack(t *testing.T) {
 	t.Run("cors_sets_allow_origin_on_get", func(t *testing.T) {
 		t.Parallel()
 		srv := testutil.NewServer(t, testutil.Options{
-			Middleware: func(s *maniflex.Server) {
-				s.Pipeline.Response.Register(
-					response.CORSHeaders("test_origin"),
-					maniflex.AtPosition(maniflex.Before),
-				)
+			Config: func(cfg *maniflex.Config) {
+				cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares,
+					response.CORSHeaders("test_origin"))
 			},
 		})
 		resp := srv.GET("/users", map[string]string{"Origin": "test_origin"})
@@ -707,21 +705,25 @@ func TestMiddlewareStack(t *testing.T) {
 	t.Run("cors_handles_options_preflight", func(t *testing.T) {
 		t.Parallel()
 		srv := testutil.NewServer(t, testutil.Options{
-			Middleware: func(s *maniflex.Server) {
-				s.Pipeline.Response.Register(response.CORSHeaders("*"), maniflex.AtPosition(maniflex.Before))
+			Config: func(cfg *maniflex.Config) {
+				cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares, response.CORSHeaders("*"))
 			},
 		})
-		srv.Do("OPTIONS", srv.APIPath("/users"), nil).AssertStatus(http.StatusOK)
+		resp := srv.Do("OPTIONS", srv.APIPath("/users"), nil, map[string]string{
+			"Origin":                        "https://app.example",
+			"Access-Control-Request-Method": http.MethodGet,
+		})
+		resp.AssertStatus(http.StatusNoContent)
+		if len(resp.Body) != 0 {
+			t.Errorf("preflight body = %q, want empty", resp.Body)
+		}
 	})
 
 	t.Run("cors_explicit_wildcard_emits_star", func(t *testing.T) {
 		t.Parallel()
 		srv := testutil.NewServer(t, testutil.Options{
-			Middleware: func(s *maniflex.Server) {
-				s.Pipeline.Response.Register(
-					response.CORSHeaders("*"),
-					maniflex.AtPosition(maniflex.Before),
-				)
+			Config: func(cfg *maniflex.Config) {
+				cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares, response.CORSHeaders("*"))
 			},
 		})
 		resp := srv.GET("/users", map[string]string{"Origin": "https://anything.example"})
@@ -731,11 +733,9 @@ func TestMiddlewareStack(t *testing.T) {
 	t.Run("cors_non_allowlisted_origin_not_reflected", func(t *testing.T) {
 		t.Parallel()
 		srv := testutil.NewServer(t, testutil.Options{
-			Middleware: func(s *maniflex.Server) {
-				s.Pipeline.Response.Register(
-					response.CORSHeaders("https://allowed.example"),
-					maniflex.AtPosition(maniflex.Before),
-				)
+			Config: func(cfg *maniflex.Config) {
+				cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares,
+					response.CORSHeaders("https://allowed.example"))
 			},
 		})
 		resp := srv.GET("/users", map[string]string{"Origin": "https://evil.example"})

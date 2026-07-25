@@ -87,7 +87,8 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
   `Strict-Transport-Security`, `X-Content-Type-Options`, `Referrer-Policy`.
 - **List CORS origins explicitly** with `response.CORSHeaders(origins...)` —
   origins are required (there is no permissive wildcard default; it panics if you
-  pass none), and `"*"` cannot be combined with credentials.
+  pass none), and `"*"` cannot be combined with credentials. Install it in
+  `Config.HTTPMiddlewares`, where preflight runs before Auth.
 - **Cap rate-sensitive endpoints** with `db.RateLimit` so password resets and
   similar can't be brute-forced.
 
@@ -127,6 +128,11 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
 A reasonable production stack:
 
 ```go
+// HTTP/router layer — configure before maniflex.New
+cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares,
+    response.CORSHeaders("https://app.example.com"))
+server := maniflex.New(cfg)
+
 // Auth
 server.Pipeline.Auth.Register(auth.JWTAuth(secret, jwtOpts))
 server.Pipeline.Auth.Register(auth.RequireRole("admin"),
@@ -147,8 +153,7 @@ server.Pipeline.DB.Register(db.AuditLog(auditSink),
     maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete),
     maniflex.AtPosition(maniflex.After))
 
-// Response
-server.Pipeline.Response.Register(response.CORSHeaders("https://app.example.com"))
+// Response pipeline
 server.Pipeline.Response.Register(
     response.AddHeader("Strict-Transport-Security", "max-age=63072000"))
 server.Pipeline.Response.Register(response.Logging(slog.Default()),

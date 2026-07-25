@@ -1,5 +1,5 @@
-// Package response provides Response-step middleware for CORS, caching,
-// field transforms, custom envelopes, and observability.
+// Package response provides router-level CORS handling plus Response-step
+// middleware for caching, field transforms, custom envelopes, and observability.
 package response
 
 import (
@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/xaleel/maniflex"
 )
 
@@ -26,8 +27,12 @@ type CORSConfig struct {
 	AllowOrigins []string
 	// AllowHeaders are the headers a browser may send. Default: common safe set.
 	AllowHeaders []string
-	// AllowMethods are the HTTP methods to allow. Default: GET, POST, PATCH, DELETE, OPTIONS.
+	// AllowMethods are the HTTP methods to allow.
+	// Default: GET, HEAD, POST, PATCH, DELETE, OPTIONS.
 	AllowMethods []string
+	// ExposeHeaders are response headers browser JavaScript may read.
+	// Default: ETag and X-Request-ID.
+	ExposeHeaders []string
 	// MaxAge is the preflight cache duration in seconds. Default: 86400 (24h).
 	MaxAge int
 	// AllowCredentials sets Access-Control-Allow-Credentials. Default: false.
@@ -38,98 +43,227 @@ type CORSConfig struct {
 
 var defaultAllowHeaders = []string{
 	"Authorization", "Content-Type", "Accept",
-	"X-Request-ID", "X-API-Key",
+	"If-Match", "If-None-Match", "X-Request-ID", "X-API-Key",
 }
 var defaultAllowMethods = []string{
-	http.MethodGet, http.MethodPost, http.MethodPatch,
+	http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPatch,
 	http.MethodDelete, http.MethodOptions,
 }
+var defaultExposeHeaders = []string{"ETag", "X-Request-ID"}
 
-// CORSHeaders sets CORS response headers on every response, and returns 200 for
-// OPTIONS preflight requests. Register this on the Response step with AtPosition(After).
+// CORSHeaders returns router-level CORS middleware. Add it to
+// Config.HTTPMiddlewares; do not register it on a pipeline step. Router-level
+// placement lets valid browser preflight requests finish before Auth runs.
 //
 // At least one origin is required — pass explicit origins (recommended) or "*"
 // to allow any origin. Calling it with no origins panics, so a permissive
 // wildcard is never applied by accident (SEC-6). For credentials or custom
 // allowed headers/methods/max-age, use CORSHeadersWithConfig.
 //
-//	server.Pipeline.Response.Register(
+//	cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares,
 //	    response.CORSHeaders("https://myapp.com"),
-//	    maniflex.AtPosition(maniflex.After),
 //	)
-func CORSHeaders(allowedOrigins ...string) maniflex.MiddlewareFunc {
+func CORSHeaders(allowedOrigins ...string) maniflex.HTTPMiddleware {
 	return CORSHeadersWithConfig(CORSConfig{AllowOrigins: allowedOrigins})
 }
 
 // CORSHeadersWithConfig is CORSHeaders with full control over allowed headers,
-// methods, preflight max-age, and credentials. cfg.AllowOrigins is required
-// (empty panics), and a "*" origin combined with AllowCredentials panics because
-// browsers reject that combination.
+// methods, exposed headers, preflight max-age, and credentials. It explicitly
+// validates true preflight requests and returns 204 with no body when allowed.
+// cfg.AllowOrigins is required (empty panics), and a "*" origin combined with
+// AllowCredentials panics because browsers reject that combination.
 //
-//	server.Pipeline.Response.Register(
+//	cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares,
 //	    response.CORSHeadersWithConfig(response.CORSConfig{
 //	        AllowOrigins:     []string{"https://myapp.com"},
 //	        AllowCredentials: true,
 //	    }),
-//	    maniflex.AtPosition(maniflex.After),
 //	)
-func CORSHeadersWithConfig(cfg CORSConfig) maniflex.MiddlewareFunc {
+func CORSHeadersWithConfig(cfg CORSConfig) maniflex.HTTPMiddleware {
 	c := cfg
 	if len(c.AllowOrigins) == 0 {
 		panic(`response.CORSHeaders: at least one allowed origin is required ` +
 			`(pass explicit origins, or "*" to allow any origin)`)
 	}
 	if len(c.AllowHeaders) == 0 {
-		c.AllowHeaders = defaultAllowHeaders
+		c.AllowHeaders = append([]string(nil), defaultAllowHeaders...)
 	}
 	if len(c.AllowMethods) == 0 {
-		c.AllowMethods = defaultAllowMethods
+		c.AllowMethods = append([]string(nil), defaultAllowMethods...)
+	}
+	if len(c.ExposeHeaders) == 0 {
+		c.ExposeHeaders = append([]string(nil), defaultExposeHeaders...)
 	}
 	if c.MaxAge == 0 {
 		c.MaxAge = 86400
 	}
-
-	originSet := make(map[string]bool, len(c.AllowOrigins))
-	for _, o := range c.AllowOrigins {
-		originSet[o] = true
+	if c.MaxAge < 0 {
+		panic("response.CORSHeaders: MaxAge must not be negative")
 	}
-	allowAll := originSet["*"]
+
+	originSet := make(map[string]struct{}, len(c.AllowOrigins))
+	for _, raw := range c.AllowOrigins {
+		origin := strings.TrimSpace(raw)
+		if origin == "" {
+			panic("response.CORSHeaders: allowed origins must not contain an empty value")
+		}
+		originSet[origin] = struct{}{}
+	}
+	_, allowAll := originSet["*"]
 
 	if allowAll && c.AllowCredentials {
 		panic(`response.CORSHeaders: AllowCredentials cannot be combined with a ` +
 			`"*" wildcard origin (browsers reject it); list explicit origins instead`)
 	}
 
-	headerVal := strings.Join(c.AllowHeaders, ", ")
-	methodVal := strings.Join(c.AllowMethods, ", ")
+	methods, methodSet := normalizeCORSValues("method", c.AllowMethods, strings.ToUpper)
+	headers, headerSet := normalizeCORSValues("header", c.AllowHeaders, canonicalCORSHeader)
+	exposed, _ := normalizeCORSValues("exposed header", c.ExposeHeaders, canonicalCORSHeader)
+	methodVal := strings.Join(methods, ", ")
+	headerVal := strings.Join(headers, ", ")
+	exposeVal := strings.Join(exposed, ", ")
 
-	return func(ctx *maniflex.ServerContext, next func() error) error {
-		origin := ctx.Request.Header.Get("Origin")
-		w := ctx.Writer
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if reqID := chiMiddleware.GetReqID(r.Context()); reqID != "" {
+				w.Header().Set("X-Request-Id", reqID)
+			}
 
-		if allowAll {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-		} else if origin != "" && originSet[origin] {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Add("Vary", "Origin")
-		}
+			origin := r.Header.Get("Origin")
+			requestedMethod := strings.TrimSpace(r.Header.Get("Access-Control-Request-Method"))
+			preflight := r.Method == http.MethodOptions && origin != "" && requestedMethod != ""
+			if origin == "" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if !allowAll {
+				addVary(w.Header(), "Origin")
+			}
+			if preflight {
+				addVary(w.Header(), "Access-Control-Request-Method")
+				addVary(w.Header(), "Access-Control-Request-Headers")
+			}
 
-		w.Header().Set("Access-Control-Allow-Headers", headerVal)
-		w.Header().Set("Access-Control-Allow-Methods", methodVal)
-		w.Header().Set("Access-Control-Max-Age", fmt.Sprintf("%d", c.MaxAge))
-		if c.AllowCredentials {
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-		}
+			if _, allowed := originSet[origin]; !allowAll && !allowed {
+				if preflight {
+					writeCORSFailure(w, http.StatusForbidden, "CORS_ORIGIN_DENIED")
+					return
+				}
+				// CORS is a browser response policy, not request authentication.
+				// For an ordinary request, omit approval and let the route decide
+				// the HTTP result; the browser will keep it from the caller.
+				next.ServeHTTP(w, r)
+				return
+			}
 
-		// Handle preflight before the pipeline runs
-		if ctx.Request.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			ctx.Response = &maniflex.APIResponse{StatusCode: http.StatusOK}
-			return nil
-		}
+			if allowAll {
+				w.Header().Set("Access-Control-Allow-Origin", "*")
+			} else {
+				w.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+			if c.AllowCredentials {
+				w.Header().Set("Access-Control-Allow-Credentials", "true")
+			}
+			if exposeVal != "" {
+				w.Header().Set("Access-Control-Expose-Headers", exposeVal)
+			}
 
-		return next()
+			if !preflight {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			method := strings.ToUpper(requestedMethod)
+			if _, allowed := methodSet[strings.ToLower(method)]; !allowed {
+				w.Header().Set("Allow", methodVal)
+				writeCORSFailure(w, http.StatusMethodNotAllowed, "CORS_METHOD_DENIED")
+				return
+			}
+			for _, requestedHeader := range requestedCORSHeaders(r.Header) {
+				if _, allowed := headerSet[strings.ToLower(requestedHeader)]; !allowed {
+					writeCORSFailure(w, http.StatusForbidden, "CORS_HEADER_DENIED")
+					return
+				}
+			}
+
+			w.Header().Set("Access-Control-Allow-Headers", headerVal)
+			w.Header().Set("Access-Control-Allow-Methods", methodVal)
+			w.Header().Set("Access-Control-Max-Age", fmt.Sprintf("%d", c.MaxAge))
+			w.WriteHeader(http.StatusNoContent)
+		})
 	}
+}
+
+func normalizeCORSValues(kind string, values []string, canonical func(string) string) ([]string, map[string]struct{}) {
+	normalized := make([]string, 0, len(values))
+	set := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		value := canonical(strings.TrimSpace(raw))
+		if value == "" || !isHTTPToken(value) {
+			panic(fmt.Sprintf("response.CORSHeaders: invalid %s %q", kind, raw))
+		}
+		key := strings.ToLower(value)
+		if _, duplicate := set[key]; duplicate {
+			continue
+		}
+		set[key] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	return normalized, set
+}
+
+func canonicalCORSHeader(value string) string {
+	if strings.EqualFold(value, "ETag") {
+		return "ETag"
+	}
+	return http.CanonicalHeaderKey(value)
+}
+
+func requestedCORSHeaders(header http.Header) []string {
+	var requested []string
+	for _, line := range header.Values("Access-Control-Request-Headers") {
+		for _, value := range strings.Split(line, ",") {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				requested = append(requested, value)
+			}
+		}
+	}
+	return requested
+}
+
+func isHTTPToken(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r > 127 || r <= 32 || strings.ContainsRune(`()<>@,;:\"/[]?={}`, r) {
+			return false
+		}
+	}
+	return true
+}
+
+func addVary(header http.Header, value string) {
+	for _, line := range header.Values("Vary") {
+		for _, existing := range strings.Split(line, ",") {
+			if strings.EqualFold(strings.TrimSpace(existing), value) {
+				return
+			}
+		}
+	}
+	header.Add("Vary", value)
+}
+
+func writeCORSFailure(w http.ResponseWriter, status int, code string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"error": map[string]string{
+			"code":    code,
+			"message": strings.ToLower(http.StatusText(status)),
+		},
+	})
 }
 
 // ── Cache ─────────────────────────────────────────────────────────────────────

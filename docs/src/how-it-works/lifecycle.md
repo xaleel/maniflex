@@ -9,6 +9,10 @@ without being contrived.
 ## Setup
 
 ```go
+cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares,
+    response.CORSHeaders("https://app.example.com"))
+server := maniflex.New(cfg)
+
 server.MustRegister(models.Order{})
 
 server.Pipeline.Auth.Register(auth.JWTAuth("secret"))
@@ -27,7 +31,6 @@ server.Pipeline.DB.Register(
     maniflex.ForModel("Order"),
     maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete),
 )
-server.Pipeline.Response.Register(response.CORSHeaders("https://app.example.com"))
 ```
 
 ## The request
@@ -230,8 +233,10 @@ ctx.Response = &APIResponse{
 `hidden` and `writeonly` filtering — any column tagged those is dropped
 from the response shape.
 
-After-position middleware on Response runs next. `response.CORSHeaders`
-adds the appropriate `Access-Control-*` headers via `ctx.Writer.Header()`.
+After-position middleware on Response runs next. CORS is deliberately absent
+from this step: `response.CORSHeaders` wraps the HTTP router, adding the
+appropriate `Access-Control-*` headers before routing and Auth. A valid browser
+preflight already returned `204 No Content` before this pipeline began.
 
 ### 9. The envelope is written to the wire
 

@@ -373,8 +373,10 @@ db.RateLimit(db.RateLimitConfig{RequestsPerMinute: 10, KeyFunc: func(ctx) string
 db.AuditLog(sink)                            // AtPosition(After), or default Before with db.WithChanges()
 db.Invalidate(cache, func(ctx) []string { return ["keys", ...] })  // AtPosition(After)
 
+// HTTP ROUTER (Config.HTTPMiddlewares; before route dispatch/Auth)
+response.CORSHeaders("https://app.example.com")  // validates preflight; origins required; "*" panics with credentials
+
 // RESPONSE (Response step)
-response.CORSHeaders("https://app.example.com")  // origins required; "*" allowed but panics with credentials
 response.Cache(300)                          // AtPosition(After)
 response.TransformField("avatar_url", func(v any) any { return cdn+v.(string) })
 response.RedactField("phone", func(ctx) bool { return !ctx.HasRole("support") })

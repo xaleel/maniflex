@@ -2,9 +2,10 @@
 
 The catalogue is a set of ready-made middleware packages that cover the common
 needs of every production API — authentication, validation, password hashing,
-audit logging, caching, CORS, and so on. Each one is an ordinary
-`maniflex.MiddlewareFunc` you register on the appropriate pipeline step, with the
-same scoping options as any other middleware.
+audit logging, caching, CORS, and so on. Most return an ordinary
+`maniflex.MiddlewareFunc` you register on the appropriate pipeline step, with
+the same scoping options as any other middleware. CORS returns
+`maniflex.HTTPMiddleware` because browser preflight must run before Auth.
 
 The packages live under `maniflex/middleware/`. Most are part of the root module,
 so they need no extra `require` to use. Only the two with heavy third-party
@@ -21,7 +22,7 @@ hashing) — so a project pulls those dependencies in only when it uses them:
 | [`middleware/workflow`](workflow.md) | Validate | state-machine transitions with role-gated guards |
 | [`middleware/service`](service.md) | Service / DB-After | password hashing, slugify, derived fields |
 | [`middleware/db`](db.md) | DB | tenancy, forced filters, rate limiting, audit log, cache invalidation |
-| [`middleware/response`](response.md) | Response | CORS, caching, transforms, redaction, envelopes, metrics |
+| [`middleware/response`](response.md) | HTTP router / Response | CORS, caching, transforms, redaction, envelopes, metrics |
 | [`middleware/openapi`](openapi.md) | OpenAPI.Generate | security schemes, servers, titles, custom extensions |
 
 ## How to use the catalogue
@@ -63,8 +64,11 @@ typical REST API is roughly:
    `events.Webhook` / `events.SendEmail`) on the After side.
 5. **DB** — `Tenancy` or `ForceFilter` enforces row-level scoping; `AuditLog`
    and `Invalidate` run After.
-6. **Response** — `CORSHeaders`, `Cache`, `RedactField`, then `Logging` /
+6. **Response** — `Cache`, `RedactField`, then `Logging` /
    `Metrics` on the After side.
+
+Install `CORSHeaders` separately in `Config.HTTPMiddlewares`; it must wrap the
+router rather than wait for the Response step.
 
 Mix and match freely; nothing in the catalogue is required.
 

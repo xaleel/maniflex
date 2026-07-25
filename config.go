@@ -3,8 +3,14 @@ package maniflex
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"time"
 )
+
+// HTTPMiddleware wraps the server's HTTP router. Unlike pipeline middleware,
+// it runs before route dispatch and therefore before Auth. Use this layer for
+// protocol concerns such as CORS preflight, request shaping, and edge logging.
+type HTTPMiddleware func(http.Handler) http.Handler
 
 // SoftDeleteStyle indicates how soft deletion is stored in the database.
 type SoftDeleteStyle int
@@ -305,6 +311,18 @@ type Config struct {
 
 	// PathPrefix is prepended to every generated route. Default: "/api".
 	PathPrefix string
+
+	// HTTPMiddlewares wrap the generated router in registration order. They run
+	// after panic recovery, request-ID assignment, and optional trusted-proxy IP
+	// resolution, but before route dispatch and every pipeline step.
+	//
+	// CORS belongs here so browser preflight requests can be answered before
+	// authentication. For example:
+	//
+	//   cfg.HTTPMiddlewares = []maniflex.HTTPMiddleware{
+	//       response.CORSHeaders("https://app.example.com"),
+	//   }
+	HTTPMiddlewares []HTTPMiddleware
 
 	// StaticDir is the filesystem directory served as static files, or "" to
 	// serve none. Static serving is opt-in: an empty StaticDir mounts nothing.

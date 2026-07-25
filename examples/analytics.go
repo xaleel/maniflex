@@ -40,7 +40,7 @@
 //	  - maniflex.WithTransaction for request-level transactions
 //	  - Structured logging via ctx.Logger()
 //	  - ctx.HasRole for role checks inside action handlers
-//	  - Response (After) CORS middleware for cross-origin tracker scripts
+//	  - Router-level CORS middleware for cross-origin tracker scripts
 //	  - OpenAPI spec enrichment
 //
 // Run:
@@ -71,6 +71,7 @@ import (
 	"github.com/xaleel/maniflex/db/sqlite"
 	"github.com/xaleel/maniflex/middleware/auth"
 	mwdb "github.com/xaleel/maniflex/middleware/db"
+	"github.com/xaleel/maniflex/middleware/response"
 	"github.com/xaleel/maniflex/middleware/service"
 )
 
@@ -150,6 +151,9 @@ func main() {
 	cfg.Logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
+	// Browser protocol handling belongs before route dispatch and Auth. In
+	// production, replace "*" with the tracker origins you allow.
+	cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares, response.CORSHeaders("*"))
 
 	// ── 2.6: Generate RS256 key pair ─────────────────────────────────────────
 	//
@@ -322,16 +326,6 @@ func registerMiddleware(s *maniflex.Server, rsaPub *rsa.PublicKey) {
 		maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete),
 		maniflex.AtPosition(maniflex.After),
 		maniflex.WithName("AuditLog"),
-	)
-
-	// ── Response After: CORS ─────────────────────────────────────────────────
-	//
-	// Allows browser tracker scripts to POST to /api/ingest cross-origin.
-	// In production, replace "*" with your allowed origin list.
-	s.Pipeline.Response.Register(
-		addCORSHeaders,
-		maniflex.AtPosition(maniflex.After),
-		maniflex.WithName("CORSHeaders"),
 	)
 
 	// ── OpenAPI: enrich the auto-generated spec ───────────────────────────────
@@ -718,14 +712,6 @@ func auditMutation(ctx *maniflex.ServerContext, next func() error) error {
 		slog.String("actor", actor),
 	)
 	return nil
-}
-
-// addCORSHeaders lets browser tracker scripts POST to /api/ingest cross-origin.
-func addCORSHeaders(ctx *maniflex.ServerContext, next func() error) error {
-	ctx.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-	ctx.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-	ctx.Writer.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-	return next()
 }
 
 // enrichSpec annotates the auto-generated OpenAPI spec with titles and the

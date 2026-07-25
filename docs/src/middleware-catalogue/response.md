@@ -2,24 +2,28 @@
 
 The `maniflex/middleware/response` package shapes the outgoing response —
 headers, body transforms, redactions, and observability hooks — on the
-**Response** step.
+**Response** step. CORS is the exception: it is HTTP middleware because
+preflight must run before route dispatch and authentication.
 
 ## Cross-cutting headers
 
 ### `CORSHeaders`
 
-Adds CORS headers to every response. At least one origin is **required** — pass
+Adds CORS headers to allowed cross-origin responses and validates browser
+preflight before route dispatch. At least one origin is **required** — pass
 explicit origins (recommended) or `"*"` to allow any origin. Calling it with no
 origins panics at startup, so a permissive wildcard is never applied by accident.
 
 ```go
 import "github.com/xaleel/maniflex/middleware/response"
 
+// Configure before calling maniflex.New(cfg).
 // Explicit origins (recommended)
-server.Pipeline.Response.Register(response.CORSHeaders("https://app.example.com"))
+cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares,
+    response.CORSHeaders("https://app.example.com"))
 
 // Public API: opt in to any origin explicitly
-server.Pipeline.Response.Register(response.CORSHeaders("*"))
+cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares, response.CORSHeaders("*"))
 ```
 
 For credentials or custom allowed headers/methods/max-age, use
@@ -27,11 +31,25 @@ For credentials or custom allowed headers/methods/max-age, use
 origin (browsers reject that combination) and panics if you try:
 
 ```go
-server.Pipeline.Response.Register(response.CORSHeadersWithConfig(response.CORSConfig{
-    AllowOrigins:     []string{"https://app.example.com"},
-    AllowCredentials: true,
-}))
+cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares,
+    response.CORSHeadersWithConfig(response.CORSConfig{
+        AllowOrigins:     []string{"https://app.example.com"},
+        AllowCredentials: true,
+    }))
 ```
+
+`CORSHeaders` returns router-level middleware. A true preflight is `OPTIONS`
+with both `Origin` and `Access-Control-Request-Method`. Allowed preflights
+return `204 No Content` with an empty body before Auth runs. Disallowed origins
+and request headers return `403`; disallowed methods return `405`. Plain
+`OPTIONS` requests continue to the generated route and retain its `Allow`
+response.
+
+The default allowed request headers include `Authorization`, `Content-Type`,
+`If-Match`, and `If-None-Match`. `ETag` and `X-Request-ID` are exposed by
+default so browser code can perform optimistic-locking updates and correlate
+failures. Override `AllowHeaders`, `AllowMethods`, or `ExposeHeaders` when the
+application needs a narrower or broader policy.
 
 ### `AddHeader`
 

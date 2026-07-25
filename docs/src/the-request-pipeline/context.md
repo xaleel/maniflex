@@ -118,7 +118,8 @@ for the full pattern.
 `ctx.Abort(status int, code, message string)` populates `ctx.Response` with an
 error envelope. The current middleware must then return `nil` without calling
 `next()`. Subsequent steps are skipped; the Response step writes the prepared
-error.
+error. For 5xx statuses, the supplied message is logged with the request ID
+but replaced by generic status text on the wire; 4xx messages are preserved.
 
 ```go
 if header == "" {

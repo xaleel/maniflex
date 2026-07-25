@@ -1,12 +1,14 @@
 package integration
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/hex"
+	"errors"
 	"hash"
-	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -168,18 +170,37 @@ func TestWebhook_MaxBodyBytesTruncatesAndFailsSignature(t *testing.T) {
 }
 
 func TestWebhook_HandlerErrorBecomes500(t *testing.T) {
-	wh := &WebhookReceiver{Secret: testSecret}
+	var logs bytes.Buffer
+	const privateError = "dial tcp 10.0.0.8:5432: password=webhook-secret"
+	wh := &WebhookReceiver{
+		Secret: testSecret,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelError,
+		})),
+	}
 	h := wh.Handler(map[string]WebhookHandler{
 		"e": func(w http.ResponseWriter, _ *http.Request, _ []byte) error {
-			return io.ErrUnexpectedEOF // any non-nil error
+			return errors.New(privateError)
 		},
 	})
 	body := `{}`
 	sig := sign(t, sha256.New, body, "")
 	rec := httptest.NewRecorder()
-	h(rec, makeReq(t, body, "e", sig))
+	req := makeReq(t, body, "e", sig)
+	req.Header.Set("X-Request-Id", "webhook-request-42")
+	h(rec, req)
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status: got %d, want 500", rec.Code)
+	}
+	if got := rec.Body.String(); got != "internal server error\n" {
+		t.Errorf("body: got %q, want generic 500", got)
+	}
+	if strings.Contains(rec.Body.String(), privateError) {
+		t.Errorf("private handler error leaked to client: %q", rec.Body.String())
+	}
+	if got := logs.String(); !strings.Contains(got, privateError) ||
+		!strings.Contains(got, "webhook-request-42") {
+		t.Errorf("private error and request ID must be logged; got:\n%s", got)
 	}
 }
 

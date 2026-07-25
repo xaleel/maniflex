@@ -345,6 +345,11 @@ type ServerContext struct {
 	// the innermost middleware wrapper so outer wrappers do not re-log it.
 	abortSite string
 
+	// serverErrorLogged prevents a framework-owned 5xx from being logged once
+	// by Abort and again by writeResponse. Directly-assigned APIResponse values
+	// are caught by writeResponse, while Abort paths are logged at their origin.
+	serverErrorLogged bool
+
 	// Arbitrary cross-step storage for middleware communication
 	values map[string]any
 
@@ -1145,9 +1150,15 @@ func (c *ServerContext) buildLogger() *slog.Logger {
 }
 
 // Abort populates ctx.Response with an error and should be used by middleware
-// to short-circuit the pipeline. The current step must then return nil without
-// calling next() for the abort to take effect.
+// to short-circuit the pipeline. For a 5xx response, message is logged as a
+// private diagnostic and replaced with generic status text on the wire. The
+// current step must then return nil without calling next() for the abort to
+// take effect.
 func (c *ServerContext) Abort(statusCode int, code, message string) {
+	c.logServerError(statusCode, code, message)
+	if isServerErrorStatus(statusCode) {
+		message = publicServerErrorMessage(statusCode)
+	}
 	c.Response = &APIResponse{
 		StatusCode: statusCode,
 		Error:      &APIError{Code: code, Message: message},
@@ -1160,6 +1171,34 @@ func (c *ServerContext) Abort(statusCode int, code, message string) {
 			c.abortSite = "unknown"
 		}
 	}
+}
+
+func isServerErrorStatus(status int) bool {
+	return status >= http.StatusInternalServerError && status <= 599
+}
+
+// publicServerErrorMessage deliberately carries no implementation detail. The
+// status and stable application error code remain available to clients; the
+// original message is retained only in the correlated server log.
+func publicServerErrorMessage(status int) string {
+	if text := http.StatusText(status); text != "" {
+		return strings.ToLower(text)
+	}
+	return "server error"
+}
+
+// logServerError records the private diagnostic behind a 5xx once. Logger()
+// automatically attaches request_id and trace_id when they are available.
+func (c *ServerContext) logServerError(status int, code, message string) {
+	if c == nil || !isServerErrorStatus(status) || c.serverErrorLogged {
+		return
+	}
+	c.Logger().Error("server error response",
+		slog.Int("status", status),
+		slog.String("code", code),
+		slog.String("error", message),
+	)
+	c.serverErrorLogged = true
 }
 
 // TrackStoredFile records an object written to FileStorage during this request
@@ -1412,6 +1451,8 @@ func (m ResponseMeta) MarshalJSON() ([]byte, error) {
 }
 
 // Write serialises the APIResponse and sends it to the HTTP ResponseWriter.
+// Server-error responses always use a generic public message and omit details
+// and AsIs data, regardless of how the APIResponse was constructed.
 func (r *APIResponse) Write(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.StatusCode == 0 {
@@ -1426,7 +1467,16 @@ func (r *APIResponse) Write(w http.ResponseWriter) {
 	}
 
 	var body any
-	if r.AsIs {
+	if isServerErrorStatus(r.StatusCode) {
+		code := "INTERNAL"
+		if r.Error != nil && r.Error.Code != "" {
+			code = r.Error.Code
+		}
+		body = map[string]any{"error": &APIError{
+			Code:    code,
+			Message: publicServerErrorMessage(r.StatusCode),
+		}}
+	} else if r.AsIs {
 		if r.Data == nil {
 			return
 		}

@@ -2,6 +2,9 @@ package e2e
 
 import (
 	"bytes"
+	"context"
+	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -10,6 +13,16 @@ import (
 	"github.com/xaleel/maniflex"
 	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
+
+const storagePrivateError = `s3: bucket=private-payments endpoint=http://minio.internal access_key=secret`
+
+type failingRetrieveStorage struct {
+	*testutil.MemoryStorage
+}
+
+func (s *failingRetrieveStorage) Retrieve(context.Context, string) (io.ReadCloser, maniflex.FileMeta, error) {
+	return nil, maniflex.FileMeta{}, errors.New(storagePrivateError)
+}
 
 // SEC-4a: mounting the standalone /files endpoints without any BeforeMiddlewares
 // leaves upload/download/delete open to anyone. The framework must warn loudly at
@@ -89,4 +102,32 @@ func TestFileServe_StoredXSSNeutralized(t *testing.T) {
 			t.Errorf("image/png served with Content-Disposition %q; want inline", cd)
 		}
 	})
+}
+
+func TestFileServe_RedactsStorageFailure(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	store := &failingRetrieveStorage{MemoryStorage: testutil.NewMemoryStorage()}
+	srv := testutil.NewServer(t, testutil.Options{
+		Models:      testutil.FileModels(),
+		FileStorage: store,
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelError,
+		})),
+	})
+
+	resp := srv.GETRaw("/files/private-key")
+	resp.AssertStatus(http.StatusInternalServerError)
+	assertRedactedServerError(t, resp, storagePrivateError)
+	if resp.ErrorCode() != "RETRIEVE_ERROR" {
+		t.Errorf("error code = %q, want RETRIEVE_ERROR", resp.ErrorCode())
+	}
+	if resp.Header.Get("X-Request-Id") == "" {
+		t.Error("500 response is missing X-Request-Id correlation header")
+	}
+	if got := logs.String(); !strings.Contains(got, storagePrivateError) ||
+		!strings.Contains(got, "request_id=") {
+		t.Errorf("private storage diagnostic and request ID must be logged; got:\n%s", got)
+	}
 }

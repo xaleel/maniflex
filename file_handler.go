@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
 )
 
@@ -45,6 +46,7 @@ func newFileHandlers(config FilesConfig) *fileHandlers {
 func (fh *fileHandlers) Upload(ctx *ServerContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if fh.config.Storage == nil {
+			ctx.logServerError(http.StatusNotImplemented, "NO_STORAGE", "file storage not configured")
 			writeJSONError(w, http.StatusNotImplemented, "NO_STORAGE",
 				"file storage not configured")
 			return
@@ -126,6 +128,7 @@ func (fh *fileHandlers) streamUpload(w http.ResponseWriter, r *http.Request, ctx
 				fmt.Sprintf("request body exceeds %s limit", formatByteSize(limit)))
 			return
 		}
+		ctx.logServerError(http.StatusInternalServerError, "STORE_ERROR", err.Error())
 		writeJSONError(w, http.StatusInternalServerError, "STORE_ERROR",
 			fmt.Sprintf("failed to store file: %s", err.Error()))
 		return
@@ -145,6 +148,7 @@ func (fh *fileHandlers) streamUpload(w http.ResponseWriter, r *http.Request, ctx
 func (fh *fileHandlers) Serve(ctx *ServerContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if fh.config.Storage == nil {
+			ctx.logServerError(http.StatusNotImplemented, "NO_STORAGE", "file storage not configured")
 			writeJSONError(w, http.StatusNotImplemented, "NO_STORAGE",
 				"file storage not configured")
 			return
@@ -164,6 +168,7 @@ func (fh *fileHandlers) Serve(ctx *ServerContext) http.HandlerFunc {
 		}
 
 		if ferr := serveStoredFile(r.Context(), w, r, fh.config.Storage, uriDecoded); ferr != nil {
+			ctx.logServerError(ferr.Status, ferr.Code, ferr.Message)
 			writeJSONError(w, ferr.Status, ferr.Code, ferr.Message)
 		}
 	}
@@ -241,6 +246,7 @@ func writeFileResponse(w http.ResponseWriter, meta FileMeta, rc io.Reader) {
 func (fh *fileHandlers) Delete(ctx *ServerContext) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if fh.config.Storage == nil {
+			ctx.logServerError(http.StatusNotImplemented, "NO_STORAGE", "file storage not configured")
 			writeJSONError(w, http.StatusNotImplemented, "NO_STORAGE",
 				"file storage not configured")
 			return
@@ -264,6 +270,7 @@ func (fh *fileHandlers) Delete(ctx *ServerContext) http.HandlerFunc {
 					fmt.Sprintf("file %q not found", key))
 				return
 			}
+			ctx.logServerError(http.StatusInternalServerError, "DELETE_ERROR", err.Error())
 			writeJSONError(w, http.StatusInternalServerError, "DELETE_ERROR",
 				fmt.Sprintf("failed to delete file: %s", err.Error()))
 			return
@@ -294,14 +301,18 @@ func wrapFileMiddleware(cfg *Config, hf func(ctx *ServerContext) http.HandlerFun
 		// letting AfterMiddlewares observe the result and guarding against a
 		// double-write when ctx.Response is set after the body is already sent.
 		obs := &responseObserver{ResponseWriter: w}
+		reqID := chiMiddleware.GetReqID(r.Context())
 		ctx := &ServerContext{
 			Request:     r,
 			Writer:      obs,
 			Ctx:         r.Context(),
-			RequestID:   r.Header.Get("X-Request-Id"),
+			RequestID:   reqID,
 			logger:      cfg.logger(),
 			serviceName: cfg.ServiceName,
 			trace:       cfg.traceConfig(),
+		}
+		if reqID != "" {
+			w.Header().Set("X-Request-Id", reqID)
 		}
 		if len(cfg.FilesConfig.BeforeMiddlewares)+len(cfg.FilesConfig.AfterMiddlewares) == 0 {
 			hf(ctx).ServeHTTP(obs, r)
@@ -335,6 +346,7 @@ func wrapFileMiddleware(cfg *Config, hf func(ctx *ServerContext) http.HandlerFun
 		}
 
 		if err := run(); err != nil {
+			ctx.logServerError(http.StatusInternalServerError, "INTERNAL", err.Error())
 			// Don't stack a 500 on top of an already-streamed body.
 			if !obs.wrote {
 				writeJSONError(obs, http.StatusInternalServerError, "INTERNAL",
@@ -391,6 +403,9 @@ func (o *responseObserver) Status() int { return o.status }
 
 // writeJSONError writes a maniflex-style error envelope.
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {
+	if isServerErrorStatus(status) {
+		message = publicServerErrorMessage(status)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(map[string]any{

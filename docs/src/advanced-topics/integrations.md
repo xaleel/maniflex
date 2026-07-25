@@ -70,6 +70,7 @@ than waiting one Interval.
 wh := &integration.WebhookReceiver{
     Secret:    secrets.PaymentWebhook,
     Algorithm: "sha256", // or "sha512"
+    Logger:    logger,   // optional; defaults to slog.Default()
     // Defaults are GitHub-style: X-Hub-Signature-256 + X-Event-Type
 }
 
@@ -94,7 +95,8 @@ Failure modes:
 - 400 — body read error
 - 401 — missing or mismatching signature
 - 404 — no handler registered for that event
-- 500 — handler returned a non-nil error
+- 500 — handler returned a non-nil error; the client receives
+  `internal server error`, while the original error is written to `Logger`
 
 `WebhookReceiver.Handler` panics if `Secret` is empty or `Algorithm` is
 neither `sha256` nor `sha512` — both are configuration mistakes worth

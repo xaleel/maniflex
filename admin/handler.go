@@ -23,7 +23,7 @@ type admin struct {
 	models    []*maniflex.ModelMeta          // registry order, after whitelist
 	byTable   map[string]*maniflex.ModelMeta // table name → visible model
 	allByName map[string]*maniflex.ModelMeta // every registered model, by struct name
-	static    http.Handler              // embedded/override asset file server
+	static    http.Handler                   // embedded/override asset file server
 }
 
 func newAdmin(server *maniflex.Server, cfg Config) (*admin, error) {
@@ -190,7 +190,11 @@ func (a *admin) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	for _, m := range a.models {
 		c := dashCard{Label: prettify(m.TableName), Table: m.TableName}
 		if page, err := a.api.list(r, m.TableName, "limit=1"); err != nil {
-			c.Err = err.Error()
+			a.cfg.logger().Error("admin dashboard query failed",
+				"model", m.Name,
+				"error", err,
+			)
+			c.Err = "service unavailable"
 		} else {
 			c.Count = page.Total
 		}

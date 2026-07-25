@@ -3,7 +3,10 @@ package maniflex
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
+
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
 // ── Context ───────────────────────────────────────────────────────────────────
@@ -27,7 +30,9 @@ type OpenAPIContext struct {
 	// If nil after the Response step runs, the default handler writes Spec as JSON.
 	Response *APIResponse
 
-	values map[string]any
+	values            map[string]any
+	logger            *slog.Logger
+	serverErrorLogged bool
 }
 
 // Set stores a custom value for downstream middleware.
@@ -49,10 +54,36 @@ func (c *OpenAPIContext) Get(key string) (any, bool) {
 
 // Abort sets an error response, short-circuiting the pipeline.
 func (c *OpenAPIContext) Abort(statusCode int, code, message string) {
+	c.logServerError(statusCode, code, message)
+	if isServerErrorStatus(statusCode) {
+		message = publicServerErrorMessage(statusCode)
+	}
 	c.Response = &APIResponse{
 		StatusCode: statusCode,
 		Error:      &APIError{Code: code, Message: message},
 	}
+}
+
+func (c *OpenAPIContext) logServerError(status int, code, message string) {
+	if !isServerErrorStatus(status) || c.serverErrorLogged {
+		return
+	}
+	logger := c.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	attrs := []any{
+		slog.Int("status", status),
+		slog.String("code", code),
+		slog.String("error", message),
+	}
+	if c.Request != nil {
+		if reqID := chiMiddleware.GetReqID(c.Request.Context()); reqID != "" {
+			attrs = append(attrs, slog.String("request_id", reqID))
+		}
+	}
+	logger.Error("OpenAPI server error response", attrs...)
+	c.serverErrorLogged = true
 }
 
 // ── Middleware type ───────────────────────────────────────────────────────────
@@ -177,14 +208,20 @@ type OpenAPIPipeline struct {
 	Auth     *OpenAPIStepRegistry
 	Generate *OpenAPIStepRegistry
 	Response *OpenAPIStepRegistry
+	logger   *slog.Logger
 }
 
 // newOpenAPIPipeline wires the three step registries with their default handlers.
 func newOpenAPIPipeline(steps *oasDefaultSteps) *OpenAPIPipeline {
+	logger := slog.Default()
+	if steps.cfg != nil {
+		logger = steps.cfg.logger()
+	}
 	return &OpenAPIPipeline{
 		Auth:     newOASStepRegistry("openapi.auth", steps.auth),
 		Generate: newOASStepRegistry("openapi.generate", steps.generate),
 		Response: newOASStepRegistry("openapi.response", steps.response),
+		logger:   logger,
 	}
 }
 
@@ -205,18 +242,29 @@ func (p *OpenAPIPipeline) execute(ctx *OpenAPIContext) error {
 // handler returns an http.HandlerFunc that drives the OpenAPI pipeline.
 func (p *OpenAPIPipeline) handler() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		reqID := chiMiddleware.GetReqID(r.Context())
+		if reqID != "" {
+			w.Header().Set("X-Request-Id", reqID)
+		}
 		ctx := &OpenAPIContext{
 			Request: r,
 			Writer:  w,
 			Ctx:     r.Context(),
+			logger:  p.logger,
 		}
 		if err := p.execute(ctx); err != nil {
+			ctx.logServerError(http.StatusInternalServerError, "INTERNAL", err.Error())
 			http.Error(w,
 				`{"error":{"code":"INTERNAL","message":"internal server error"}}`,
 				http.StatusInternalServerError)
 			return
 		}
 		if ctx.Response != nil {
+			if ctx.Response.Error != nil {
+				ctx.logServerError(ctx.Response.StatusCode, ctx.Response.Error.Code, ctx.Response.Error.Message)
+			} else {
+				ctx.logServerError(ctx.Response.StatusCode, "INTERNAL", "5xx APIResponse had no APIError")
+			}
 			ctx.Response.Write(w)
 			return
 		}

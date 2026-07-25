@@ -6,6 +6,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 //go:embed templates/*.html
@@ -69,19 +70,32 @@ func loadTemplates(override fs.FS) (*templateSet, error) {
 func (a *admin) render(w http.ResponseWriter, page string, data viewData) {
 	t, ok := a.tmpl.pages[page]
 	if !ok {
-		http.Error(w, "admin: unknown page "+page, http.StatusInternalServerError)
+		a.cfg.logger().Error("admin template is missing", "page", page)
+		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := t.Execute(w, data); err != nil {
-		// The status line and some body bytes may already be flushed, so this
-		// can only append a diagnostic comment.
-		fmt.Fprintf(w, "\n<!-- admin render error: %v -->", err)
+		// The status line and some body bytes may already be flushed, so the
+		// failure can only be logged; appending it would expose template paths
+		// and data-shape details in an otherwise successful response.
+		a.cfg.logger().Error("admin template render failed", "page", page, "error", err)
 	}
 }
 
 // renderError writes the error page with the given HTTP status.
 func (a *admin) renderError(w http.ResponseWriter, status int, msg string) {
+	if status >= http.StatusInternalServerError && status <= 599 {
+		a.cfg.logger().Error("admin server error response",
+			"status", status,
+			"error", msg,
+		)
+		if text := http.StatusText(status); text != "" {
+			msg = strings.ToLower(text)
+		} else {
+			msg = "server error"
+		}
+	}
 	t, ok := a.tmpl.pages["error"]
 	if !ok {
 		http.Error(w, msg, status)

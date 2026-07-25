@@ -27,6 +27,7 @@ package admin
 
 import (
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -68,6 +69,17 @@ type Config struct {
 	// AllowUnauthenticated permits mounting the panel with no Auth gate.
 	// Intended for local development only — never set this in production.
 	AllowUnauthenticated bool
+
+	// Logger receives private server-side diagnostics. Defaults to slog.Default.
+	// Error pages never render those diagnostics for 5xx responses.
+	Logger *slog.Logger
+}
+
+func (c Config) logger() *slog.Logger {
+	if c.Logger != nil {
+		return c.Logger
+	}
+	return slog.Default()
 }
 
 // Mount builds the admin panel handler for server. The returned handler serves

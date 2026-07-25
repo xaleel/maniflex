@@ -265,6 +265,11 @@ func writeResponse(w http.ResponseWriter, ctx *ServerContext) {
 	if ctx.Response == nil {
 		return
 	}
+	if ctx.Response.Error != nil {
+		ctx.logServerError(ctx.Response.StatusCode, ctx.Response.Error.Code, ctx.Response.Error.Message)
+	} else {
+		ctx.logServerError(ctx.Response.StatusCode, "INTERNAL", "5xx APIResponse had no APIError")
+	}
 	if sc := ctx.Response.StatusCode; sc != 0 && (sc < 200 || sc >= 300) {
 		ctx.cleanupOrphanedFiles()
 	} else {

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"log/slog"
 	"net/http"
 )
 
@@ -38,6 +39,10 @@ type WebhookReceiver struct {
 
 	// MaxBodyBytes caps the request body size. 0 means 1 MiB.
 	MaxBodyBytes int64
+
+	// Logger receives handler failures with their private diagnostic text.
+	// Defaults to slog.Default. Clients receive only a generic 500 response.
+	Logger *slog.Logger
 }
 
 // Handler returns an http.HandlerFunc that, on each request:
@@ -49,7 +54,8 @@ type WebhookReceiver struct {
 //  5. Invokes the handler with the raw body.
 //
 // Failures map to: 400 (decode), 401 (signature mismatch), 404 (no handler
-// for the event), or whatever the handler chooses to return.
+// for the event), or a generic 500 for a handler error. Handler errors retain
+// their private diagnostic only in the configured Logger.
 func (r *WebhookReceiver) Handler(handlers map[string]WebhookHandler) http.HandlerFunc {
 	if r.Secret == "" {
 		panic("integration: WebhookReceiver.Secret must not be empty")
@@ -106,7 +112,16 @@ func (r *WebhookReceiver) Handler(handlers map[string]WebhookHandler) http.Handl
 			return
 		}
 		if err := h(w, req, body); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			logger := r.Logger
+			if logger == nil {
+				logger = slog.Default()
+			}
+			attrs := []any{slog.String("error", err.Error())}
+			if requestID := req.Header.Get("X-Request-Id"); requestID != "" {
+				attrs = append(attrs, slog.String("request_id", requestID))
+			}
+			logger.Error("webhook handler failed", attrs...)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
 		}
 	}
 }

@@ -1,6 +1,8 @@
 package admin
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -102,5 +104,38 @@ func TestUnknownModelIs404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown model status = %d, want 404", rec.Code)
+	}
+}
+
+func TestRenderErrorRedactsServerDiagnostics(t *testing.T) {
+	var logs bytes.Buffer
+	ts, err := loadTemplates(nil)
+	if err != nil {
+		t.Fatalf("load templates: %v", err)
+	}
+	a := &admin{
+		cfg: Config{
+			Title:      "test",
+			PathPrefix: "/admin",
+			Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+				Level: slog.LevelError,
+			})),
+		},
+		tmpl: ts,
+	}
+
+	const privateError = `upstream failed: postgres://admin:secret@db/private`
+	rec := httptest.NewRecorder()
+	a.renderError(rec, http.StatusBadGateway, privateError)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", rec.Code)
+	}
+	if body := rec.Body.String(); strings.Contains(body, privateError) ||
+		!strings.Contains(body, "bad gateway") {
+		t.Errorf("server error page was not redacted:\n%s", body)
+	}
+	if got := logs.String(); !strings.Contains(got, privateError) {
+		t.Errorf("private diagnostic must be logged; got:\n%s", got)
 	}
 }

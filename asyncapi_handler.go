@@ -3,6 +3,8 @@ package maniflex
 import (
 	"encoding/json"
 	"net/http"
+
+	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 )
 
 // asyncAPIHandler serves the AsyncAPI 2.6 document at {PathPrefix}/asyncapi.json.
@@ -12,13 +14,15 @@ import (
 // a permissive CORS header so AsyncAPI Studio / codegen tools can load it
 // cross-origin, matching the /openapi.json behaviour.
 func asyncAPIHandler(reg RegistryAccessor, cfg *Config, asyncCfg AsyncAPIConfig) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if reqID := chiMiddleware.GetReqID(r.Context()); reqID != "" {
+			w.Header().Set("X-Request-Id", reqID)
+		}
 		spec := GenerateAsyncAPI(reg, cfg, asyncCfg)
 		b, err := json.MarshalIndent(spec, "", "  ")
 		if err != nil {
-			http.Error(w,
-				`{"error":{"code":"MARSHAL_ERROR","message":"failed to encode AsyncAPI document"}}`,
-				http.StatusInternalServerError)
+			cfg.logger().Error("failed to encode AsyncAPI document", "error", err)
+			writeJSONError(w, http.StatusInternalServerError, "MARSHAL_ERROR", err.Error())
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")

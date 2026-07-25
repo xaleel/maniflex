@@ -1,7 +1,11 @@
 package e2e
 
 import (
+	"bytes"
+	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
@@ -367,6 +371,34 @@ func TestPipeline(t *testing.T) {
 			},
 		})
 		srv.GET("/openapi.json").AssertStatus(http.StatusForbidden)
+	})
+
+	t.Run("openapi_server_error_is_redacted_and_correlated", func(t *testing.T) {
+		t.Parallel()
+		var logs bytes.Buffer
+		const privateError = `openapi generator read C:\private\schema.json: access denied`
+		srv := testutil.NewServer(t, testutil.Options{
+			Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+				Level: slog.LevelError,
+			})),
+			Middleware: func(s *maniflex.Server) {
+				s.Pipeline.OpenAPI.Generate.Register(func(*maniflex.OpenAPIContext, func() error) error {
+					return errors.New(privateError)
+				})
+			},
+		})
+
+		resp := srv.GET("/openapi.json")
+		resp.AssertStatus(http.StatusInternalServerError)
+		assertRedactedServerError(t, resp, privateError)
+		if resp.Header.Get("X-Request-Id") == "" {
+			t.Error("OpenAPI 500 is missing X-Request-Id correlation header")
+		}
+		if got := logs.String(); !strings.Contains(got, "schema.json") ||
+			!strings.Contains(got, "access denied") ||
+			!strings.Contains(got, "request_id=") {
+			t.Errorf("private OpenAPI diagnostic and request ID must be logged; got:\n%s", got)
+		}
 	})
 
 	t.Run("openapi_generate_after_middleware_can_mutate_spec", func(t *testing.T) {

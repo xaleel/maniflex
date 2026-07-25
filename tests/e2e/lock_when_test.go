@@ -5,9 +5,12 @@ package e2e
 // Creates are not affected (no prior state to compare).
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -143,10 +146,12 @@ type flakyReadAdapter struct {
 	failReads atomic.Bool
 }
 
+const lockReadPrivateError = `pq: relation "locked_invoices_private" failed at db.internal:5432`
+
 func (a *flakyReadAdapter) FindByID(ctx context.Context, model *maniflex.ModelMeta, id string,
 	q *maniflex.QueryParams) (any, error) {
 	if a.failReads.Load() {
-		return nil, errors.New("connection reset by peer")
+		return nil, errors.New(lockReadPrivateError)
 	}
 	return a.DBAdapter.FindByID(ctx, model, id, q)
 }
@@ -159,8 +164,12 @@ func TestLockWhen_GuardReadFailureBlocksWrite(t *testing.T) {
 	t.Parallel()
 
 	adapter := &flakyReadAdapter{}
+	var logs bytes.Buffer
 	srv := testutil.NewServer(t, testutil.Options{
 		Models: []any{testutil.LockedInvoice{}},
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelError,
+		})),
 		DBAdapter: func(reg maniflex.RegistryAccessor) (maniflex.DBAdapter, error) {
 			inner, err := sqlite.Open(":memory:", reg)
 			if err != nil {
@@ -186,11 +195,21 @@ func TestLockWhen_GuardReadFailureBlocksWrite(t *testing.T) {
 	if code := resp.ErrorCode(); code != "DB_ERROR" {
 		t.Errorf("update error code: got %q, want DB_ERROR", code)
 	}
+	assertRedactedServerError(t, resp, lockReadPrivateError)
+	if resp.Header.Get("X-Request-Id") == "" {
+		t.Error("500 response is missing X-Request-Id correlation header")
+	}
 
 	delResp := srv.DELETE("/locked_invoices/" + id)
 	delResp.AssertStatus(http.StatusInternalServerError)
 	if code := delResp.ErrorCode(); code != "DB_ERROR" {
 		t.Errorf("delete error code: got %q, want DB_ERROR", code)
+	}
+	assertRedactedServerError(t, delResp, lockReadPrivateError)
+	if got := logs.String(); !strings.Contains(got, "locked_invoices_private") ||
+		!strings.Contains(got, "db.internal:5432") ||
+		!strings.Contains(got, "request_id=") {
+		t.Errorf("private DB diagnostic and request ID must be logged; got:\n%s", got)
 	}
 
 	// The locked record is untouched: neither write got past the broken guard.
@@ -202,6 +221,22 @@ func TestLockWhen_GuardReadFailureBlocksWrite(t *testing.T) {
 	if got["status"] != "posted" {
 		t.Errorf("status = %v, want posted", got["status"])
 	}
+}
+
+func assertRedactedServerError(t *testing.T, resp *testutil.Response, private string) {
+	t.Helper()
+	if strings.Contains(string(resp.Body), private) {
+		t.Fatalf("private server diagnostic leaked: %s", resp.Body)
+	}
+	resp.AssertJSON(func(body map[string]any) {
+		apiErr, ok := body["error"].(map[string]any)
+		if !ok {
+			t.Fatalf("response has no error object: %#v", body)
+		}
+		if got := apiErr["message"]; got != "internal server error" {
+			t.Errorf("message = %v, want generic 500", got)
+		}
+	})
 }
 
 // The guard reads through the request's transaction, so it sees the state the

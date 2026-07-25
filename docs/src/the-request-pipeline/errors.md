@@ -82,6 +82,14 @@ Subsequent steps are skipped; the Response step writes the prepared envelope.
 Calling `next()` after `Abort` allows downstream steps to overwrite the
 response — usually not what you want.
 
+For a 5xx status, `message` is a private diagnostic: Maniflex logs it once
+through `Config.Logger`, correlated by `request_id`, but sends only generic
+status text such as `internal server error` or `bad gateway`. The HTTP status
+and stable error `code` remain public. Any `details` on a directly assigned
+5xx `APIResponse` are also removed at the wire boundary. Validated 4xx
+messages and details are unchanged. Every routed response echoes the
+correlation value in `X-Request-Id`.
+
 ## Returning structured details
 
 For per-field errors and similar payloads, set `ctx.Response` directly:
@@ -171,11 +179,14 @@ ctx.Logger().Error("payment provider rejected charge",
     slog.String("provider", "stripe"),
     slog.String("error_code", resp.Code),
 )
-ctx.Abort(http.StatusBadGateway, "PAYMENT_DECLINED", resp.Message)
+ctx.Abort(http.StatusBadGateway, "PAYMENT_PROVIDER_ERROR", resp.Message)
 return nil
 ```
 
-Log first, then abort — the log line is what you'll need when debugging.
+`Abort` logs the supplied 5xx message automatically. The explicit log is still
+useful when you have structured provider fields that should not be flattened
+into the diagnostic string. Neither `resp.Message` nor those fields reach the
+client.
 
 ## Next
 

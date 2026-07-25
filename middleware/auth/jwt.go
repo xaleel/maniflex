@@ -532,7 +532,8 @@ func abortOwnershipMismatch(ctx *maniflex.ServerContext, ownerField string) bool
 		if errors.Is(err, maniflex.ErrNotFound) {
 			ctx.Abort(http.StatusNotFound, "NOT_FOUND", "record not found")
 		} else {
-			ctx.Abort(http.StatusInternalServerError, "DB_ERROR", "ownership check failed")
+			ctx.Abort(http.StatusInternalServerError, "DB_ERROR",
+				fmt.Sprintf("ownership check failed: %v", err))
 		}
 		return true
 	}

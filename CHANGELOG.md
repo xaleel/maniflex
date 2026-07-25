@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Security:** framework-owned 5xx responses no longer expose database, encryption, storage, workflow, OpenAPI, webhook, admin, or other internal diagnostics. The HTTP status and stable error code remain public, while the message is replaced with the generic status text and error details are removed; the original diagnostic is logged once with the request ID. Validated 4xx messages are unchanged.
 - **Security:** raised the minimum Go toolchain from 1.25.4 to 1.25.12, the patched Go 1.25 release that closes the reachable standard-library vulnerabilities reported by `govulncheck`, and upgraded Chi to v5.3.0 to close its `RealIP` vulnerabilities. Every workspace module now enforces the same security floors, and release checks scan every module.
 
 ## v0.3.4 (2026-07-24)

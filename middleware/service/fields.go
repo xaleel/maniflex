@@ -47,7 +47,7 @@ func HashField(field string, h Hasher) maniflex.MiddlewareFunc {
 		hashed, err := h(str)
 		if err != nil {
 			ctx.Abort(http.StatusInternalServerError, "HASH_ERROR",
-				"failed to hash field: "+field)
+				fmt.Sprintf("failed to hash field %q: %v", field, err))
 			return nil
 		}
 		ctx.SetField(field, hashed)

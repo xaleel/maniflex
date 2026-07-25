@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"sync"
 	"time"
@@ -312,7 +313,7 @@ func Logout(rev Revoker, path string) maniflex.ActionConfig {
 				// Report the failure. A logout that silently did nothing is
 				// worse than one that failed, because the caller believes it.
 				ctx.Abort(http.StatusServiceUnavailable, CodeRevocationUnavailable,
-					"could not revoke the token")
+					fmt.Sprintf("could not revoke the token: %v", err))
 				return nil
 			}
 			ctx.Response = &maniflex.APIResponse{StatusCode: http.StatusNoContent}
@@ -357,7 +358,7 @@ func LogoutAll(rev Revoker, path string, retain time.Duration) maniflex.ActionCo
 			now := time.Now()
 			if err := rev.RevokeUser(ctx.Ctx, ctx.Auth.UserID, now, now.Add(retain)); err != nil {
 				ctx.Abort(http.StatusServiceUnavailable, CodeRevocationUnavailable,
-					"could not revoke the user's tokens")
+					fmt.Sprintf("could not revoke the user's tokens: %v", err))
 				return nil
 			}
 			ctx.Response = &maniflex.APIResponse{StatusCode: http.StatusNoContent}

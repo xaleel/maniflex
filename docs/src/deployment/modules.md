@@ -102,6 +102,15 @@ bash scripts/test-all.sh
 powershell scripts/test-all.ps1
 ```
 
+Before producing release artifacts, scan every workspace module against the
+current Go vulnerability database:
+
+```bash
+bash scripts/vulncheck-all.sh
+# or
+powershell scripts/vulncheck-all.ps1
+```
+
 ## Versioning
 
 Each satellite carries its own `v0.x` tags. The core module is the only one a

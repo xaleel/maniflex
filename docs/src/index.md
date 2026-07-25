@@ -100,4 +100,4 @@ place.
 
 ---
 
-_maniflex requires Go 1.25 or newer._
+_maniflex requires Go 1.25.12 or newer._

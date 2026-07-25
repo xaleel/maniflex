@@ -1,6 +1,6 @@
 module github.com/xaleel/maniflex/db/sqlite
 
-go 1.25.4
+go 1.25.12
 
 require github.com/xaleel/maniflex v0.3.4
 
@@ -8,7 +8,7 @@ require modernc.org/sqlite v1.50.1
 
 require (
 	github.com/dustin/go-humanize v1.0.1 // indirect
-	github.com/go-chi/chi/v5 v5.2.5 // indirect
+	github.com/go-chi/chi/v5 v5.3.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect

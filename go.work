@@ -1,4 +1,4 @@
-go 1.25.4
+go 1.25.12
 
 // Multi-module monorepo. The core module `maniflex` depends only on chi + uuid;
 // each satellite module isolates one heavy dependency so consumers pull only

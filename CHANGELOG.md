@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Security:** raised the minimum Go toolchain from 1.25.4 to 1.25.12, the patched Go 1.25 release that closes the reachable standard-library vulnerabilities reported by `govulncheck`, and upgraded Chi to v5.3.0 to close its `RealIP` vulnerabilities. Every workspace module now enforces the same security floors, and release checks scan every module.
+
 ## v0.3.4 (2026-07-24)
 
 - **Feature:** the `scheduled` sweep signals a backlog it can't drain in one tick. Each tick processes at most `BatchSize` rows per (model, spec); a larger due set drained silently at `BatchSize`/`Interval` rows with no indication rows were left behind. A tick that hits the cap now sets `Report.Truncated` and logs a WARN naming the model, so a backlog building faster than it drains is visible.

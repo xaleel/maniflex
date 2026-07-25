@@ -1,9 +1,9 @@
 module github.com/xaleel/maniflex/tests
 
-go 1.25.4
+go 1.25.12
 
 require (
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/chi/v5 v5.3.0
 	github.com/testcontainers/testcontainers-go v0.42.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.42.0
 	modernc.org/sqlite v1.50.1

@@ -1,6 +1,6 @@
 module github.com/xaleel/maniflex/middleware/db/redis
 
-go 1.25.4
+go 1.25.12
 
 require github.com/redis/go-redis/v9 v9.19.0
 

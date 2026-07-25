@@ -1,6 +1,6 @@
 module github.com/xaleel/maniflex/storage/s3
 
-go 1.25.4
+go 1.25.12
 
 require github.com/xaleel/maniflex v0.3.4
 
@@ -27,6 +27,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.30.17 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.35.21 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.1 // indirect
-	github.com/go-chi/chi/v5 v5.2.5 // indirect
+	github.com/go-chi/chi/v5 v5.3.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 )

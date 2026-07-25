@@ -25,7 +25,9 @@ A typical workflow is:
    on Windows), or `go test ./...` within the module you're editing.
 5. Implement the change until the suite passes.
 6. Run `go vet ./...` and `goimports -w .` (or `gofmt -w .`) to match Go
-   formatting conventions.
+   formatting conventions. Release candidates must also pass
+   `bash scripts/vulncheck-all.sh` (or `scripts/vulncheck-all.ps1` on
+   Windows), which scans every module in `go.work`.
 7. Update docs and `CHANGELOG.md` if the change is user-facing.
 8. [Add, commit, and push your changes.][git-help]
 9. [Submit a pull request][pull-req]. Keep it focused and link any

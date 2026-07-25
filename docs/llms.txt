@@ -4,7 +4,7 @@
 
 Key facts for working with maniflex:
 
-- Requires Go 1.25 or newer. Install with `go get github.com/xaleel/maniflex` plus a database adapter such as `go get github.com/xaleel/maniflex/db/sqlite`.
+- Requires Go 1.25.12 or newer. Install with `go get github.com/xaleel/maniflex` plus a database adapter such as `go get github.com/xaleel/maniflex/db/sqlite`.
 - Multi-module monorepo: the core depends only on `chi` and `uuid`; heavy integrations live in opt-in satellite modules (`db/postgres`, `db/sqlite`, `events/{kafka,nats,rabbitmq,redis}`, `jobs/redis`, `middleware/service/bcrypt`, `storage/s3`, `pkg/otel`).
 - Models embed `maniflex.BaseModel` and use `mfx:"..."` struct tags (e.g. `required`, `filterable`, `sortable`, `enum:a|b|c`) to declare behaviour.
 - Register models before opening the DB — the adapter needs the registry to run migrations and resolve relations.

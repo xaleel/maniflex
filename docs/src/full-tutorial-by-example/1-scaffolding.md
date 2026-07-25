@@ -26,7 +26,7 @@ PostgreSQL, env-driven configuration, and a health probe.
 
 ## Prerequisites
 
-- **Go 1.25 or newer**.
+- **Go 1.25.12 or newer**.
 - A text editor and a terminal. Nothing else; the development database is
   pure-Go SQLite, no CGo needed.
 

@@ -6,7 +6,7 @@ thirty lines of Go.
 
 ## Prerequisites
 
-- **Go 1.25 or newer** — check with `go version`.
+- **Go 1.25.12 or newer** — check with `go version`.
 - That's it. The first example uses the pure-Go SQLite backend, so there is no
   database server to install and no CGo toolchain to configure.
 

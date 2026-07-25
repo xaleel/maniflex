@@ -88,7 +88,7 @@ satellite module isolates one heavy dependency so you pull only what you import 
 
 ## Requirements
 
-Go 1.25 or newer.
+Go 1.25.12 or newer.
 
 ## License
 

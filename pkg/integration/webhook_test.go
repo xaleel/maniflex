@@ -2,6 +2,7 @@ package integration
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -11,8 +12,10 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testSecret = "super-secret"
@@ -146,9 +149,7 @@ func TestWebhook_SHA512Algorithm(t *testing.T) {
 	}
 }
 
-func TestWebhook_MaxBodyBytesTruncatesAndFailsSignature(t *testing.T) {
-	// When body is truncated by MaxBodyBytes, the computed HMAC differs and
-	// the request is rejected — better than handling a partial body.
+func TestWebhook_MaxBodyBytesRejectsSignedPrefixWith413(t *testing.T) {
 	wh := &WebhookReceiver{Secret: testSecret, MaxBodyBytes: 4}
 	called := false
 	h := wh.Handler(map[string]WebhookHandler{
@@ -157,15 +158,165 @@ func TestWebhook_MaxBodyBytesTruncatesAndFailsSignature(t *testing.T) {
 			return nil
 		},
 	})
-	full := `{"long-payload":true}`
-	sig := sign(t, sha256.New, full, "")
+	// Signing the first four bytes exploited the old LimitReader path: it
+	// silently transformed this five-byte request into the signed prefix and
+	// dispatched it. Overflow must be detected before signature verification.
+	full := "12345"
+	sig := sign(t, sha256.New, full[:4], "")
 	rec := httptest.NewRecorder()
 	h(rec, makeReq(t, full, "e", sig))
 	if called {
-		t.Error("truncated body should not pass HMAC")
+		t.Error("oversized request must not dispatch its signed prefix")
 	}
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status: got %d, want 401", rec.Code)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("status: got %d, want 413", rec.Code)
+	}
+}
+
+func TestWebhook_MaxBodyBytesAllowsExactLimit(t *testing.T) {
+	const body = "1234"
+	wh := &WebhookReceiver{Secret: testSecret, MaxBodyBytes: int64(len(body))}
+	called := false
+	h := wh.Handler(map[string]WebhookHandler{
+		"e": func(w http.ResponseWriter, _ *http.Request, got []byte) error {
+			called = true
+			if string(got) != body {
+				t.Errorf("body = %q, want exact unmodified payload", got)
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return nil
+		},
+	})
+	rec := httptest.NewRecorder()
+	h(rec, makeReq(t, body, "e", sign(t, sha256.New, body, "")))
+	if !called || rec.Code != http.StatusNoContent {
+		t.Fatalf("exact-limit request: called=%v status=%d", called, rec.Code)
+	}
+}
+
+func TestWebhook_TimestampWindowIsSignedAndEnforced(t *testing.T) {
+	fixedNow := time.Date(2026, 7, 26, 12, 0, 0, 0, time.UTC)
+	wh := &WebhookReceiver{
+		Secret:             testSecret,
+		TimestampHeaderKey: "X-Webhook-Timestamp",
+		TimestampTolerance: 5 * time.Minute,
+		Clock:              func() time.Time { return fixedNow },
+	}
+	calls := 0
+	h := wh.Handler(map[string]WebhookHandler{
+		"e": func(w http.ResponseWriter, _ *http.Request, _ []byte) error {
+			calls++
+			w.WriteHeader(http.StatusNoContent)
+			return nil
+		},
+	})
+	const body = `{"id":"evt-1"}`
+
+	request := func(timestamp string, signedTimestamp string) *httptest.ResponseRecorder {
+		t.Helper()
+		signed := signedTimestamp + "." + body
+		req := makeReq(t, body, "e", sign(t, sha256.New, signed, ""))
+		req.Header.Set("X-Webhook-Timestamp", timestamp)
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		return rec
+	}
+
+	fresh := strconv.FormatInt(fixedNow.Add(-4*time.Minute).Unix(), 10)
+	if rec := request(fresh, fresh); rec.Code != http.StatusNoContent {
+		t.Fatalf("fresh timestamp status = %d, want 204: %s", rec.Code, rec.Body)
+	}
+
+	stale := strconv.FormatInt(fixedNow.Add(-6*time.Minute).Unix(), 10)
+	if rec := request(stale, stale); rec.Code != http.StatusUnauthorized {
+		t.Errorf("stale timestamp status = %d, want 401", rec.Code)
+	}
+
+	// A replay cannot refresh its timestamp header because the raw timestamp is
+	// part of the HMAC input.
+	refreshed := strconv.FormatInt(fixedNow.Unix(), 10)
+	if rec := request(refreshed, stale); rec.Code != http.StatusUnauthorized {
+		t.Errorf("tampered timestamp status = %d, want 401", rec.Code)
+	}
+	if calls != 1 {
+		t.Errorf("handler calls = %d, want only the fresh request", calls)
+	}
+}
+
+func TestWebhook_ReplayCheckRejectsDuplicateBeforeHandler(t *testing.T) {
+	seen := false
+	checks := 0
+	wh := &WebhookReceiver{
+		Secret: testSecret,
+		ReplayCheck: func(_ context.Context, _ *http.Request, _ []byte) error {
+			checks++
+			if seen {
+				return ErrWebhookReplay
+			}
+			seen = true
+			return nil
+		},
+	}
+	calls := 0
+	h := wh.Handler(map[string]WebhookHandler{
+		"e": func(w http.ResponseWriter, _ *http.Request, _ []byte) error {
+			calls++
+			w.WriteHeader(http.StatusNoContent)
+			return nil
+		},
+	})
+	const body = `{"id":"evt-1"}`
+	sig := sign(t, sha256.New, body, "")
+
+	first := httptest.NewRecorder()
+	h(first, makeReq(t, body, "e", sig))
+	second := httptest.NewRecorder()
+	h(second, makeReq(t, body, "e", sig))
+
+	if first.Code != http.StatusNoContent {
+		t.Errorf("first status = %d, want 204", first.Code)
+	}
+	if second.Code != http.StatusConflict {
+		t.Errorf("replay status = %d, want 409", second.Code)
+	}
+	if calls != 1 || checks != 2 {
+		t.Errorf("handler calls = %d, replay checks = %d; want 1 and 2", calls, checks)
+	}
+}
+
+func TestWebhook_ReplayCheckFailureIsPrivate(t *testing.T) {
+	var logs bytes.Buffer
+	const privateError = "redis auth failed: password=replay-secret"
+	wh := &WebhookReceiver{
+		Secret: testSecret,
+		ReplayCheck: func(_ context.Context, _ *http.Request, _ []byte) error {
+			return errors.New(privateError)
+		},
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelError,
+		})),
+	}
+	h := wh.Handler(map[string]WebhookHandler{
+		"e": func(http.ResponseWriter, *http.Request, []byte) error {
+			t.Error("handler must not run when replay storage fails")
+			return nil
+		},
+	})
+	const body = `{}`
+	rec := httptest.NewRecorder()
+	h(rec, makeReq(t, body, "e", sign(t, sha256.New, body, "")))
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", rec.Code)
+	}
+	if got := rec.Body.String(); got != "internal server error\n" {
+		t.Errorf("body = %q, want generic 500", got)
+	}
+	if strings.Contains(rec.Body.String(), privateError) {
+		t.Errorf("replay backend error leaked to client: %q", rec.Body)
+	}
+	if !strings.Contains(logs.String(), privateError) {
+		t.Errorf("private replay backend error was not logged: %s", &logs)
 	}
 }
 

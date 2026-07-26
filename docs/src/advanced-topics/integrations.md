@@ -68,9 +68,12 @@ than waiting one Interval.
 
 ```go
 wh := &integration.WebhookReceiver{
-    Secret:    secrets.PaymentWebhook,
-    Algorithm: "sha256", // or "sha512"
-    Logger:    logger,   // optional; defaults to slog.Default()
+    Secret:               secrets.PaymentWebhook,
+    Algorithm:            "sha256", // or "sha512"
+    Logger:               logger,   // optional; defaults to slog.Default()
+    TimestampHeaderKey:   "X-Webhook-Timestamp",
+    TimestampTolerance:   5 * time.Minute,
+    ReplayCheck: claimPaymentEventID, // optional atomic shared-store hook
     // Defaults are GitHub-style: X-Hub-Signature-256 + X-Event-Type
 }
 
@@ -80,22 +83,34 @@ http.HandleFunc("/hooks/payments", wh.Handler(map[string]integration.WebhookHand
 }))
 ```
 
+With `TimestampHeaderKey` enabled, the sender signs
+`<raw timestamp>.<raw body>` and the header must be Unix seconds or RFC3339
+within `TimestampTolerance` (default 5 minutes). `ReplayCheck` runs only after
+that signature and timestamp pass. It should extract an authenticated event ID
+from the signed body and atomically claim it in shared storage; return
+`integration.ErrWebhookReplay` when it was already claimed. Keep handlers
+idempotent as a final defence.
+
 The handler:
 
-1. Reads at most `MaxBodyBytes` (default 1 MiB) from the request body.
+1. Reads at most `MaxBodyBytes` (default 1 MiB) from the request body; an extra
+   byte rejects the request rather than truncating it.
 2. Computes HMAC over the raw body and compares it constant-time to the
-   value in `HeaderKey`. Common `algo=hex` prefixes (GitHub, Stripe) are
-   tolerated.
-3. Looks up the handler by the `EventHeaderKey` value.
-4. Calls the handler with the raw body so it can decode whatever shape the
+   value in `HeaderKey` (or over timestamp + body when enabled). Common
+   `algo=hex` prefixes are tolerated.
+3. Applies the optional timestamp and replay checks.
+4. Looks up the handler by the `EventHeaderKey` value.
+5. Calls the handler with the raw body so it can decode whatever shape the
    upstream sends.
 
 Failure modes:
 
 - 400 — body read error
-- 401 — missing or mismatching signature
+- 401 — missing/mismatching signature or invalid timestamp
+- 409 — `ReplayCheck` returned `ErrWebhookReplay`
+- 413 — body exceeds `MaxBodyBytes`
 - 404 — no handler registered for that event
-- 500 — handler returned a non-nil error; the client receives
+- 500 — handler or replay storage returned a non-replay error; the client receives
   `internal server error`, while the original error is written to `Logger`
 
 `WebhookReceiver.Handler` panics if `Secret` is empty or `Algorithm` is

@@ -60,7 +60,14 @@ type EnvKeyProvider struct {
 	// Prefix is prepended to the keyID when building the env var name.
 	// Default: "MFX_KEY".
 	Prefix string
+
+	// IndexKeyID names a dedicated HMAC key for encrypted fields carrying a
+	// UNIQUE constraint. It must not be rotated with field-encryption keys.
+	IndexKeyID string
 }
+
+// BlindIndexKeyID advertises the rotation-independent HMAC key to maniflex.
+func (p *EnvKeyProvider) BlindIndexKeyID() string { return p.IndexKeyID }
 
 func (p *EnvKeyProvider) prefix() string {
 	if p.Prefix != "" {

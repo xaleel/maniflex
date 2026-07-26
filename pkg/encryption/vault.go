@@ -43,7 +43,14 @@ type VaultKeyProvider struct {
 	Mount string
 	// Client is the HTTP client used for Vault calls. Defaults to http.DefaultClient.
 	Client *http.Client
+
+	// IndexKeyID names a dedicated Transit key used only for HMAC blind indexes
+	// on encrypted+unique fields. It must remain stable as encryption keys rotate.
+	IndexKeyID string
 }
+
+// BlindIndexKeyID advertises the rotation-independent HMAC key to maniflex.
+func (v *VaultKeyProvider) BlindIndexKeyID() string { return v.IndexKeyID }
 
 func (v *VaultKeyProvider) mount() string {
 	if v.Mount != "" {
@@ -79,8 +86,10 @@ func (v *VaultKeyProvider) Encrypt(ctx context.Context, keyID string, plaintext 
 	defer resp.Body.Close()
 
 	var result struct {
-		Data   struct{ Ciphertext string `json:"ciphertext"` } `json:"data"`
-		Errors []string                                        `json:"errors"`
+		Data struct {
+			Ciphertext string `json:"ciphertext"`
+		} `json:"data"`
+		Errors []string `json:"errors"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("vault encrypt: decode response: %w", err)
@@ -117,8 +126,10 @@ func (v *VaultKeyProvider) Decrypt(ctx context.Context, envelope []byte) ([]byte
 	defer resp.Body.Close()
 
 	var result struct {
-		Data   struct{ Plaintext string `json:"plaintext"` } `json:"data"`
-		Errors []string                                      `json:"errors"`
+		Data struct {
+			Plaintext string `json:"plaintext"`
+		} `json:"data"`
+		Errors []string `json:"errors"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("vault decrypt: decode response: %w", err)
@@ -162,8 +173,10 @@ func (v *VaultKeyProvider) HMAC(ctx context.Context, keyID string, data []byte) 
 	defer resp.Body.Close()
 
 	var result struct {
-		Data   struct{ Hmac string `json:"hmac"` } `json:"data"`
-		Errors []string                            `json:"errors"`
+		Data struct {
+			Hmac string `json:"hmac"`
+		} `json:"data"`
+		Errors []string `json:"errors"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("vault hmac: decode response: %w", err)

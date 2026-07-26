@@ -213,8 +213,11 @@ exercised. See [Encryption at Rest](../advanced-topics/encryption.md).
 The framework stores a keyed HMAC of the plaintext in a `{field}_hmac`
 companion column. Two plaintexts that hash to the same digest is a
 collision — astronomically unlikely with SHA-based HMAC. More likely you
-re-encrypted under a new key and the old HMACs are still in the table;
-re-run `maniflex.RotateEncryptionKey` and the digests are refreshed.
+have legacy rows whose digests were made with a field-encryption key. Configure
+the provider's stable `IndexKeyID`, quiesce writes, and backfill those companion
+digests before online encryption-key rotation. `RotateEncryptionKeyWithOptions`
+preflights the digests and reports every mismatched row instead of changing
+them during rotation.
 
 ## Auth
 

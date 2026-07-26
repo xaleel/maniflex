@@ -164,7 +164,6 @@ func (a *Adapter) scanStruct(rows *sql.Rows, model *maniflex.ModelMeta) ([]any, 
 func scanStructRows(rows *sql.Rows, model *maniflex.ModelMeta, driver maniflex.DriverType, cols []string, steps []columnStep) ([]any, error) {
 	// Per-call holders + scan-destination slice. Holder pointers are stable
 	// across this call's rows; skScanner slots are repointed at each row's field.
-	var throwaway any
 	holders := make([]any, len(cols))
 	dest := make([]any, len(cols))
 	for i, st := range steps {
@@ -172,7 +171,13 @@ func scanStructRows(rows *sql.Rows, model *maniflex.ModelMeta, driver maniflex.D
 		case skScanner:
 			// repointed per row
 		case skSkip:
-			dest[i] = &throwaway
+			// Preserve framework-managed/unknown columns (notably encrypted
+			// *_hmac companions) on BaseModel's extra carrier. A shared
+			// throwaway lost every skipped column and made rotation unable to
+			// verify the database's actual uniqueness digest.
+			h := new(any)
+			holders[i] = h
+			dest[i] = h
 		default:
 			h := newHolder(st.kind, driver)
 			holders[i] = h
@@ -199,6 +204,13 @@ func scanStructRows(rows *sql.Rows, model *maniflex.ModelMeta, driver maniflex.D
 		// Record which columns were populated so the serializer emits exactly
 		// those (honouring ?select= projections, matching the map path).
 		maniflex.SetPresentColumns(rec, cols)
+		extra := make(map[string]any)
+		for i, st := range steps {
+			if st.kind == skSkip {
+				extra[cols[i]] = *holders[i].(*any)
+			}
+		}
+		maniflex.SetExtra(rec, extra)
 		out = append(out, rec)
 	}
 	return out, rows.Err()
@@ -472,7 +484,9 @@ func convertRowValues(model *maniflex.ModelMeta, driver maniflex.DriverType, col
 	for i, st := range steps {
 		switch st.kind {
 		case skSkip:
-			continue
+			h := new(any)
+			*h = raw[i]
+			holders[i] = h
 		case skScanner:
 			sc := sv.FieldByIndex(st.index).Addr().Interface().(sql.Scanner)
 			if err := sc.Scan(raw[i]); err != nil {
@@ -489,5 +503,14 @@ func convertRowValues(model *maniflex.ModelMeta, driver maniflex.DriverType, col
 	if err := assignStruct(sv, steps, holders); err != nil {
 		return nil, err
 	}
-	return pv.Interface(), nil
+	rec := pv.Interface()
+	maniflex.SetPresentColumns(rec, cols)
+	extra := make(map[string]any)
+	for i, st := range steps {
+		if st.kind == skSkip {
+			extra[cols[i]] = *holders[i].(*any)
+		}
+	}
+	maniflex.SetExtra(rec, extra)
+	return rec, nil
 }

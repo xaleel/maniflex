@@ -424,7 +424,11 @@ type Patient struct {
 - `EnvKeyProvider` needs base64-encoded 32-byte keys in env vars.
 - Encrypted fields cannot be `filterable`/`sortable`.
 - `encrypted,unique` adds `{field}_hmac TEXT UNIQUE` companion column.
-- `maniflex.RotateEncryptionKey(ctx, server, "Model", oldKeyID, newKeyID)` re-encrypts in pages of 100. Keep both keys active.
+- Set `EnvKeyProvider.IndexKeyID` / `VaultKeyProvider.IndexKeyID` to a dedicated,
+  non-rotating HMAC key before writing `encrypted,unique` data.
+- `RotateEncryptionKeyWithOptions` preflights envelopes and blind indexes,
+  reports row/field failures, and provides `LastID` for interruption resume.
+  Keep old, new, and index keys active until `Complete` is true.
 
 ## Versioning
 

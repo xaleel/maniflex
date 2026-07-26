@@ -131,7 +131,7 @@ func TestScanStruct_NullIntoNonPointer(t *testing.T) {
 	}
 }
 
-func TestScanStruct_UnmappedColumnSkipped(t *testing.T) {
+func TestScanStruct_UnmappedColumnPreserved(t *testing.T) {
 	a := &Adapter{driver: maniflex.SQLite}
 	meta := wideMeta(t)
 	v, err := a.scanStructValues(meta, []string{"id", "extra_col"}, []any{"x", int64(7)})
@@ -140,6 +140,9 @@ func TestScanStruct_UnmappedColumnSkipped(t *testing.T) {
 	}
 	if w := v.(*wideRow); w.ID != "x" {
 		t.Errorf("ID = %q, want x", w.ID)
+	}
+	if got := maniflex.RecordToMap(meta, v)["extra_col"]; got != int64(7) {
+		t.Errorf("extra_col = %#v, want int64(7)", got)
 	}
 }
 

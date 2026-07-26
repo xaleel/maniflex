@@ -83,7 +83,10 @@ constructed as plain struct literals.
 import "github.com/xaleel/maniflex/pkg/encryption"
 
 server := maniflex.New(maniflex.Config{
-    KeyProvider: &encryption.EnvKeyProvider{Prefix: "MYAPP_KEY"},
+    KeyProvider: &encryption.EnvKeyProvider{
+        Prefix:     "MYAPP_KEY",
+        IndexKeyID: "blind-index",
+    },
     // ...
 })
 ```
@@ -96,6 +99,7 @@ result uppercased:
 |---|---|---|
 | `MYAPP_KEY` | `default` | `MYAPP_KEY_DEFAULT` |
 | `MYAPP_KEY` | `patient-pii` | `MYAPP_KEY_PATIENT_PII` |
+| `MYAPP_KEY` | `blind-index` | `MYAPP_KEY_BLIND_INDEX` |
 | `MFX_KEY` (default) | `billing` | `MFX_KEY_BILLING` |
 
 Each variable holds a base64-encoded 32-byte (256-bit) AES key. Generate
@@ -115,6 +119,7 @@ server := maniflex.New(maniflex.Config{
         Address: "https://vault.example.com",
         Token:   os.Getenv("VAULT_TOKEN"),
         Mount:   "transit",            // optional, default "transit"
+        IndexKeyID: "blind-index",      // dedicated Transit HMAC key
         // Client: customHTTPClient,    // optional, defaults to http.DefaultClient
     },
 })
@@ -139,12 +144,18 @@ type KeyProvider interface {
     KeyIDOf(envelope []byte) (string, error)
     HMAC(ctx context.Context, keyID string, data []byte) ([]byte, error)
 }
+
+type BlindIndexKeyProvider interface {
+    BlindIndexKeyID() string
+}
 ```
 
 `Encrypt` returns a self-describing binary envelope that embeds the
 `keyID`. `Decrypt` reads the keyID from the envelope, so callers don't
 supply it. `HMAC` produces a deterministic keyed digest used for unique
-indexes.
+indexes. `BlindIndexKeyProvider` is an optional capability. The shipped
+providers implement it through `IndexKeyID`; custom providers should implement
+it when encrypted+unique models need online key rotation.
 
 ## Unique encrypted fields
 
@@ -164,10 +175,18 @@ Email string `json:"email" mfx:"encrypted,unique"`
 | `email` | TEXT | the `enc:<base64>` envelope |
 | `email_hmac` | TEXT UNIQUE | a keyed HMAC of the plaintext |
 
-On every write, the DB step calls `KeyProvider.HMAC(ctx, keyID, plaintext)`
-and stores the result in the companion. The HMAC is deterministic for a
-given (key, plaintext) pair, so the database can enforce uniqueness
-without ever seeing the plaintext.
+On every write, the DB step calls `KeyProvider.HMAC` with `IndexKeyID` and
+stores the result in the companion. The index key must be dedicated to this
+purpose and must not rotate with field-encryption keys. The HMAC is
+deterministic for a given (index key, plaintext) pair, so the database can
+enforce uniqueness without ever seeing the plaintext.
+
+If `IndexKeyID` is omitted, writes retain the legacy behavior of using the
+field-encryption key for compatibility, but online rotation of a model with
+encrypted+unique fields is refused. Configure the index key before the first
+such row is written. For an existing table, quiesce writes and backfill the
+companion digests under the dedicated key before attempting online rotation;
+the rotation preflight rejects any legacy digest.
 
 Reads strip the HMAC column from responses automatically; clients see only
 the decrypted plaintext on `email` and never the digest.
@@ -240,28 +259,37 @@ only way to write encrypted columns.
 
 ## Key rotation
 
-`maniflex.RotateEncryptionKey(ctx, server, modelName, oldKeyID, newKeyID)`
-re-encrypts every row of a model whose envelopes were encrypted with
-`oldKeyID`:
+First update the model's `key:NAME` tag (and deploy it) so concurrent writes use
+the new encryption key. Then
+`maniflex.RotateEncryptionKeyWithOptions(ctx, server, modelName, oldKeyID,
+newKeyID, options)` re-encrypts every old-key envelope:
 
 ```go
-n, err := maniflex.RotateEncryptionKey(ctx, server, "Patient", "v1", "v2")
+report, err := maniflex.RotateEncryptionKeyWithOptions(
+    ctx, server, "Patient", "v1", "v2",
+    maniflex.EncryptionRotationOptions{PageSize: 100},
+)
 if err != nil {
+    log.Printf("stopped after %q; row failures: %+v", report.LastID, report.Failures)
     log.Fatal(err)
 }
-log.Printf("re-encrypted %d rows", n)
+log.Printf("re-encrypted %d rows", report.Rotated)
 ```
 
-The function pages through the table 100 rows at a time, decrypts each
-value with the old key, re-encrypts with the new key, and updates the
-HMAC companion for any unique encrypted fields. Both keys must remain
-available in the `KeyProvider` until the rotation completes — partial
-rotations leave the table with a mix of old-key and new-key envelopes
-until you finish.
+The compatibility wrapper `RotateEncryptionKey` still returns `(int, error)`.
+The detailed API adds `Failures`, `LastID`, and `Complete`.
 
-The operation is not atomic across all rows. On failure, run it again —
-it skips envelopes whose keyID already matches `newKeyID`, so a partial
-rotation is safe to resume.
+Rotation resolves the model's per-model adapter, then preflights the requested
+range before writing. Malformed base64, invalid envelopes, decrypt failures,
+and mismatched legacy blind indexes are returned with their row ID, field, and
+stage. It never reports success after silently skipping corruption.
+
+The operation is not atomic across all rows. On an interruption or adapter
+error, resume with `AfterID: report.LastID`; already-rotated envelopes are
+idempotently skipped. If `report.Failures` is non-empty, repair those rows and
+restart from the beginning so the full remaining old-key set is preflighted.
+Both encryption keys and the stable index key must remain available until
+`report.Complete` is true.
 
 For large tables, run the rotation as a background job rather than at
 startup. Each row is a separate `UPDATE`, so the operation is bound by

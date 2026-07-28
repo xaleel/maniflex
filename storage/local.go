@@ -26,6 +26,7 @@ import (
 //	{BasePath}/{key}.meta.json  — JSON-encoded maniflex.FileMeta
 type LocalStorage struct {
 	basePath string // absolute path to the root directory
+	root     *os.Root
 }
 
 // NewLocalStorage creates a LocalStorage rooted at basePath.
@@ -38,7 +39,17 @@ func NewLocalStorage(basePath string) (*LocalStorage, error) {
 	if err := os.MkdirAll(abs, 0o755); err != nil {
 		return nil, fmt.Errorf("storage: create base path: %w", err)
 	}
-	return &LocalStorage{basePath: abs}, nil
+	root, err := os.OpenRoot(abs)
+	if err != nil {
+		return nil, fmt.Errorf("storage: open base path: %w", err)
+	}
+	return &LocalStorage{basePath: abs, root: root}, nil
+}
+
+// Close releases the directory handle held by LocalStorage. Call it when the
+// storage backend is no longer in use.
+func (s *LocalStorage) Close() error {
+	return s.root.Close()
 }
 
 // Store writes the contents of r to the given key. The copy is cancelled when
@@ -47,33 +58,38 @@ func (s *LocalStorage) Store(ctx context.Context, key string, r io.Reader, meta 
 	if isMetaKey(key) {
 		return fmt.Errorf("storage: key %q reserved for metadata sidecar", key)
 	}
-	fullPath, err := s.resolve(key, true)
+	name, err := relativeKey(key)
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+	if err := s.root.MkdirAll(filepath.Dir(name), 0o755); err != nil {
 		return fmt.Errorf("storage: create directories for %q: %w", key, err)
 	}
 
-	f, err := os.Create(fullPath)
+	f, err := s.root.Create(name)
 	if err != nil {
 		return fmt.Errorf("storage: create file %q: %w", key, err)
 	}
-	defer f.Close()
 
 	if _, err := io.Copy(f, ctxReader{ctx: ctx, r: r}); err != nil {
-		os.Remove(fullPath)
+		f.Close()
+		s.root.Remove(name)
 		return fmt.Errorf("storage: write file %q: %w", key, err)
+	}
+	if err := f.Close(); err != nil {
+		s.root.Remove(name)
+		return fmt.Errorf("storage: close file %q: %w", key, err)
 	}
 
 	// Write metadata as sibling .meta.json
 	metaBytes, err := json.Marshal(meta)
 	if err != nil {
+		s.root.Remove(name)
 		return fmt.Errorf("storage: marshal metadata for %q: %w", key, err)
 	}
-	if err := os.WriteFile(fullPath+metaSuffix, metaBytes, 0o644); err != nil {
-		os.Remove(fullPath)
+	if err := s.root.WriteFile(name+metaSuffix, metaBytes, 0o644); err != nil {
+		s.root.Remove(name)
 		return fmt.Errorf("storage: write metadata for %q: %w", key, err)
 	}
 
@@ -110,12 +126,12 @@ func (s *LocalStorage) open(key string) (*os.File, maniflex.FileMeta, error) {
 	if isMetaKey(key) {
 		return nil, maniflex.FileMeta{}, maniflex.ErrFileNotFound
 	}
-	fullPath, err := s.resolve(key, false)
+	name, err := relativeKey(key)
 	if err != nil {
 		return nil, maniflex.FileMeta{}, err
 	}
 
-	f, err := os.Open(fullPath)
+	f, err := s.root.Open(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, maniflex.FileMeta{}, maniflex.ErrFileNotFound
@@ -123,7 +139,7 @@ func (s *LocalStorage) open(key string) (*os.File, maniflex.FileMeta, error) {
 		return nil, maniflex.FileMeta{}, fmt.Errorf("storage: open file %q: %w", key, err)
 	}
 
-	meta, err := s.readMeta(fullPath)
+	meta, err := s.readMeta(name)
 	if err != nil {
 		f.Close()
 		return nil, maniflex.FileMeta{}, err
@@ -145,18 +161,18 @@ func (s sectionReadCloser) Close() error { return s.closer.Close() }
 // maniflex.ErrFileNotFound when the key does not exist so the standalone
 // /files handler can translate that into a 404.
 func (s *LocalStorage) Delete(_ context.Context, key string) error {
-	fullPath, err := s.resolve(key, false)
+	name, err := relativeKey(key)
 	if err != nil {
 		return err
 	}
 
-	primary := os.Remove(fullPath)
+	primary := s.root.Remove(name)
 	if primary != nil && !os.IsNotExist(primary) {
 		return fmt.Errorf("storage: delete file %q: %w", key, primary)
 	}
 	// Always try the metadata sidecar — it may exist even when the primary
 	// file is missing (interrupted write) and we shouldn't leak it.
-	if err := os.Remove(fullPath + metaSuffix); err != nil && !os.IsNotExist(err) {
+	if err := s.root.Remove(name + metaSuffix); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("storage: delete metadata for %q: %w", key, err)
 	}
 	if primary != nil && os.IsNotExist(primary) {
@@ -167,11 +183,11 @@ func (s *LocalStorage) Delete(_ context.Context, key string) error {
 
 // Exists reports whether the file at key exists in storage.
 func (s *LocalStorage) Exists(_ context.Context, key string) (bool, error) {
-	fullPath, err := s.resolve(key, false)
+	name, err := relativeKey(key)
 	if err != nil {
 		return false, err
 	}
-	_, err = os.Stat(fullPath)
+	_, err = s.root.Stat(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil
@@ -197,11 +213,11 @@ func (s *LocalStorage) URL(_ context.Context, key string, _ time.Duration) (stri
 // Stat implements maniflex.FileStorage. It reads the metadata sidecar without
 // opening the file itself.
 func (s *LocalStorage) Stat(_ context.Context, key string) (maniflex.FileMeta, error) {
-	full, err := s.resolve(key, false)
+	name, err := relativeKey(key)
 	if err != nil {
 		return maniflex.FileMeta{}, err
 	}
-	fi, err := os.Stat(full)
+	fi, err := s.root.Stat(name)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return maniflex.FileMeta{}, maniflex.ErrFileNotFound
@@ -212,7 +228,7 @@ func (s *LocalStorage) Stat(_ context.Context, key string) (maniflex.FileMeta, e
 		return maniflex.FileMeta{}, maniflex.ErrFileNotFound
 	}
 
-	meta, err := s.readMeta(full)
+	meta, err := s.readMeta(name)
 	if err != nil {
 		return maniflex.FileMeta{}, err
 	}
@@ -242,6 +258,7 @@ func (s *LocalStorage) PresignUpload(_ context.Context, _ string,
 
 // Compile-time interface check.
 var _ maniflex.FileStorage = (*LocalStorage)(nil)
+var _ io.Closer = (*LocalStorage)(nil)
 
 // metaSuffix is the sibling-file extension for the JSON metadata sidecar
 // written next to each stored file.
@@ -269,36 +286,28 @@ func (c ctxReader) Read(p []byte) (int, error) {
 	return c.r.Read(p)
 }
 
-// resolve maps a storage key to an absolute filesystem path, ensuring the
-// result is contained within s.basePath (preventing path traversal attacks).
-func (s *LocalStorage) resolve(key string, clean bool) (string, error) {
+// relativeKey normalizes a storage key into the relative name accepted by
+// os.Root. Leading and parent components retain the historical behavior of
+// collapsing to the storage root, while os.Root provides the actual
+// symlink-safe containment for every filesystem operation.
+func relativeKey(key string) (string, error) {
 	if key == "" {
 		return "", fmt.Errorf("storage: key must not be empty")
 	}
 
-	// Clean the key: normalise separators, collapse ".." sequences.
-	cleaned := filepath.FromSlash("/" + key)
-	if clean {
-		cleaned = filepath.FromSlash(filepath.Clean("/" + key))
-	}
+	cleaned := filepath.FromSlash(filepath.Clean("/" + key))
 	// filepath.Clean("/" + key) produces an absolute-looking path like "/a/b",
-	// so strip the leading separator to make it relative to basePath.
+	// so strip the leading separator to make it relative to os.Root.
 	cleaned = strings.TrimPrefix(cleaned, string(filepath.Separator))
-
-	full := filepath.Join(s.basePath, cleaned)
-
-	// Verify the resolved path is still under basePath.
-	if !strings.HasPrefix(full, s.basePath+string(filepath.Separator)) && full != s.basePath {
-		return "", fmt.Errorf("storage: key %q resolves outside base path", key)
+	if cleaned == "" || cleaned == "." {
+		return "", fmt.Errorf("storage: key %q does not name a file", key)
 	}
-
-	return full, nil
+	return cleaned, nil
 }
 
-// readMeta reads the .meta.json sibling for the given file path.
-func (s *LocalStorage) readMeta(filePath string) (maniflex.FileMeta, error) {
-	metaPath := filePath + metaSuffix
-	data, err := os.ReadFile(metaPath)
+// readMeta reads the .meta.json sibling for the given rooted file name.
+func (s *LocalStorage) readMeta(name string) (maniflex.FileMeta, error) {
+	data, err := s.root.ReadFile(name + metaSuffix)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// No metadata file — return empty metadata (best-effort).

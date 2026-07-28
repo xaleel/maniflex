@@ -20,6 +20,7 @@ func tempStorage(t *testing.T) *LocalStorage {
 	if err != nil {
 		t.Fatalf("NewLocalStorage(%q): %v", dir, err)
 	}
+	t.Cleanup(func() { _ = s.Close() })
 	return s
 }
 
@@ -149,6 +150,90 @@ func TestPathTraversal(t *testing.T) {
 	outsidePath := filepath.Join(s.basePath, "..", "escape.txt")
 	if _, err := os.Stat(outsidePath); err == nil {
 		t.Error("file was written outside basePath — path traversal vulnerability!")
+	}
+}
+
+func symlinkOrSkip(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks are unavailable on this platform: %v", err)
+	}
+}
+
+func TestLocalStorageRejectsSymlinkDirectoryEscape(t *testing.T) {
+	s := tempStorage(t)
+	ctx := context.Background()
+	outside := t.TempDir()
+	secretPath := filepath.Join(outside, "secret.txt")
+	if err := os.WriteFile(secretPath, []byte("outside secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secretPath+metaSuffix, []byte(`{"filename":"secret.txt"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlinkOrSkip(t, outside, filepath.Join(s.basePath, "escape"))
+
+	if rc, _, err := s.Retrieve(ctx, "escape/secret.txt"); err == nil {
+		rc.Close()
+		t.Fatal("Retrieve followed a directory symlink outside the storage root")
+	}
+	if _, err := s.Stat(ctx, "escape/secret.txt"); err == nil {
+		t.Fatal("Stat followed a directory symlink outside the storage root")
+	}
+	if _, err := s.Exists(ctx, "escape/secret.txt"); err == nil {
+		t.Fatal("Exists followed a directory symlink outside the storage root")
+	}
+	if err := s.Delete(ctx, "escape/secret.txt"); err == nil {
+		t.Fatal("Delete followed a directory symlink outside the storage root")
+	}
+	if err := s.Store(ctx, "escape/new.txt", bytes.NewReader([]byte("escape")),
+		maniflex.FileMeta{Filename: "new.txt"}); err == nil {
+		t.Fatal("Store followed a directory symlink outside the storage root")
+	}
+
+	if got, err := os.ReadFile(secretPath); err != nil || string(got) != "outside secret" {
+		t.Fatalf("outside file changed: content=%q err=%v", got, err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("Store created an outside file through a symlink: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "new.txt") + metaSuffix); !os.IsNotExist(err) {
+		t.Fatalf("Store created outside metadata through a symlink: %v", err)
+	}
+}
+
+func TestLocalStorageRejectsSymlinkMetadataEscape(t *testing.T) {
+	s := tempStorage(t)
+	ctx := context.Background()
+	outside := filepath.Join(t.TempDir(), "outside-meta.json")
+	const sentinel = `{"filename":"outside-secret"}`
+	if err := os.WriteFile(outside, []byte(sentinel), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	key := "report.txt"
+	symlinkOrSkip(t, outside, filepath.Join(s.basePath, key+metaSuffix))
+	err := s.Store(ctx, key, bytes.NewReader([]byte("report")),
+		maniflex.FileMeta{Filename: "report.txt"})
+	if err == nil {
+		t.Fatal("Store followed an outside metadata symlink")
+	}
+	if got, readErr := os.ReadFile(outside); readErr != nil || string(got) != sentinel {
+		t.Fatalf("outside metadata changed: content=%q err=%v", got, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(s.basePath, key)); !os.IsNotExist(statErr) {
+		t.Fatalf("failed Store left its primary file behind: %v", statErr)
+	}
+
+	if err := os.WriteFile(filepath.Join(s.basePath, key), []byte("report"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if rc, _, retrieveErr := s.Retrieve(ctx, key); retrieveErr == nil {
+		rc.Close()
+		t.Fatal("Retrieve followed an outside metadata symlink")
+	}
+	if _, statErr := s.Stat(ctx, key); statErr == nil {
+		t.Fatal("Stat followed an outside metadata symlink")
 	}
 }
 
@@ -283,6 +368,7 @@ func TestNewLocalStorageCreatesDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLocalStorage: %v", err)
 	}
+	defer s.Close()
 
 	// Verify the directory was created
 	info, err := os.Stat(s.basePath)

@@ -167,6 +167,7 @@ fs, err := storage.NewLocalStorage("./uploads")
 if err != nil {
     log.Fatal(err)
 }
+defer fs.Close()
 
 server := maniflex.New(maniflex.Config{
     Port: 8080,
@@ -176,6 +177,11 @@ server := maniflex.New(maniflex.Config{
     },
 })
 ```
+
+`LocalStorage` pins the directory with Go's directory-scoped `os.Root`; file
+and metadata operations may follow symlinks only while they remain inside that
+root. Links which escape it are rejected. Close the backend when the process no
+longer uses it to release the root directory handle.
 
 `FileStorage` is a small interface — `Store`, `Retrieve`, `Delete`, `Exists`,
 `URL` — making S3, R2, GCS, or any other key-value store straightforward to

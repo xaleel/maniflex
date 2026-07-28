@@ -48,6 +48,7 @@ fs, err := storage.NewLocalStorage("./uploads")
 if err != nil {
     log.Fatal(err)
 }
+defer fs.Close()
 
 server := maniflex.New(maniflex.Config{
     Port:        8080,
@@ -58,6 +59,8 @@ server := maniflex.New(maniflex.Config{
 
 `./uploads` is created if it doesn't exist. Every uploaded file lands under
 `uploads/<uuid>/<sanitised-filename>` so collisions are impossible.
+Local storage uses a directory-scoped root, so a symlink below `uploads` cannot
+redirect file or metadata operations outside it.
 
 ## Uploading a cover
 

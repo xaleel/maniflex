@@ -11,42 +11,87 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
+
+const (
+	// DefaultCallerTimeout bounds each outbound attempt.
+	DefaultCallerTimeout = 10 * time.Second
+	// DefaultCallerMaxRetry is the number of attempts after the first.
+	DefaultCallerMaxRetry = 3
+	// DefaultCallerMaxResponseBytes bounds response bodies, including errors.
+	DefaultCallerMaxResponseBytes int64 = 4 << 20
+
+	defaultCallerBackoffCap    = 2 * time.Second
+	defaultCallerRetryAfterCap = 30 * time.Second
+)
+
+var (
+	// ErrResponseTooLarge means an upstream response exceeded MaxResponseBytes.
+	ErrResponseTooLarge = errors.New("integration: response body too large")
+	// ErrCrossOriginRedirect means the default redirect policy refused to send
+	// the request, including its static custom headers, to another origin.
+	ErrCrossOriginRedirect = errors.New("integration: cross-origin redirect refused")
+)
+
+// NewCaller returns a Caller with production-safe timeout, retry, and response
+// size defaults. A struct literal receives the same defaults at call time when
+// those fields are zero.
+func NewCaller(baseURL string) *Caller {
+	return &Caller{
+		BaseURL:          baseURL,
+		Timeout:          DefaultCallerTimeout,
+		MaxRetry:         DefaultCallerMaxRetry,
+		MaxResponseBytes: DefaultCallerMaxResponseBytes,
+	}
+}
 
 // Caller is a JSON-over-HTTP client with built-in retry/backoff. Configure it
 // once at startup; reuse the same Caller for every outbound call to a given
 // service.
 //
 // The zero value is unusable — BaseURL is required. All other fields have
-// sensible defaults: 10s timeout, 3 retries on 5xx + network errors, and a
-// linear backoff capped at 1s per retry. Pass `Headers` to attach static
-// headers (Authorization, X-Api-Key) to every request.
+// sensible defaults: 10s timeout, 3 retries on 5xx/network errors, a 4 MiB
+// response limit, same-origin redirects, and jittered exponential backoff.
+// Pass `Headers` to attach static headers (Authorization, X-Api-Key) to every
+// request.
 type Caller struct {
 	// BaseURL is prepended to every request path. Must not be empty.
 	BaseURL string
 
-	// Timeout is the per-request timeout. 0 means no timeout.
+	// Timeout is the per-attempt timeout. Zero means 10 seconds; a negative
+	// value explicitly disables the timeout.
 	Timeout time.Duration
 
-	// MaxRetry is the number of additional attempts after a failure. 0 means
-	// no retries (one shot). Network errors and 5xx responses count as
-	// retriable; 4xx is final.
+	// MaxRetry is the number of additional attempts after a failure. Zero means
+	// 3; a negative value explicitly disables retries. Network errors, 5xx,
+	// and 429 are retriable; other 4xx responses are final.
 	MaxRetry int
 
 	// BackoffFn maps the attempt number (1-based) to the sleep duration
-	// before the next try. Defaults to attempt * 100ms.
+	// before the next try. The default is jittered exponential backoff capped
+	// at 2 seconds. A valid Retry-After response header takes precedence and
+	// is capped at 30 seconds.
 	BackoffFn func(attempt int) time.Duration
+
+	// MaxResponseBytes bounds every response body, including non-2xx bodies and
+	// responses whose decoded value is discarded. Zero means 4 MiB; a negative
+	// value explicitly disables the limit.
+	MaxResponseBytes int64
 
 	// Headers are added to every request before per-call headers.
 	Headers map[string]string
 
 	// HTTPClient lets callers inject a custom *http.Client (for proxying,
-	// tracing, mocking). When nil, Caller uses a private client whose
-	// Timeout matches Caller.Timeout.
+	// tracing, mocking). Caller clones it before use. A nil CheckRedirect gets
+	// the safe same-origin policy; set an explicit CheckRedirect to override it.
+	// A zero client timeout receives Caller's resolved timeout.
 	HTTPClient *http.Client
 }
 
@@ -113,18 +158,26 @@ func (c *Caller) do(ctx context.Context, method, path string, params url.Values,
 		return err
 	}
 
-	client := c.HTTPClient
-	if client == nil {
-		client = &http.Client{Timeout: c.Timeout}
-	}
+	client := c.httpClient()
 
 	backoff := c.BackoffFn
 	if backoff == nil {
 		backoff = defaultBackoff
 	}
 
+	maxResponseBytes := c.MaxResponseBytes
+	if maxResponseBytes == 0 {
+		maxResponseBytes = DefaultCallerMaxResponseBytes
+	}
+	maxRetry := c.MaxRetry
+	if maxRetry == 0 {
+		maxRetry = DefaultCallerMaxRetry
+	} else if maxRetry < 0 {
+		maxRetry = 0
+	}
+
 	var lastErr error
-	maxAttempts := c.MaxRetry + 1
+	maxAttempts := maxRetry + 1
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		// Re-prepare the request each attempt — the Body is consumed by Do.
 		req, rerr := http.NewRequestWithContext(ctx, method, fullURL,
@@ -142,7 +195,13 @@ func (c *Caller) do(ctx context.Context, method, path string, params url.Values,
 
 		resp, rerr := client.Do(req)
 		if rerr != nil {
+			if resp != nil && resp.Body != nil {
+				resp.Body.Close()
+			}
 			lastErr = rerr
+			if errors.Is(rerr, ErrCrossOriginRedirect) {
+				return rerr
+			}
 			if attempt < maxAttempts && !isContextErr(rerr) {
 				if !sleepCtx(ctx, backoff(attempt)) {
 					return ctx.Err()
@@ -152,8 +211,21 @@ func (c *Caller) do(ctx context.Context, method, path string, params url.Values,
 			return rerr
 		}
 
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, readErr := readResponseBody(resp.Body, resp.ContentLength, maxResponseBytes)
 		resp.Body.Close()
+		if readErr != nil {
+			if errors.Is(readErr, ErrResponseTooLarge) {
+				return readErr
+			}
+			lastErr = fmt.Errorf("integration: read response body: %w", readErr)
+			if attempt < maxAttempts && !isContextErr(readErr) {
+				if !sleepCtx(ctx, backoff(attempt)) {
+					return ctx.Err()
+				}
+				continue
+			}
+			return lastErr
+		}
 
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			if out == nil || len(respBody) == 0 {
@@ -165,7 +237,11 @@ func (c *Caller) do(ctx context.Context, method, path string, params url.Values,
 		statusErr := buildStatusErr(resp, respBody)
 		lastErr = statusErr
 		if statusErr.IsRetriable() && attempt < maxAttempts {
-			if !sleepCtx(ctx, backoff(attempt)) {
+			delay := backoff(attempt)
+			if retryAfter, ok := parseRetryAfter(resp.Header.Get("Retry-After"), time.Now()); ok {
+				delay = min(retryAfter, defaultCallerRetryAfterCap)
+			}
+			if !sleepCtx(ctx, delay) {
 				return ctx.Err()
 			}
 			continue
@@ -173,6 +249,98 @@ func (c *Caller) do(ctx context.Context, method, path string, params url.Values,
 		return statusErr
 	}
 	return lastErr
+}
+
+func (c *Caller) httpClient() *http.Client {
+	client := &http.Client{}
+	if c.HTTPClient != nil {
+		*client = *c.HTTPClient
+	}
+
+	switch {
+	case c.Timeout < 0:
+		client.Timeout = 0
+	case c.Timeout > 0:
+		client.Timeout = c.Timeout
+	case client.Timeout == 0:
+		client.Timeout = DefaultCallerTimeout
+	}
+	if client.CheckRedirect == nil {
+		client.CheckRedirect = sameOriginRedirect
+	}
+	return client
+}
+
+func sameOriginRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 || sameOrigin(via[0].URL, req.URL) {
+		return nil
+	}
+	return fmt.Errorf("%w: %s -> %s", ErrCrossOriginRedirect, via[0].URL, req.URL)
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	return strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) &&
+		effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
+}
+
+func readResponseBody(body io.Reader, contentLength, maxBytes int64) ([]byte, error) {
+	if maxBytes < 0 {
+		return io.ReadAll(body)
+	}
+	if contentLength > maxBytes {
+		return nil, fmt.Errorf("%w: limit is %d bytes", ErrResponseTooLarge, maxBytes)
+	}
+	readLimit := maxBytes + 1
+	if maxBytes == math.MaxInt64 {
+		readLimit = math.MaxInt64
+	}
+	data, err := io.ReadAll(io.LimitReader(body, readLimit))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("%w: limit is %d bytes", ErrResponseTooLarge, maxBytes)
+	}
+	return data, nil
+}
+
+func parseRetryAfter(raw string, now time.Time) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		if seconds < 0 {
+			return 0, false
+		}
+		if seconds > int64(math.MaxInt64/time.Second) {
+			return time.Duration(math.MaxInt64), true
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	when, err := http.ParseTime(raw)
+	if err != nil {
+		return 0, false
+	}
+	if delay := when.Sub(now); delay > 0 {
+		return delay, true
+	}
+	return 0, true
 }
 
 func buildStatusErr(resp *http.Response, body []byte) *ErrHTTPStatus {
@@ -209,11 +377,18 @@ func bodyReader(b []byte) io.Reader {
 }
 
 func defaultBackoff(attempt int) time.Duration {
-	d := time.Duration(attempt) * 100 * time.Millisecond
-	if d > time.Second {
-		return time.Second
+	if attempt < 1 {
+		attempt = 1
 	}
-	return d
+	shift := min(attempt-1, 20)
+	d := (100 * time.Millisecond) << shift
+	if d > defaultCallerBackoffCap {
+		d = defaultCallerBackoffCap
+	}
+	// Equal jitter keeps half the delay deterministic and randomises the other
+	// half so a replica fleet does not retry in lockstep.
+	half := d / 2
+	return half + time.Duration(rand.Int64N(int64(d-half)+1))
 }
 
 // sleepCtx blocks for d or until ctx is cancelled. Returns false when ctx

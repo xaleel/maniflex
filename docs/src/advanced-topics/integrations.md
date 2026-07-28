@@ -10,13 +10,12 @@ framework — it's three composable types you call from your own code.
 ```go
 import "github.com/xaleel/maniflex/pkg/integration"
 
-var billing = &integration.Caller{
-    BaseURL: "https://api.billing.example.com",
-    Timeout: 10 * time.Second,
-    MaxRetry: 3,
-    Headers: map[string]string{
+var billing = integration.NewCaller("https://api.billing.example.com")
+
+func init() {
+    billing.Headers = map[string]string{
         "Authorization": "Bearer " + secrets.Billing,
-    },
+    }
 }
 
 // Inside a handler / job / cron tick:
@@ -33,11 +32,21 @@ err := billing.Post(ctx, "/invoices", map[string]any{
 - Passing `[]byte` or `string` as the body skips JSON encoding — useful for
   upstreams that demand a specific wire format.
 - Retries fire on **network errors**, **HTTP 5xx**, and **HTTP 429** with a
-  configurable backoff (`BackoffFn`; default linear up to 1s). 4xx (other
-  than 429) is final.
+  configurable backoff (`BackoffFn`; default jittered exponential, capped at
+  2s). A valid `Retry-After` header takes precedence, capped at 30s. 4xx
+  (other than 429) is final.
+- Zero-valued settings are safe: `Timeout` defaults to 10s, `MaxRetry` to 3,
+  and `MaxResponseBytes` to 4 MiB. Set the corresponding value negative to
+  explicitly disable that protection.
+- Redirects are same-origin by default so static custom headers such as
+  `X-API-Key` cannot be forwarded to another host. An injected `HTTPClient`
+  can opt out only by supplying an explicit `CheckRedirect` policy.
 - Non-2xx final responses surface as `*integration.ErrHTTPStatus`. Use
   `errors.As` to inspect `StatusCode`, the parsed JSON `Body`, or the raw
   `RawBody`.
+- A response exceeding `MaxResponseBytes` returns
+  `integration.ErrResponseTooLarge` before JSON decoding, including when
+  `out=nil` or the response is non-2xx.
 - Always honours the request context — cancel ctx to abort an in-flight
   retry loop.
 

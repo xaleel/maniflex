@@ -80,8 +80,13 @@ func main() {
 	}
 	// Step 1: create server (no DB yet — we need the registry first for sqlite.Open)
 	server := maniflex.New(maniflex.Config{
-		Port:        8080,
-		PathPrefix:  "/api",
+		Port:       8080,
+		PathPrefix: "/api",
+		Documentation: maniflex.DocumentationConfig{
+			Middleware: []maniflex.HTTPMiddleware{
+				maniflex.AdaptAuth(bearerTokenAuth),
+			},
+		},
 		FilesConfig: maniflex.FilesConfig{Storage: fs},
 	})
 

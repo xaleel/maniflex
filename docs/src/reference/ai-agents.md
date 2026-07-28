@@ -472,6 +472,7 @@ For multi-replica deployments: run runner in one replica, or use `maniflex/sched
 type Config struct {
     Port            int            // default 8080
     PathPrefix      string         // default "/api"
+    Documentation   DocumentationConfig // zero value mounts no specs
     ServiceName     string         // adds "service" attr to logs, X-Service-Name header
     DB              DBAdapter      // required before Start
     DisableAutoMigrate bool        // migration runs by default; set to skip it

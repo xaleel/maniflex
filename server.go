@@ -882,14 +882,14 @@ func (c *Server) Action(cfg ActionConfig) {
 	c.oasSteps.actions = append(c.oasSteps.actions, cfg)
 }
 
-// RealtimeDoc enables the {PathPrefix}/asyncapi.json endpoint, which serves an
-// AsyncAPI 2.6 document describing the realtime event channels clients can
-// subscribe to over the realtime hub (see the realtime package). Declare custom
-// event payloads via cfg.Events and/or set cfg.AutoModelEvents to derive
+// RealtimeDoc configures an AsyncAPI 2.6 document describing the realtime event
+// channels clients can subscribe to over the realtime hub (see the realtime
+// package). Config.Documentation must also explicitly publish or protect the
+// generated documentation endpoints. Declare custom event payloads via
+// cfg.Events and/or set cfg.AutoModelEvents to derive
 // <model>.created|updated|deleted channels from the registry.
 //
-// Must be called before Start() or Handler(). Apps that never call it gain no
-// new endpoint.
+// Must be called before Start() or Handler().
 func (c *Server) RealtimeDoc(cfg AsyncAPIConfig) {
 	if c.sealed() {
 		panic("maniflex: RealtimeDoc() must be called before Start() or Handler()")

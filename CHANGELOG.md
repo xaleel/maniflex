@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Security (breaking):** generated OpenAPI and AsyncAPI endpoints are now unmounted by default and share an explicit `Config.Documentation` publication/auth policy; `AdaptAuth` safely reuses JWT, API-key, and role middleware, and specification responses no longer force wildcard CORS.
 - **Security (breaking):** `encryption.VaultKeyProvider` now uses a bounded 10-second default timeout, requires HTTPS unless `AllowInsecureHTTP` is explicitly enabled for development, and supports renewable per-request credentials through `VaultTokenSource`.
 - **Security (breaking):** `integration.Caller` now gives zero-valued timeout/retry/response-limit fields safe 10s/3/4 MiB defaults (negative values explicitly disable them), bounds all response reads, rejects cross-origin redirects unless an explicit policy overrides it, and uses capped jittered exponential backoff with `Retry-After`.
 - **Security:** `integration.WebhookReceiver` now rejects oversized bodies with `413` instead of dispatching a signed truncated prefix, and adds opt-in signed timestamp windows plus an atomic `ReplayCheck` hook (`ErrWebhookReplay` maps to `409`) for replay protection.

@@ -279,10 +279,12 @@ server.RealtimeDoc(maniflex.AsyncAPIConfig{
 })
 ```
 
-This mounts `GET {PathPrefix}/asyncapi.json`. The payload struct is reflected
-with the same `json` + `mfx` tags as models and actions
-([Actions](actions.md)). The endpoint is opt-in — apps that never call
-`RealtimeDoc` get no new route.
+This makes an AsyncAPI document available for mounting. Generated documentation
+is private-by-default, so also set `Config.Documentation.Public` explicitly or
+provide `Config.Documentation.Middleware`; the same policy protects OpenAPI and
+AsyncAPI. The payload struct is reflected with the same `json` + `mfx` tags as
+models and actions ([Actions](actions.md)). Apps that never call `RealtimeDoc`
+have no AsyncAPI document even when documentation is enabled.
 
 ## Backpressure & slow clients
 

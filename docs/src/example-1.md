@@ -49,8 +49,9 @@ type Subscriber struct {
 func main() {
     // 1. Create the server.
     server := maniflex.New(maniflex.Config{
-        Port:        8080,
-        PathPrefix:  "/api",
+        Port:          8080,
+        PathPrefix:    "/api",
+        Documentation: maniflex.DocumentationConfig{Public: true},
     })
 
     // 2. Register both models — populates the registry.

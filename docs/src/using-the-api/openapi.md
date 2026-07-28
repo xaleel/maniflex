@@ -1,13 +1,22 @@
 # OpenAPI Spec
 
-maniflex generates an OpenAPI 3.1 specification from the registered models and
-serves it at **`GET /openapi.json`**. The spec is derived from the same
-struct tags that drive validation and querying, so it cannot drift from the
-actual behaviour of the API.
+maniflex generates an OpenAPI 3.1 specification from the registered models. The
+HTTP endpoint is private-by-default: the zero-value configuration does not mount
+it. Explicitly publish it or place it behind a shared documentation access policy.
+The spec is derived from the same struct tags that drive validation and querying,
+so it cannot drift from the actual behaviour of the API.
 
 ## The endpoint
 
-The spec lives at `/openapi.json` under the configured `PathPrefix`:
+To publish the spec intentionally, opt in when constructing the server:
+
+```go
+server := maniflex.New(maniflex.Config{
+    Documentation: maniflex.DocumentationConfig{Public: true},
+})
+```
+
+It then lives at `/openapi.json` under the configured `PathPrefix`:
 
 ```bash
 curl localhost:8080/api/openapi.json
@@ -118,7 +127,7 @@ OpenAPI.Auth → OpenAPI.Generate → OpenAPI.Response
 
 | Step | Purpose |
 |---|---|
-| **Auth** | Same shape as the model-route Auth step. Gate `/openapi.json` here. |
+| **Auth** | OpenAPI-specific middleware (`OpenAPIMiddlewareFunc`) for format-specific gates. |
 | **Generate** | Builds the spec from the registry. After-position middleware mutates it. |
 | **Response** | Serialises the spec to JSON. |
 
@@ -127,23 +136,36 @@ This is reached via `server.Pipeline.OpenAPI.*`. See
 spec-shaping helpers — `SetTitle`, `AddServer`, `AddSecurityScheme`,
 `AddExtension`.
 
-## Securing the spec
+## Securing generated documentation
 
-The endpoint is public by default. To restrict it — say, to internal users
-only — register an Auth middleware on the OpenAPI pipeline:
+Use the shared router-level documentation policy to protect both OpenAPI and
+AsyncAPI. `AdaptAuth` safely bridges request-level authentication middleware;
+the middleware shares one context, so `JWTAuth` can populate the identity used
+by `RequireRole`:
 
 ```go
 import "github.com/xaleel/maniflex/middleware/auth"
 
-server.Pipeline.OpenAPI.Auth.Register(
-    auth.JWTAuth("my-secret"),
-)
-server.Pipeline.OpenAPI.Auth.Register(
-    auth.RequireRole("internal"),
-)
+server := maniflex.New(maniflex.Config{
+    Documentation: maniflex.DocumentationConfig{
+        Middleware: []maniflex.HTTPMiddleware{
+            maniflex.AdaptAuth(
+                auth.JWTAuth(jwtSecret),
+                auth.RequireRole("internal"),
+            ),
+        },
+    },
+})
 ```
 
-These run only for `/openapi.json`; they do not affect the model routes.
+This mounts generated documentation behind the policy; it does not affect model
+routes. Existing `Pipeline.OpenAPI.Auth` middleware remains supported for
+OpenAPI-only custom gates, but it takes `OpenAPIMiddlewareFunc`, not the
+model-route `MiddlewareFunc` returned by `auth.JWTAuth` and `auth.RequireRole`.
+
+The framework does not force wildcard CORS headers on specifications. Configure
+cross-origin access explicitly through `Documentation.Middleware` or global
+`HTTPMiddlewares`.
 
 ## Viewing the spec
 
@@ -151,7 +173,9 @@ The framework ships a Scalar API Reference viewer at
 [`static/openapi.html`](../defining-your-api/static-files.md). Point `StaticDir`
 at the directory holding it (`maniflex.Config{StaticDir: "static"}`) and it is
 served at `http://localhost:8080/static/openapi.html`, loading `/api/openapi.json`
-directly — no extra setup needed for human browsing of the generated spec.
+directly. Public documentation works without additional viewer configuration.
+For protected documentation, configure the viewer to send credentials and protect
+the static viewer itself through your edge proxy or global HTTP middleware.
 
 For tooling integration, the JSON document at `/openapi.json` is consumable by
 any OpenAPI 3.1-compatible client generator, mock server, or contract testing

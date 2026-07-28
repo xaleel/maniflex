@@ -138,6 +138,10 @@ func (s *OpenAPIStepRegistry) Register(fn OpenAPIMiddlewareFunc, pos ...Position
 	s.entries = append(s.entries, oasEntry{fn: fn, pos: p})
 }
 
+func (s *OpenAPIStepRegistry) configured() bool {
+	return len(s.entries) > 0
+}
+
 // build composes the chain for this step:
 // before-middlewares → (default or replace) → after-middlewares
 func (s *OpenAPIStepRegistry) build() OpenAPIMiddlewareFunc {
@@ -323,10 +327,6 @@ func (s *oasDefaultSteps) response(ctx *OpenAPIContext, next func() error) error
 		ctx.Abort(http.StatusInternalServerError, "MARSHAL_ERROR", err.Error())
 		return next()
 	}
-
-	// Set CORS header before the handler calls Write (must precede WriteHeader).
-	// Swagger UI loads the spec cross-origin, so this stays permissive.
-	ctx.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 
 	ctx.Response = &APIResponse{
 		StatusCode: http.StatusOK,

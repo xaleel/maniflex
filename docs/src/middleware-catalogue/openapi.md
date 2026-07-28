@@ -124,12 +124,21 @@ to read.
 
 ## Securing the spec itself
 
-To gate access to `/openapi.json`, register an Auth middleware on
-`Pipeline.OpenAPI.Auth` — it has the same shape as the model-route Auth step:
+Generated specifications are not mounted by default. Prefer one router-level
+policy for both OpenAPI and AsyncAPI:
 
 ```go
-server.Pipeline.OpenAPI.Auth.Register(auth.RequireRole("internal"))
+cfg.Documentation = maniflex.DocumentationConfig{
+    Middleware: []maniflex.HTTPMiddleware{
+        maniflex.AdaptAuth(
+            auth.JWTAuth(jwtSecret),
+            auth.RequireRole("internal"),
+        ),
+    },
+}
 ```
 
-This is the standard pattern for keeping internal APIs out of the public view
-while leaving the public surface documented.
+`Pipeline.OpenAPI.Auth` remains available for OpenAPI-specific middleware, but
+its function type is `OpenAPIMiddlewareFunc`; model-route helpers such as
+`auth.JWTAuth` and `auth.RequireRole` must be used through `AdaptAuth` as shown
+above.

@@ -141,7 +141,8 @@ From that one struct, maniflex derived:
 - Field validation (`required`, `enum`) on every write.
 - Query-string filtering, sorting, and pagination.
 - A generated table kept in sync by `AutoMigrate`.
-- An OpenAPI 3.1 entry at `/api/openapi.json`.
+- An OpenAPI 3.1 document ready to mount explicitly through
+  `Config.Documentation`.
 
 No generated code, no per-endpoint handlers.
 

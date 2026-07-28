@@ -53,7 +53,10 @@ type PaymentReceived struct {
 }
 
 func main() {
-	server := maniflex.New(maniflex.Config{PathPrefix: "/api"})
+	server := maniflex.New(maniflex.Config{
+		PathPrefix:    "/api",
+		Documentation: maniflex.DocumentationConfig{Public: true},
+	})
 	server.MustRegister(Order{})
 
 	db, err := sqlite.Open(":memory:", server.Registry())

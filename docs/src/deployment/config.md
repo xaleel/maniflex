@@ -15,7 +15,8 @@ server := maniflex.New(maniflex.Config{
 | Field | Default | Purpose |
 |---|---|---|
 | `Port` | `8080` | TCP port the HTTP server binds to |
-| `PathPrefix` | `/api` | URL prefix prepended to every generated model route and `/openapi.json` |
+| `PathPrefix` | `/api` | URL prefix prepended to generated model and documentation routes |
+| `Documentation` | zero value (unmounted) | explicitly publish generated OpenAPI/AsyncAPI documents or protect both with shared middleware |
 | `ServiceName` | `""` | service identifier added to logs, audit records, and the `X-Service-Name` response header |
 | `StaticDir` | `""` | filesystem directory served as static files; empty serves nothing (opt-in). Relative paths resolve against cwd |
 | `StaticPrefix` | `/static` | URL prefix the static directory is mounted under, at the router root |

@@ -251,13 +251,12 @@ func TestOpenAPI(t *testing.T) {
 		})
 	})
 
-	t.Run("spec_allows_cors_header", func(t *testing.T) {
+	t.Run("spec_does_not_force_wildcard_cors", func(t *testing.T) {
 		t.Parallel()
 		srv := testutil.NewServer(t, testutil.Options{})
 		resp := srv.GET("/openapi.json")
-		origin := resp.Header.Get("Access-Control-Allow-Origin")
-		if origin == "" {
-			t.Error("spec endpoint should set Access-Control-Allow-Origin for Swagger UI")
+		if origin := resp.Header.Get("Access-Control-Allow-Origin"); origin != "" {
+			t.Errorf("unexpected hard-coded Access-Control-Allow-Origin %q", origin)
 		}
 	})
 

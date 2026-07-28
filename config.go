@@ -12,6 +12,21 @@ import (
 // protocol concerns such as CORS preflight, request shaping, and edge logging.
 type HTTPMiddleware func(http.Handler) http.Handler
 
+// DocumentationConfig controls the generated OpenAPI and AsyncAPI endpoints.
+// Its zero value mounts neither endpoint, keeping internal schemas private by
+// default. Set Public only when the documents are intentionally public, or
+// provide Middleware to mount both endpoints behind a shared access policy.
+type DocumentationConfig struct {
+	// Public explicitly publishes generated documentation without requiring a
+	// documentation-specific access policy. Global HTTPMiddlewares still apply.
+	Public bool
+
+	// Middleware wraps the generated OpenAPI and AsyncAPI endpoints in order.
+	// It is also an explicit opt-in to mounting them. Use AdaptAuth to reuse
+	// pipeline auth middleware such as auth.JWTAuth and auth.RequireRole.
+	Middleware []HTTPMiddleware
+}
+
 // SoftDeleteStyle indicates how soft deletion is stored in the database.
 type SoftDeleteStyle int
 
@@ -311,6 +326,10 @@ type Config struct {
 
 	// PathPrefix is prepended to every generated route. Default: "/api".
 	PathPrefix string
+
+	// Documentation controls the generated OpenAPI and AsyncAPI endpoints.
+	// The zero value keeps them unmounted. See DocumentationConfig.
+	Documentation DocumentationConfig
 
 	// HTTPMiddlewares wrap the generated router in registration order. They run
 	// after panic recovery, request-ID assignment, and optional trusted-proxy IP

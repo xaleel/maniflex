@@ -23,7 +23,10 @@ import (
 func twoStepServer(t *testing.T) *httptest.Server {
 	t.Helper()
 
-	srv := maniflex.New(maniflex.Config{PathPrefix: "/api"})
+	srv := maniflex.New(maniflex.Config{
+		PathPrefix:    "/api",
+		Documentation: maniflex.DocumentationConfig{Public: true},
+	})
 	srv.MustRegister(testutil.Document{})
 
 	db, err := sqlite.Open(":memory:", srv.Registry())

@@ -171,6 +171,14 @@ func main() {
 	}
 	rsaPub := &privateKey.PublicKey
 
+	cfg.Documentation.Middleware = []maniflex.HTTPMiddleware{
+		maniflex.AdaptAuth(auth.JWTAuth("", auth.JWTOptions{
+			PublicKey:   rsaPub,
+			UserIDClaim: "sub",
+			RolesClaim:  "roles",
+		})),
+	}
+
 	// Step 1: create server (no DB yet — registry must be populated first)
 	server := maniflex.New(cfg)
 
@@ -791,7 +799,7 @@ func printHelp(privateKey *rsa.PrivateKey) {
 	log.Println("  POST   /api/ingest                    anonymous ingest by site token [3D.1]")
 	log.Println()
 	log.Println("── Schema & health ────────────────────────────────────────────────────────")
-	log.Println("  GET    /api/openapi.json              OpenAPI 3.1 spec")
+	log.Println("  GET    /api/openapi.json              OpenAPI 3.1 spec (needs RS256 Bearer token)")
 	log.Println("  GET    /api/health                    health check (DB ping)")
 	log.Println()
 	log.Println("── Quick start ────────────────────────────────────────────────────────────")

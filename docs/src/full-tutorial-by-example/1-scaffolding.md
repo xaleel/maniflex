@@ -85,8 +85,9 @@ import (
 
 func main() {
     server := maniflex.New(maniflex.Config{
-        Port:        8080,
-        PathPrefix:  "/api",
+        Port:          8080,
+        PathPrefix:    "/api",
+        Documentation: maniflex.DocumentationConfig{Public: true},
     })
 
     db, err := sqlite.Open("./bookstore.db", server.Registry())

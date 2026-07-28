@@ -25,8 +25,10 @@ type AsyncAPIServerConfig struct {
 	Description string
 }
 
-// AsyncAPIConfig is registered once via Server.RealtimeDoc to enable the
-// {PathPrefix}/asyncapi.json endpoint. Title/Version default to the API name.
+// AsyncAPIConfig is registered once via Server.RealtimeDoc. The document is
+// mounted at {PathPrefix}/asyncapi.json only when Config.Documentation also
+// explicitly publishes or protects generated documentation. Title/Version
+// default to the API name.
 type AsyncAPIConfig struct {
 	Title   string
 	Version string

@@ -119,6 +119,7 @@ func NewServer(t testing.TB, opts Options) *Server {
 
 	cfg := maniflex.Config{
 		PathPrefix:         prefix,
+		Documentation:      maniflex.DocumentationConfig{Public: true},
 		DisableAutoMigrate: !autoMigrate,
 		PanicLogger:        opts.PanicLogger,
 		Logger:             opts.Logger,

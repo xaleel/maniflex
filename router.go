@@ -12,7 +12,8 @@ import (
 )
 
 // buildRouter constructs the chi.Router with all auto-generated model routes
-// mounted under cfg.PathPrefix, plus the /openapi.json spec endpoint.
+// mounted under cfg.PathPrefix. Generated documentation is mounted only when
+// explicitly public or protected by an access policy.
 func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.Logger, actions []ActionConfig, asyncCfg *AsyncAPIConfig) chi.Router {
 	r := chi.NewRouter()
 
@@ -41,13 +42,23 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 		// Health-check
 		r.Get("/health", healthHandler(cfg, reg))
 
-		// OpenAPI 3.1 spec — runs through its own three-step pipeline
-		r.Get("/openapi.json", p.OpenAPI.handler())
-
-		// AsyncAPI 2.6 event-channel document — mounted only when the app opted
-		// in via Server.RealtimeDoc, so CRUD-only apps gain no new endpoint.
-		if asyncCfg != nil {
-			r.Get("/asyncapi.json", asyncAPIHandler(reg, cfg, *asyncCfg))
+		// Generated documentation is private-by-default. A shared router-level
+		// policy protects both formats. Existing OpenAPI Auth pipeline users
+		// remain supported, but that format-specific gate does not implicitly
+		// publish AsyncAPI.
+		docsConfigured := cfg.Documentation.Public || len(cfg.Documentation.Middleware) > 0
+		docsRouter := r
+		for i, mw := range cfg.Documentation.Middleware {
+			if mw == nil {
+				panic(fmt.Sprintf("maniflex: Config.Documentation.Middleware[%d] must not be nil", i))
+			}
+			docsRouter = docsRouter.With(mw)
+		}
+		if docsConfigured || p.OpenAPI.Auth.configured() {
+			docsRouter.Get("/openapi.json", p.OpenAPI.handler())
+		}
+		if docsConfigured && asyncCfg != nil {
+			docsRouter.Get("/asyncapi.json", asyncAPIHandler(reg, cfg, *asyncCfg))
 		}
 
 		// Built-in cross-model search (4.10) — mounted only when the app opted in

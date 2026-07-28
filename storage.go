@@ -106,6 +106,12 @@ type FilesConfig struct {
 	// request returns 501 NO_STORAGE until a backend is configured.
 	MountEndpoints bool
 
+	// AllowPublic explicitly declares that the standalone /files endpoints may
+	// be reached without BeforeMiddlewares. It is consulted only by
+	// Server.ValidateProduction; it does not mount routes or change runtime
+	// authorization.
+	AllowPublic bool
+
 	// SignedURLTTL is the default time-to-live for pre-signed URLs generated
 	// for mfx:"file_acl:signed" fields. Default: DefaultFileSignedURLTTL (1 hour).
 	SignedURLTTL time.Duration

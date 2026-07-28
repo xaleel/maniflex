@@ -478,6 +478,7 @@ type Config struct {
     DisableAutoMigrate bool        // migration runs by default; set to skip it
     QueryTimeout    time.Duration  // per-request DB deadline; 0 = unlimited
     QueryLimits     QueryLimits    // URI/query/aggregate complexity caps
+    HTTPAccessControlled bool      // asserts global HTTP middleware protects every route
     ShutdownTimeout time.Duration  // default 30s
     Logger          *slog.Logger
     PanicLogger     *slog.Logger
@@ -488,6 +489,11 @@ type Config struct {
     HealthTimeout   time.Duration  // default 3s
 }
 ```
+
+After registration and before `Start`/`Handler`, call
+`server.ValidateProduction()`. Generated operations need matching Auth
+middleware or a scoped `server.AllowPublic(...)` declaration; custom actions,
+global search, and standalone files have corresponding explicit access flags.
 
 `maniflex.ConfigFromEnv(prefix) (Config, error)` reads PORT, DB_WRITE_URL, DB_READ_URL, QUERY_TIMEOUT_MS, SHUTDOWN_TIMEOUT_S, SERVICE_NAME, HEALTH_CHECK_DB — those and no others. A non-empty prefix is applied with an underscore (`ORDERS_PORT`). Unset variables are left zero for `ApplyDefaults`; a variable that is set but unreadable (`PORT=808O`) returns an error naming it. Do not discard the error.
 

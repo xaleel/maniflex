@@ -17,6 +17,12 @@ server.Action(maniflex.ActionConfig{
 })
 ```
 
+For `ValidateProduction`, matching global `Pipeline.Auth` middleware is the
+normal access decision. If authorization lives inside the action's middleware
+or handler, set `AccessControlled: true`; use `AllowPublic: true` only for an
+intentionally public action. These flags document the decision and do not
+install authorization.
+
 The handler receives the standard `*maniflex.ServerContext`:
 
 ```go

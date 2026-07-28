@@ -93,6 +93,7 @@
 
 # Reference
 
+- [Production Validation](reference/production-validation.md)
 - [Startup Validation & Strict Mode](reference/strict-mode.md)
 - [Glossary](reference/glossary.md)
 - [FAQ & Troubleshooting](reference/faq.md)

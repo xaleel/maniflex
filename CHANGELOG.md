@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Security:** `Server.ValidateProduction` now audits the fully registered app for strict mode, bounded database/query work, disabled runtime migration, and an explicit protected/public access decision on every generated model, action, search, documentation, and standalone file route.
 - **Security (breaking):** client-controlled query shapes now have configurable global/per-model caps (`Config.QueryLimits` / `ModelConfig.QueryLimits`), including an 8 KiB URI ceiling; public aggregates default to 100 rows, clamp at 200, reject negative limits, and return redacted 500/504 responses for operational database failures instead of exposing them as raw 400 errors.
 - **Security (breaking):** generated OpenAPI and AsyncAPI endpoints are now unmounted by default and share an explicit `Config.Documentation` publication/auth policy; `AdaptAuth` safely reuses JWT, API-key, and role middleware, and specification responses no longer force wildcard CORS.
 - **Security (breaking):** `encryption.VaultKeyProvider` now uses a bounded 10-second default timeout, requires HTTPS unless `AllowInsecureHTTP` is explicitly enabled for development, and supports renewable per-request credentials through `VaultTokenSource`.

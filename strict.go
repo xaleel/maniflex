@@ -87,7 +87,11 @@ func (issueList) line(iss startupIssue) string {
 // It is idempotent and cheap, so being called from both paths is fine.
 func (c *Server) validateRegistry() error {
 	var issues issueList
+	c.collectRegistryIssues(&issues)
+	return issues.err()
+}
 
+func (c *Server) collectRegistryIssues(issues *issueList) {
 	// Cross-model resolution first: these produce the problems most likely to
 	// explain the others.
 	if err := resolveManyToMany(c.registry); err != nil {
@@ -100,10 +104,8 @@ func (c *Server) validateRegistry() error {
 		issues.add("relation", "%s", err.Error())
 	}
 
-	collectRelationIssues(c.registry, c.cfg.Strict, &issues)
-	c.Pipeline.collectIneffectiveMiddleware(&issues)
-	c.Pipeline.collectFieldRequirementIssues(c.registry, &issues)
-	collectRouterIssues(&c.cfg, &issues)
-
-	return issues.err()
+	collectRelationIssues(c.registry, c.cfg.Strict, issues)
+	c.Pipeline.collectIneffectiveMiddleware(issues)
+	c.Pipeline.collectFieldRequirementIssues(c.registry, issues)
+	collectRouterIssues(&c.cfg, issues)
 }

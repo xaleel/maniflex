@@ -51,6 +51,7 @@ type Server struct {
 	actions      []ActionConfig
 	asyncCfg     *AsyncAPIConfig     // non-nil → mount /asyncapi.json (set via RealtimeDoc)
 	globalSearch *GlobalSearchConfig // non-nil → mount /search (set via EnableGlobalSearch)
+	publicAccess []MiddlewareConfig  // explicit public model/operation scopes
 	rollups      []compiledRollup    // maintained aggregate columns (set via RegisterRollup)
 	lifecycle    *lifecycle          // supervised services + Server.Go goroutines
 
@@ -883,6 +884,27 @@ func (c *Server) Action(cfg ActionConfig) {
 	c.oasSteps.actions = append(c.oasSteps.actions, cfg)
 }
 
+// AllowPublic declares generated model operations intentionally public for
+// ValidateProduction. It does not change runtime behavior: generated routes are
+// already passthrough unless Pipeline.Auth middleware protects them.
+//
+// Call it before Start or Handler, using the same scopes as middleware:
+//
+//	server.AllowPublic(
+//	    maniflex.ForModel("User"),
+//	    maniflex.ForOperation(maniflex.OpCreate),
+//	)
+func (c *Server) AllowPublic(opts ...MiddlewareOption) {
+	if c.sealed() {
+		panic("maniflex: AllowPublic() must be called before Start() or Handler()")
+	}
+	cfg := MiddlewareConfig{Name: "AllowPublic", Position: Before}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	c.publicAccess = append(c.publicAccess, cfg)
+}
+
 // RealtimeDoc configures an AsyncAPI 2.6 document describing the realtime event
 // channels clients can subscribe to over the realtime hub (see the realtime
 // package). Config.Documentation must also explicitly publish or protect the
@@ -909,6 +931,10 @@ type GlobalSearchConfig struct {
 	// MaxLimit clamps ?limit= so a client cannot request an unbounded scan.
 	// Defaults to 100; set negative to disable the clamp.
 	MaxLimit int
+	// AllowPublic explicitly declares the search endpoint intentionally public.
+	// ValidateProduction otherwise requires a matching Pipeline.Auth policy or
+	// Config.HTTPAccessControlled.
+	AllowPublic bool
 }
 
 // EnableGlobalSearch mounts the built-in cross-model search endpoint at

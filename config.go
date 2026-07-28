@@ -452,6 +452,15 @@ type Config struct {
 	//   }
 	HTTPMiddlewares []HTTPMiddleware
 
+	// HTTPAccessControlled declares that HTTPMiddlewares contains an access
+	// policy which protects every route before dispatch. ValidateProduction
+	// treats this as an explicit protected-access decision for generated model,
+	// action, search, documentation, and standalone file routes.
+	//
+	// This is an assertion only: setting it does not install authentication.
+	// ValidateProduction rejects it when HTTPMiddlewares is empty.
+	HTTPAccessControlled bool
+
 	// StaticDir is the filesystem directory served as static files, or "" to
 	// serve none. Static serving is opt-in: an empty StaticDir mounts nothing.
 	// (It used to fall back to "<cwd>/static", which silently published any
@@ -613,8 +622,8 @@ type Config struct {
 	//
 	//   - a mfx:"relation" whose target model is not registered (it may simply
 	//     be a plain foreign id that wants no relation tag),
-	//   - the standalone /files endpoints mounted with no auth middleware (a
-	//     deliberately public upload endpoint is conceivable),
+	//   - the standalone /files endpoints mounted with neither auth middleware
+	//     nor an explicit FilesConfig.AllowPublic declaration,
 	//   - a Config.StaticDir that does not exist (a missing asset directory
 	//     should not take down a working API, and by default it does not).
 	//

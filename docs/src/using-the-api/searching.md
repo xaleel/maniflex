@@ -122,6 +122,11 @@ either globally or scoped to the search operation:
 server.Pipeline.Auth.Register(requireLogin, maniflex.ForOperation(maniflex.OpSearch))
 ```
 
+An intentionally public search endpoint can set
+`GlobalSearchConfig.AllowPublic`; this is an explicit declaration for
+`ValidateProduction`, not an authorization middleware. Production validation
+also requires `MaxLimit` to remain positive.
+
 Because per-model row-level rules are not applied, only set `GlobalSearchable` on
 models that are safe to expose this way. When you need per-model authorisation,
 build a scoped Action with `ctx.Search` instead (see above) and attach your own

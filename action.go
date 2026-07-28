@@ -15,6 +15,14 @@ type ActionConfig struct {
 	Handler    ActionHandlerFunc // required
 	Middleware []MiddlewareFunc  // run between global Auth and Handler; nil is fine
 
+	// AccessControlled declares that Middleware or Handler makes an explicit
+	// authorization decision for this action. AllowPublic instead declares the
+	// route intentionally public. Server.ValidateProduction requires one of
+	// these declarations when no matching Pipeline.Auth or global HTTP access
+	// policy applies. These flags are assertions; they do not install a policy.
+	AccessControlled bool
+	AllowPublic      bool
+
 	// ResponseMiddleware runs after Handler but before the Response step writes
 	// the response — the per-action counterpart to Pipeline.Response. Use it to
 	// post-process ctx.Response (headers, envelope shaping) for one action

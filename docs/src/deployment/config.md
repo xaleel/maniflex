@@ -21,6 +21,7 @@ server := maniflex.New(maniflex.Config{
 | `StaticDir` | `""` | filesystem directory served as static files; empty serves nothing (opt-in). Relative paths resolve against cwd |
 | `StaticPrefix` | `/static` | URL prefix the static directory is mounted under, at the router root |
 | `StaticDisabled` | `false` | turn static file serving off even when `StaticDir` is set |
+| `HTTPAccessControlled` | `false` | assert that non-empty `HTTPMiddlewares` protects every route for `ValidateProduction`; does not install auth |
 
 `PathPrefix` does **not** affect `/static`, `/files`, or `/health`. Those are
 mounted at the router root. See [Static Files](../defining-your-api/static-files.md) for the static
@@ -105,6 +106,7 @@ See [Database Backends](databases.md) for adapter construction.
 |---|---|
 | `FilesConfig.Storage` | `maniflex.FileStorage` implementation for `mfx:"file"` fields and the `/files` endpoints. Required if any model uses file uploads. See [File Fields & Uploads](../defining-your-api/files.md). |
 | `FilesConfig.BeforeMiddlewares` | `[]maniflex.MiddlewareFunc` wrapping the standalone `/files` endpoints. Empty = no auth (backward-compatible default); production deployments should populate this with at least an auth middleware. See [File Fields & Uploads](../defining-your-api/files.md#standalone-file-endpoints). |
+| `FilesConfig.AllowPublic` | explicit declaration that mounted standalone `/files` routes are intentionally public; used by `ValidateProduction` and strict startup validation |
 | `KeyProvider` | `maniflex.KeyProvider` for `mfx:"encrypted"` fields. Without one, encrypted fields refuse writes with `500 ENCRYPTION_NOT_CONFIGURED`. |
 
 ## Logging

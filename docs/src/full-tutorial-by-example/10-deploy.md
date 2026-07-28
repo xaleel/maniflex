@@ -192,6 +192,11 @@ publishes nothing).
 | File storage                        | swap `LocalStorage` for S3 / R2 / GCS                         |
 | Outbox worker                       | run alongside the API, or as a separate deployment            |
 
+After every model, middleware, action, and optional route is registered, run
+`server.ValidateProduction()` before `Start()`. It checks the bounded settings
+above and refuses any mounted data route without an explicit protected/public
+access decision. See [Production Validation](../reference/production-validation.md).
+
 ## Where to go from here
 
 The tutorial finishes here. From this point, the reference pages cover

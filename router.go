@@ -144,11 +144,14 @@ func collectRouterIssues(cfg *Config, issues *issueList) {
 	if !cfg.Strict {
 		return
 	}
-	if cfg.FilesConfig.MountEndpoints && len(cfg.FilesConfig.BeforeMiddlewares) == 0 {
+	if cfg.FilesConfig.MountEndpoints &&
+		len(cfg.FilesConfig.BeforeMiddlewares) == 0 &&
+		!cfg.FilesConfig.AllowPublic {
 		issues.addStrict("files",
 			"the standalone /files endpoints are mounted with no auth middleware, so anyone "+
 				"who can reach the API can upload, download, or delete files — set "+
-				"FilesConfig.BeforeMiddlewares (e.g. auth.JWTAuth)")
+				"FilesConfig.BeforeMiddlewares (e.g. auth.JWTAuth), or set "+
+				"FilesConfig.AllowPublic when this is intentional")
 	}
 	if !cfg.StaticDisabled && cfg.StaticDir != "" {
 		if _, err := os.Stat(cfg.StaticDir); err != nil {
@@ -161,14 +164,14 @@ func collectRouterIssues(cfg *Config, issues *issueList) {
 
 // mountFileEndpoints registers the standalone /files upload/download/delete
 // routes. They bypass the model pipeline, so auth has to come from
-// FilesConfig.BeforeMiddlewares; an empty chain is warned about because it
-// leaves /files open to anyone who can reach the API (SEC-4). Config.Strict
+// FilesConfig.BeforeMiddlewares; an empty chain is warned about unless
+// FilesConfig.AllowPublic explicitly acknowledges public access. Config.Strict
 // makes that warning fatal — see collectRouterIssues.
 func mountFileEndpoints(r chi.Router, cfg *Config, l *slog.Logger) {
-	if len(cfg.FilesConfig.BeforeMiddlewares) == 0 {
+	if len(cfg.FilesConfig.BeforeMiddlewares) == 0 && !cfg.FilesConfig.AllowPublic {
 		l.Warn("standalone /files endpoints mounted without auth middleware; "+
 			"anyone who can reach the API can upload, download, or delete files",
-			slog.String("hint", "set FilesConfig.BeforeMiddlewares (e.g. auth.JWTAuth)"))
+			slog.String("hint", "set FilesConfig.BeforeMiddlewares (e.g. auth.JWTAuth), or FilesConfig.AllowPublic"))
 	}
 	fh := newFileHandlers(cfg.FilesConfig)
 	r.Method(http.MethodPost, "/files", wrapFileMiddleware(cfg, fh.Upload))

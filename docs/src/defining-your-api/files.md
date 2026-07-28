@@ -563,7 +563,9 @@ before the file handler runs. Leaving `BeforeMiddlewares` empty keeps the
 pre-fix behaviour for backward compatibility, but production deployments
 should populate it — anyone who guesses a key could otherwise delete
 arbitrary files. The server logs a warning at startup when `/files` is
-mounted without `BeforeMiddlewares`.
+mounted without `BeforeMiddlewares`. For a deliberately public file service,
+set `FilesConfig.AllowPublic`; this suppresses strict/production validation
+errors but installs no middleware and changes no runtime behavior.
 
 ### Before vs. after middleware
 

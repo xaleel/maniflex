@@ -8,8 +8,28 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 )
+
+// DefaultVaultTimeout bounds a complete Vault HTTP operation when neither the
+// provider nor an injected client supplies a timeout.
+const DefaultVaultTimeout = 10 * time.Second
+
+// VaultTokenSource obtains a Vault token before each request. Implementations
+// can cache and renew AppRole, Kubernetes, or other short-lived credentials.
+type VaultTokenSource interface {
+	Token(context.Context) (string, error)
+}
+
+// VaultTokenSourceFunc adapts a function into a VaultTokenSource.
+type VaultTokenSourceFunc func(context.Context) (string, error)
+
+// Token obtains a Vault token.
+func (f VaultTokenSourceFunc) Token(ctx context.Context) (string, error) {
+	return f(ctx)
+}
 
 // VaultKeyProvider encrypts and decrypts via HashiCorp Vault's Transit secrets
 // engine. The keyID maps to a Transit key name (e.g. "patient-pii").
@@ -30,19 +50,32 @@ import (
 //
 //	server := maniflex.New(maniflex.Config{
 //	    KeyProvider: &encryption.VaultKeyProvider{
-//	        Address: "http://vault:8200",
+//	        Address: "https://vault.example.com",
 //	        Token:   os.Getenv("VAULT_TOKEN"),
 //	    },
 //	})
 type VaultKeyProvider struct {
-	// Address is the Vault server URL. Required.
+	// Address is the HTTPS Vault server URL. Required.
 	Address string
-	// Token is the Vault authentication token. Required.
+	// Token is the static Vault authentication token. Required unless
+	// TokenSource is set.
 	Token string
+	// TokenSource obtains a token before each request and takes precedence over
+	// Token. Use it to integrate renewable AppRole or Kubernetes credentials.
+	TokenSource VaultTokenSource
 	// Mount is the Transit secrets engine path. Default: "transit".
 	Mount string
-	// Client is the HTTP client used for Vault calls. Defaults to http.DefaultClient.
+	// Client is the HTTP client used for Vault calls. It is cloned before use.
+	// The default is a private client with a bounded timeout.
 	Client *http.Client
+	// Timeout bounds the complete HTTP operation. Zero defaults to 10 seconds
+	// unless an injected Client already has a timeout. A negative value
+	// explicitly disables the client timeout; request context deadlines still
+	// apply.
+	Timeout time.Duration
+	// AllowInsecureHTTP permits an http:// Address for explicitly isolated
+	// development and test environments. It must not be enabled in production.
+	AllowInsecureHTTP bool
 
 	// IndexKeyID names a dedicated Transit key used only for HMAC blind indexes
 	// on encrypted+unique fields. It must remain stable as encryption keys rotate.
@@ -60,10 +93,74 @@ func (v *VaultKeyProvider) mount() string {
 }
 
 func (v *VaultKeyProvider) httpClient() *http.Client {
+	client := &http.Client{}
 	if v.Client != nil {
-		return v.Client
+		*client = *v.Client
 	}
-	return http.DefaultClient
+	switch {
+	case v.Timeout < 0:
+		client.Timeout = 0
+	case v.Timeout > 0:
+		client.Timeout = v.Timeout
+	case client.Timeout == 0:
+		client.Timeout = DefaultVaultTimeout
+	}
+	return client
+}
+
+func (v *VaultKeyProvider) endpoint(action, keyID string) (string, error) {
+	base, err := url.Parse(v.Address)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return "", fmt.Errorf("vault: invalid Address %q", v.Address)
+	}
+	switch strings.ToLower(base.Scheme) {
+	case "https":
+	case "http":
+		if !v.AllowInsecureHTTP {
+			return "", fmt.Errorf("vault: insecure Address %q requires AllowInsecureHTTP", v.Address)
+		}
+	default:
+		return "", fmt.Errorf("vault: Address must use https, got %q", base.Scheme)
+	}
+	return fmt.Sprintf("%s/v1/%s/%s/%s",
+		strings.TrimRight(v.Address, "/"), v.mount(), action, keyID), nil
+}
+
+func (v *VaultKeyProvider) token(ctx context.Context) (string, error) {
+	token := v.Token
+	if v.TokenSource != nil {
+		var err error
+		token, err = v.TokenSource.Token(ctx)
+		if err != nil {
+			return "", fmt.Errorf("vault: get token: %w", err)
+		}
+	}
+	if token == "" {
+		return "", fmt.Errorf("vault: Token or TokenSource is required")
+	}
+	return token, nil
+}
+
+func (v *VaultKeyProvider) request(
+	ctx context.Context,
+	operation, action, keyID string,
+	body []byte,
+) (*http.Request, error) {
+	endpoint, err := v.endpoint(action, keyID)
+	if err != nil {
+		return nil, fmt.Errorf("vault %s: %w", operation, err)
+	}
+	token, err := v.token(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("vault %s: %w", operation, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("vault %s: build request: %w", operation, err)
+	}
+	req.Header.Set("X-Vault-Token", token)
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
 }
 
 // Encrypt encrypts plaintext via Vault Transit and returns a binary envelope.
@@ -71,13 +168,10 @@ func (v *VaultKeyProvider) Encrypt(ctx context.Context, keyID string, plaintext 
 	encoded := base64.StdEncoding.EncodeToString(plaintext)
 	body, _ := json.Marshal(map[string]string{"plaintext": encoded})
 
-	url := fmt.Sprintf("%s/v1/%s/encrypt/%s", v.Address, v.mount(), keyID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := v.request(ctx, "encrypt", "encrypt", keyID, body)
 	if err != nil {
-		return nil, fmt.Errorf("vault encrypt: build request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("X-Vault-Token", v.Token)
-	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := v.httpClient().Do(req)
 	if err != nil {
@@ -111,13 +205,10 @@ func (v *VaultKeyProvider) Decrypt(ctx context.Context, envelope []byte) ([]byte
 	}
 
 	body, _ := json.Marshal(map[string]string{"ciphertext": string(vaultCT)})
-	url := fmt.Sprintf("%s/v1/%s/decrypt/%s", v.Address, v.mount(), keyID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := v.request(ctx, "decrypt", "decrypt", keyID, body)
 	if err != nil {
-		return nil, fmt.Errorf("vault decrypt: build request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("X-Vault-Token", v.Token)
-	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := v.httpClient().Do(req)
 	if err != nil {
@@ -158,13 +249,10 @@ func (v *VaultKeyProvider) HMAC(ctx context.Context, keyID string, data []byte) 
 	encoded := base64.StdEncoding.EncodeToString(data)
 	body, _ := json.Marshal(map[string]string{"input": encoded})
 
-	url := fmt.Sprintf("%s/v1/%s/hmac/%s", v.Address, v.mount(), keyID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := v.request(ctx, "hmac", "hmac", keyID, body)
 	if err != nil {
-		return nil, fmt.Errorf("vault hmac: build request: %w", err)
+		return nil, err
 	}
-	req.Header.Set("X-Vault-Token", v.Token)
-	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := v.httpClient().Do(req)
 	if err != nil {

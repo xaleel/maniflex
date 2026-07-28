@@ -411,7 +411,9 @@ import "github.com/xaleel/maniflex/pkg/encryption"
 
 server := maniflex.New(maniflex.Config{
     KeyProvider: &encryption.EnvKeyProvider{Prefix: "MYAPP_KEY"},
-    // or: &encryption.VaultKeyProvider{Address, Token, Mount: "transit"}
+    // or: &encryption.VaultKeyProvider{
+    //     Address: vaultAddress, Token: vaultToken, Mount: "transit",
+    // }
 })
 
 type Patient struct {

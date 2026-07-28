@@ -120,7 +120,8 @@ server := maniflex.New(maniflex.Config{
         Token:   os.Getenv("VAULT_TOKEN"),
         Mount:   "transit",            // optional, default "transit"
         IndexKeyID: "blind-index",      // dedicated Transit HMAC key
-        // Client: customHTTPClient,    // optional, defaults to http.DefaultClient
+        // TokenSource: tokenSource,    // optional, refreshed per request
+        // Client: customHTTPClient,    // optional, cloned before use
     },
 })
 ```
@@ -131,9 +132,16 @@ server := maniflex.New(maniflex.Config{
 A Vault key rotation is transparent — Vault decrypts ciphertexts
 encrypted with any prior version of the key automatically.
 
-The shipped provider uses a static token. For production, wrap it with
-a refresher that obtains a fresh token from AppRole, Kubernetes auth,
-or JWT auth before each operation.
+Vault addresses must use HTTPS. `AllowInsecureHTTP` is an explicit opt-out for
+isolated development or test environments and must not be enabled in production.
+The provider uses a private HTTP client with a 10-second whole-operation timeout by
+default. An earlier deadline on the request context wins. Set `Timeout` explicitly
+to tune the bound; a negative value disables the client timeout and leaves the
+operation bounded only by its context.
+
+For renewable AppRole, Kubernetes, JWT, or other short-lived authentication,
+implement `VaultTokenSource` (or use `VaultTokenSourceFunc`). It is called before
+every Vault request and takes precedence over the static `Token`.
 
 A custom backend implements the `maniflex.KeyProvider` interface:
 

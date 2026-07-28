@@ -542,7 +542,11 @@ from the stored metadata. For safety it always sends `X-Content-Type-Options:
 nosniff` and serves only an allowlist of content types (common images, PDF,
 plain text) `inline`; everything else — including `text/html` and
 `image/svg+xml` — is sent as a `Content-Disposition: attachment` download so a
-stored file cannot execute script on the API origin. Missing keys return `404`.
+stored file cannot execute script on the API origin. The original filename is
+serialized as a standards-compliant media-type parameter rather than copied
+verbatim from storage metadata; quotes and controls cannot create extra header
+parameters, and names requiring UTF-8 use `filename*`. Missing keys return
+`404`.
 
 These endpoints are storage-key-addressed and have **no built-in auth**
 when `BeforeMiddlewares` is empty. Set it to wrap the routes with the

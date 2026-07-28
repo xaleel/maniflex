@@ -1,7 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 (2026-07-28)
 
+- **Security:** file downloads now serialize stored filenames with standards-compliant `Content-Disposition` parameter encoding, preventing custom or backfilled metadata from injecting malformed parameters or response-header controls while preserving UTF-8 names via `filename*`.
 - **Security:** `storage.LocalStorage` now performs content and metadata operations through a pinned `os.Root`, preventing symlinks below the storage directory from redirecting reads, writes, stats, or deletes outside it.
 - **Security:** `Server.ValidateProduction` now audits the fully registered app for strict mode, bounded database/query work, disabled runtime migration, and an explicit protected/public access decision on every generated model, action, search, documentation, and standalone file route.
 - **Security (breaking):** client-controlled query shapes now have configurable global/per-model caps (`Config.QueryLimits` / `ModelConfig.QueryLimits`), including an 8 KiB URI ceiling; public aggregates default to 100 rows, clamp at 200, reject negative limits, and return redacted 500/504 responses for operational database failures instead of exposing them as raw 400 errors.

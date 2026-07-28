@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"mime"
 	"net/http"
 	"strings"
 	"testing"
@@ -102,6 +103,67 @@ func TestFileServe_StoredXSSNeutralized(t *testing.T) {
 			t.Errorf("image/png served with Content-Disposition %q; want inline", cd)
 		}
 	})
+}
+
+// SEC-13: storage metadata is not necessarily produced by the upload path, so
+// an original filename may contain parameter syntax, controls, or UTF-8. Both
+// full and partial responses must serialize it without corrupting or injecting
+// Content-Disposition parameters or response headers.
+func TestFileServe_UntrustedMetadataFilenameIsEncoded(t *testing.T) {
+	t.Parallel()
+
+	const key = "backfilled/report"
+	const filename = "quarterly\"; admin=true\r\nX-Injected: yes \u062a\u0642\u0631\u064a\u0631.pdf"
+	store := testutil.NewMemoryStorage()
+	if err := store.Store(context.Background(), key, strings.NewReader("0123456789"), maniflex.FileMeta{
+		Filename:    filename,
+		ContentType: "application/pdf",
+	}); err != nil {
+		t.Fatalf("seed storage: %v", err)
+	}
+	srv := fileServer(t, store)
+
+	for _, tc := range []struct {
+		name       string
+		headers    map[string]string
+		wantStatus int
+	}{
+		{name: "full response", wantStatus: http.StatusOK},
+		{
+			name:       "range response",
+			headers:    map[string]string{"Range": "bytes=0-2"},
+			wantStatus: http.StatusPartialContent,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := srv.GETRawWithHeaders("/files/"+key, tc.headers)
+			resp.AssertStatus(tc.wantStatus)
+
+			header := resp.Header.Get("Content-Disposition")
+			if strings.ContainsAny(header, "\r\n") {
+				t.Fatalf("Content-Disposition contains a raw line break: %q", header)
+			}
+			if got := resp.Header.Get("X-Injected"); got != "" {
+				t.Errorf("injected response header = %q, want absent", got)
+			}
+			mediaType, params, err := mime.ParseMediaType(header)
+			if err != nil {
+				t.Fatalf("parse Content-Disposition %q: %v", header, err)
+			}
+			if mediaType != "inline" {
+				t.Errorf("media type = %q, want inline", mediaType)
+			}
+			if got := params["filename"]; got != filename {
+				t.Errorf("filename parameter = %q, want %q", got, filename)
+			}
+			if !strings.Contains(strings.ToLower(header), "filename*=utf-8''") {
+				t.Errorf("Content-Disposition does not use filename*: %q", header)
+			}
+			if _, injected := params["admin"]; injected {
+				t.Errorf("filename text created an admin parameter: %q", header)
+			}
+		})
+	}
 }
 
 func TestFileServe_RedactsStorageFailure(t *testing.T) {

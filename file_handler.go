@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -213,11 +214,18 @@ func setFileHeaders(w http.ResponseWriter, meta FileMeta) {
 		disposition = "inline"
 	}
 	if meta.Filename != "" {
-		w.Header().Set("Content-Disposition",
-			fmt.Sprintf(`%s; filename="%s"`, disposition, meta.Filename))
-	} else {
-		w.Header().Set("Content-Disposition", disposition)
+		// FileMeta may come from a custom or backfilled storage backend, so do
+		// not assume Filename passed through the upload sanitizer. Let the
+		// standard library quote parameter syntax and emit filename* for values
+		// (such as UTF-8 or controls) that cannot safely use filename=.
+		formatted := mime.FormatMediaType(disposition, map[string]string{
+			"filename": meta.Filename,
+		})
+		if formatted != "" {
+			disposition = formatted
+		}
 	}
+	w.Header().Set("Content-Disposition", disposition)
 }
 
 // writeFileResponse sets content headers from FileMeta and streams the body.

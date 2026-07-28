@@ -1,6 +1,8 @@
 package maniflex
 
 import (
+	"mime"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -40,6 +42,62 @@ func TestSanitizeFilename_TruncatesLongNames(t *testing.T) {
 	got := sanitizeFilename(long)
 	if len(got) != maxFilenameLen {
 		t.Errorf("got length %d, want %d", len(got), maxFilenameLen)
+	}
+}
+
+func TestSetFileHeaders_FormatsUntrustedFilename(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		filename     string
+		wantExtended bool
+	}{
+		{
+			name:     "parameter syntax is quoted",
+			filename: `report"; x=evil.txt`,
+		},
+		{
+			name:         "control bytes are encoded",
+			filename:     "report.pdf\r\nX-Injected: yes",
+			wantExtended: true,
+		},
+		{
+			name:         "UTF-8 uses extended parameter",
+			filename:     "\u062a\u0642\u0631\u064a\u0631 2026.pdf",
+			wantExtended: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := httptest.NewRecorder()
+			setFileHeaders(rec, FileMeta{
+				ContentType: "application/pdf",
+				Filename:    tc.filename,
+			})
+
+			header := rec.Header().Get("Content-Disposition")
+			if strings.ContainsAny(header, "\r\n") {
+				t.Fatalf("Content-Disposition contains a raw line break: %q", header)
+			}
+			mediaType, params, err := mime.ParseMediaType(header)
+			if err != nil {
+				t.Fatalf("parse Content-Disposition %q: %v", header, err)
+			}
+			if mediaType != "inline" {
+				t.Errorf("media type = %q, want inline", mediaType)
+			}
+			if got := params["filename"]; got != tc.filename {
+				t.Errorf("filename parameter = %q, want %q", got, tc.filename)
+			}
+			if got := strings.Contains(strings.ToLower(header), "filename*=utf-8''"); got != tc.wantExtended {
+				t.Errorf("extended filename parameter present = %v, want %v; header: %q",
+					got, tc.wantExtended, header)
+			}
+		})
 	}
 }
 

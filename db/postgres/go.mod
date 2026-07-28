@@ -2,7 +2,7 @@ module github.com/xaleel/maniflex/db/postgres
 
 go 1.25.12
 
-require github.com/xaleel/maniflex v0.3.4
+require github.com/xaleel/maniflex v0.4.0
 
 require github.com/lib/pq v1.12.3
 

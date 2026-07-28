@@ -2,7 +2,9 @@ package maniflex
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 )
@@ -70,7 +72,7 @@ var aggregateWhereOps = map[FilterOperator]bool{
 // resolving every field reference to its DB column name and rejecting any field
 // that is not in the model's filterable/sortable allow-list. The returned error
 // carries a client-facing message suitable for a 400 response.
-func buildAggregateQuery(spec []byte, model *ModelMeta) (AggregateQuery, error) {
+func buildAggregateQuery(spec []byte, model *ModelMeta, limits QueryLimits) (AggregateQuery, error) {
 	if len(spec) == 0 {
 		return AggregateQuery{}, fmt.Errorf("aggregate query must not be empty")
 	}
@@ -83,10 +85,20 @@ func buildAggregateQuery(spec []byte, model *ModelMeta) (AggregateQuery, error) 
 	if len(req.Select) == 0 {
 		return AggregateQuery{}, fmt.Errorf("aggregate query must contain at least one select entry")
 	}
+	if err := validateAggregateRequestLimits(req, limits); err != nil {
+		return AggregateQuery{}, err
+	}
 
 	allowed := aggregateAllowedColumns(model)
 
-	q := AggregateQuery{Limit: req.Limit}
+	limit := req.Limit
+	if limit == 0 {
+		limit = limits.DefaultAggregateRows
+	}
+	if limits.MaxAggregateRows > 0 && limit > limits.MaxAggregateRows {
+		limit = limits.MaxAggregateRows
+	}
+	q := AggregateQuery{Limit: limit}
 
 	// SELECT — translate op + field; COUNT(*) (op "count" with no field) needs no
 	// column. selectAliases tracks resolved aliases so ORDER BY can reference them.
@@ -168,6 +180,29 @@ func buildAggregateQuery(spec []byte, model *ModelMeta) (AggregateQuery, error) 
 	return q, nil
 }
 
+func validateAggregateRequestLimits(req aggregateRequest, limits QueryLimits) error {
+	checks := []struct {
+		count int
+		max   int
+		name  string
+	}{
+		{len(req.Select), limits.MaxAggregateSelectFields, "select entries"},
+		{len(req.GroupBy), limits.MaxAggregateGroupFields, "group_by fields"},
+		{len(req.Where), limits.MaxAggregateFilters, "where conditions"},
+		{len(req.Having), limits.MaxAggregateHaving, "having conditions"},
+		{len(req.OrderBy), limits.MaxAggregateSortFields, "order_by fields"},
+	}
+	for _, check := range checks {
+		if check.max > 0 && check.count > check.max {
+			return fmt.Errorf("too many aggregate %s: maximum is %d", check.name, check.max)
+		}
+	}
+	if req.Limit < 0 {
+		return fmt.Errorf("aggregate limit must be non-negative")
+	}
+	return nil
+}
+
 // aggregateDB is the DB-step handler for the aggregate endpoint. It folds any
 // request ?filter= conditions and middleware-injected tenancy force-filters
 // (both live in ctx.Query.Filters) into the WHERE clause ahead of the body's own
@@ -189,7 +224,17 @@ func (s *defaultSteps) aggregateDB(ctx *ServerContext, next func() error) error 
 
 	rows, err := ctx.Aggregate(ctx.Model.Name, q)
 	if err != nil {
-		ctx.Abort(http.StatusBadRequest, "AGGREGATE_ERROR", err.Error())
+		var queryErr *aggregateValidationError
+		switch {
+		case errors.As(err, &queryErr):
+			ctx.Abort(http.StatusBadRequest, "AGGREGATE_ERROR", err.Error())
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+			ctx.Abort(http.StatusGatewayTimeout, "TIMEOUT", "aggregate query timed out")
+		default:
+			// APIResponse redacts the message for 5xx responses while Abort
+			// retains the original error for structured server-side logging.
+			ctx.Abort(http.StatusInternalServerError, "AGGREGATE_ERROR", err.Error())
+		}
 		return nil
 	}
 	if rows == nil {

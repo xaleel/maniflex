@@ -61,6 +61,7 @@ header phase stays bounded by `ReadHeaderTimeout` either way.
 | Field | Default | Purpose |
 |---|---|---|
 | `MaxConcurrentExports` | `4` | how many `GET /:model/export` requests may run at once, server-wide; negative disables the limit |
+| `QueryLimits` | see below | bounds client-controlled URL query and aggregate complexity; `ModelConfig.QueryLimits` can override individual fields for one model |
 
 An export holds its entire result set in memory until the last byte reaches the
 client, so concurrency multiplies the largest allocation the server makes. The
@@ -68,6 +69,23 @@ per-model `MaxExportRows` bounds one export's rows but not the row width nor the
 number in flight; this bounds the product. Requests over the limit are refused
 immediately with `503 EXPORT_BUSY` and a `Retry-After`, not queued. See
 [CSV / XLSX Export](../advanced-topics/export.md#concurrency-cap).
+
+`QueryLimits` uses these safe defaults:
+
+| Field | Default |
+|---|---:|
+| `MaxURLBytes` | 8 KiB |
+| `MaxFilterClauses` / `MaxFilterGroups` / `MaxFiltersPerGroup` | 32 / 8 / 8 |
+| `MaxSortFields` / `MaxSelectFields` / `MaxIncludes` | 8 / 64 / 8 |
+| `MaxAggregateSelectFields` / `MaxAggregateGroupFields` | 16 / 8 |
+| `MaxAggregateFilters` / `MaxAggregateHaving` / `MaxAggregateSortFields` | 32 / 16 / 8 |
+| `DefaultAggregateRows` / `MaxAggregateRows` | 100 / 200 |
+
+A zero field inherits the default (or the global value in a per-model
+override); a negative field disables that individual limit. The global
+`MaxURLBytes` remains a router-level hard ceiling for every route. Oversized
+URIs return `414 URI_TOO_LONG`; invalid list-query shapes return
+`400 INVALID_QUERY`.
 
 ## Database
 

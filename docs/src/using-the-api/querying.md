@@ -4,6 +4,20 @@ Every generated list and read endpoint accepts the same query parameters —
 `page`, `limit`, `filter`, `sort`, `include`, and `select`. This page
 documents their grammar and the fields that opt in to each.
 
+## Query complexity limits
+
+Client-controlled query shapes are bounded before SQL is built. Defaults allow
+at most 8 KiB for the complete request URI, 32 filter clauses, 8 bracketed OR
+groups with 8 clauses each, 8 sort fields, 64 selected fields, and 8 include
+paths. Exceeding the URI ceiling returns `414 URI_TOO_LONG`; exceeding a shape
+limit returns `400 INVALID_QUERY`.
+
+Applications can change these through `Config.QueryLimits`, and can override
+individual fields for one model with `ModelConfig.QueryLimits`. A zero field
+inherits; a negative field explicitly disables that limit. The router-level
+global URI ceiling cannot be loosened per model. See
+[Configuration](../deployment/config.md#limits) for every field and default.
+
 ## `page` and `limit`
 
 Standard offset pagination.

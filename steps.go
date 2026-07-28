@@ -35,6 +35,7 @@ type defaultSteps struct {
 	// of it is buffered in memory. Zero → DefaultMaxUploadBytes / DefaultMaxUploadMemory.
 	maxUpload    int64
 	maxUploadMem int64
+	queryLimits  QueryLimits
 	bg           *backgroundRunner
 }
 
@@ -66,7 +67,8 @@ func (s *defaultSteps) auth(ctx *ServerContext, next func() error) error {
 
 func (s *defaultSteps) deserialize(ctx *ServerContext, next func() error) error {
 	// Query params are needed for all operations (includes on reads, filters on lists)
-	q, err := ParseQueryParams(ctx.Request, ctx.Model, s.reg)
+	limits := resolveQueryLimits(s.queryLimits, ctx.Model.Config.QueryLimits)
+	q, err := parseQueryParams(ctx.Request, ctx.Model, s.reg, limits)
 	if err != nil {
 		ctx.Abort(http.StatusBadRequest, "INVALID_QUERY", err.Error())
 		return nil
@@ -130,7 +132,7 @@ func (s *defaultSteps) deserialize(ctx *ServerContext, next func() error) error 
 			ctx.Abort(http.StatusBadRequest, "INVALID_AGGREGATE", msg)
 			return nil
 		}
-		q, err := buildAggregateQuery([]byte(spec), ctx.Model)
+		q, err := buildAggregateQuery([]byte(spec), ctx.Model, limits)
 		if err != nil {
 			ctx.Abort(http.StatusBadRequest, "INVALID_AGGREGATE", err.Error())
 			return nil

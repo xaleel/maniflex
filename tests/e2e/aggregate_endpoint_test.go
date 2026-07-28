@@ -11,13 +11,17 @@ package e2e
 // failed in production (DX-2). The body is no longer read.
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/db/sqlite"
 	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
@@ -41,6 +45,16 @@ func aggEndpointServer(t *testing.T, mw func(s *maniflex.Server)) *testutil.Serv
 			maniflex.ModelConfig{AggregateEnabled: true},
 		},
 		Middleware: mw,
+	})
+}
+
+func aggEndpointServerWithLimits(t *testing.T, limits maniflex.QueryLimits) *testutil.Server {
+	t.Helper()
+	return testutil.NewServer(t, testutil.Options{
+		Models: []any{
+			AggSale{},
+			maniflex.ModelConfig{AggregateEnabled: true, QueryLimits: limits},
+		},
 	})
 }
 
@@ -248,6 +262,145 @@ func TestAggregateEndpoint_OrderByAndLimit(t *testing.T) {
 	}
 	if got := toF(m["total"]); got != 500 {
 		t.Errorf("total: got %v, want 500", got)
+	}
+}
+
+func TestAggregateEndpoint_DefaultAndMaximumRows(t *testing.T) {
+	t.Parallel()
+	srv := aggEndpointServerWithLimits(t, maniflex.QueryLimits{
+		DefaultAggregateRows: 2,
+		MaxAggregateRows:     3,
+	})
+	seedSales(t, srv)
+
+	base := map[string]any{
+		"select":   []any{map[string]any{"op": "count", "as": "n"}},
+		"group_by": []any{"region"},
+	}
+	resp := aggGET(srv, base)
+	resp.AssertStatus(http.StatusOK)
+	if got := len(resp.DataList()); got != 2 {
+		t.Fatalf("default row limit: got %d rows, want 2", got)
+	}
+
+	base["limit"] = 999
+	resp = aggGET(srv, base)
+	resp.AssertStatus(http.StatusOK)
+	if got := len(resp.DataList()); got != 3 {
+		t.Fatalf("clamped row limit: got %d rows, want 3", got)
+	}
+}
+
+func TestAggregateEndpoint_ComplexityLimits(t *testing.T) {
+	t.Parallel()
+	srv := aggEndpointServerWithLimits(t, maniflex.QueryLimits{
+		MaxAggregateSelectFields: 1,
+		MaxAggregateGroupFields:  1,
+		MaxAggregateFilters:      1,
+		MaxAggregateHaving:       1,
+		MaxAggregateSortFields:   1,
+	})
+
+	count := map[string]any{"op": "count", "as": "n"}
+	sum := map[string]any{"op": "sum", "field": "amount", "as": "total"}
+	cases := []struct {
+		name string
+		spec map[string]any
+	}{
+		{"select", map[string]any{"select": []any{count, sum}}},
+		{"group_by", map[string]any{"select": []any{count}, "group_by": []any{"region", "product"}}},
+		{"where", map[string]any{"select": []any{count}, "where": []any{
+			map[string]any{"field": "region", "operator": "eq", "value": "us"},
+			map[string]any{"field": "product", "operator": "eq", "value": "A"},
+		}}},
+		{"having", map[string]any{"select": []any{count}, "having": []any{
+			map[string]any{"alias": "n", "operator": "gt", "value": 0},
+			map[string]any{"alias": "n", "operator": "lt", "value": 10},
+		}}},
+		{"order_by", map[string]any{"select": []any{sum}, "order_by": []any{
+			map[string]any{"field": "total", "direction": "asc"},
+			map[string]any{"field": "total", "direction": "desc"},
+		}}},
+		{"negative limit", map[string]any{"select": []any{count}, "limit": -1}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := aggGET(srv, tc.spec)
+			resp.AssertStatus(http.StatusBadRequest)
+			if got := resp.ErrorCode(); got != "INVALID_AGGREGATE" {
+				t.Errorf("error code: got %q, want INVALID_AGGREGATE", got)
+			}
+		})
+	}
+}
+
+type failingAggregateAdapter struct {
+	maniflex.DBAdapter
+	err error
+}
+
+func (a *failingAggregateAdapter) Raw(context.Context, string, ...any) maniflex.RawResult {
+	return failingAggregateResult{err: a.err}
+}
+
+type failingAggregateResult struct{ err error }
+
+func (r failingAggregateResult) LastInsertId() (*int64, error) { return nil, r.err }
+func (r failingAggregateResult) RowsAffected() (*int64, error) { return nil, r.err }
+func (r failingAggregateResult) Rows() (*sql.Rows, error)      { return nil, r.err }
+
+func TestAggregateEndpoint_OperationalErrorsAreNot400(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{"database failure", errors.New("secret database topology"), http.StatusInternalServerError, "AGGREGATE_ERROR"},
+		{"timeout", context.DeadlineExceeded, http.StatusGatewayTimeout, "TIMEOUT"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := testutil.NewServer(t, testutil.Options{
+				Models: []any{
+					AggSale{},
+					maniflex.ModelConfig{AggregateEnabled: true},
+				},
+				DBAdapter: func(reg maniflex.RegistryAccessor) (maniflex.DBAdapter, error) {
+					inner, err := sqlite.Open(":memory:", reg)
+					if err != nil {
+						return nil, err
+					}
+					return &failingAggregateAdapter{DBAdapter: inner, err: tc.err}, nil
+				},
+			})
+			resp := aggGET(srv, map[string]any{
+				"select": []any{map[string]any{"op": "count", "as": "n"}},
+			})
+			resp.AssertStatus(tc.status)
+			if got := resp.ErrorCode(); got != tc.code {
+				t.Errorf("error code: got %q, want %q", got, tc.code)
+			}
+			if strings.Contains(string(resp.Body), "secret database topology") {
+				t.Errorf("database error leaked to client: %s", resp.Body)
+			}
+		})
+	}
+}
+
+func TestAggregateEndpoint_QueryValidationRemains400(t *testing.T) {
+	t.Parallel()
+	srv := aggEndpointServer(t, nil)
+	resp := aggGET(srv, map[string]any{
+		"select": []any{
+			map[string]any{"op": "count", "as": "duplicate"},
+			map[string]any{"op": "sum", "field": "amount", "as": "duplicate"},
+		},
+	})
+	resp.AssertStatus(http.StatusBadRequest)
+	if got := resp.ErrorCode(); got != "AGGREGATE_ERROR" {
+		t.Errorf("error code: got %q, want AGGREGATE_ERROR", got)
 	}
 }
 

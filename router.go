@@ -23,6 +23,22 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 	// with every other maniflex error envelope.
 	r.Use(PanicRecoverer(cfg.PanicLogger))
 	r.Use(chiMiddleware.RequestID)
+	if max := cfg.QueryLimits.MaxURLBytes; max > 0 {
+		r.Use(func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				requestURI := req.RequestURI
+				if requestURI == "" && req.URL != nil {
+					requestURI = req.URL.RequestURI()
+				}
+				if len(requestURI) > max {
+					writeJSONError(w, http.StatusRequestURITooLong, "URI_TOO_LONG",
+						fmt.Sprintf("request URI exceeds %d bytes", max))
+					return
+				}
+				next.ServeHTTP(w, req)
+			})
+		})
+	}
 
 	// RealIP rewrites RemoteAddr from X-Forwarded-For / X-Real-IP. Only trust
 	// those client-supplied headers when the operator has opted in (the server

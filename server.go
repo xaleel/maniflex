@@ -82,6 +82,7 @@ func New(cfg Config) *Server {
 	steps.signedURLTTL = cfg.FilesConfig.SignedURLTTL
 	steps.maxUpload = cfg.FilesConfig.MaxUploadBytes
 	steps.maxUploadMem = cfg.FilesConfig.MaxUploadMemory
+	steps.queryLimits = cfg.QueryLimits
 
 	srv := &Server{
 		cfg:       cfg,

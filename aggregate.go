@@ -51,6 +51,23 @@ type AggregateQuery struct {
 	Limit   int
 }
 
+// aggregateValidationError distinguishes a validated AggregateQuery failure from an
+// adapter/database failure without expanding the public error API.
+type aggregateValidationError struct {
+	err error
+}
+
+func (e *aggregateValidationError) Error() string { return e.err.Error() }
+func (e *aggregateValidationError) Unwrap() error { return e.err }
+
+func aggregateQueryError(err error) error {
+	return &aggregateValidationError{err: err}
+}
+
+func aggregateQueryErrorf(format string, args ...any) error {
+	return aggregateQueryError(fmt.Errorf(format, args...))
+}
+
 // Aggregate runs a structured aggregation query against the named model. It
 // validates field names against the model's registered DB columns so an
 // invalid input fails fast with a clear error rather than producing a SQL
@@ -90,7 +107,7 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 		agg.Where = merged
 	}
 	if len(agg.Select) == 0 {
-		return nil, fmt.Errorf("maniflex: AggregateQuery.Select must contain at least one field")
+		return nil, aggregateQueryErrorf("maniflex: AggregateQuery.Select must contain at least one field")
 	}
 
 	driver := c.DriverType()
@@ -103,10 +120,10 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	for _, f := range agg.Select {
 		expr, alias, err := aggregateExpr(meta, f)
 		if err != nil {
-			return nil, err
+			return nil, aggregateQueryError(err)
 		}
 		if aliases[alias] {
-			return nil, fmt.Errorf("maniflex: duplicate aggregate alias %q", alias)
+			return nil, aggregateQueryErrorf("maniflex: duplicate aggregate alias %q", alias)
 		}
 		aliases[alias] = true
 		aliasExpr[alias] = expr
@@ -116,7 +133,7 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	// which group each row belongs to.
 	for _, col := range agg.GroupBy {
 		if meta.FieldByDBName(col) == nil {
-			return nil, fmt.Errorf("maniflex: GroupBy column %q does not exist on model %q", col, modelName)
+			return nil, aggregateQueryErrorf("maniflex: GroupBy column %q does not exist on model %q", col, modelName)
 		}
 		selectParts = append(selectParts, aggQuote(meta.TableName)+"."+aggQuote(col))
 	}
@@ -125,12 +142,12 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	// a clean error rather than a SQL fault.
 	for _, f := range agg.Where {
 		if !f.IsNested && meta.FieldByDBName(f.Field) == nil {
-			return nil, fmt.Errorf("maniflex: Where filter references unknown column %q", f.Field)
+			return nil, aggregateQueryErrorf("maniflex: Where filter references unknown column %q", f.Field)
 		}
 	}
 	whereSQL, err := aggBuildWhere(meta, agg.Where, driver, pb)
 	if err != nil {
-		return nil, err
+		return nil, aggregateQueryError(err)
 	}
 
 	// GROUP BY
@@ -152,10 +169,10 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 		for _, h := range agg.Having {
 			expr, ok := aliasExpr[h.Alias]
 			if !ok {
-				return nil, fmt.Errorf("maniflex: Having references unknown alias %q", h.Alias)
+				return nil, aggregateQueryErrorf("maniflex: Having references unknown alias %q", h.Alias)
 			}
 			if !havingOpAllowed(h.Operator) {
-				return nil, fmt.Errorf("maniflex: Having operator %q is not supported on aggregates", h.Operator)
+				return nil, aggregateQueryErrorf("maniflex: Having operator %q is not supported on aggregates", h.Operator)
 			}
 			parts = append(parts, fmt.Sprintf("%s %s %s", expr, sqlOp(h.Operator), pb.add(h.Value)))
 		}
@@ -178,11 +195,11 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 			case groupSet[s.DBName]:
 				col = aggQuote(meta.TableName) + "." + aggQuote(s.DBName)
 			default:
-				return nil, fmt.Errorf("maniflex: OrderBy %q is not an aggregate alias or GroupBy column", s.DBName)
+				return nil, aggregateQueryErrorf("maniflex: OrderBy %q is not an aggregate alias or GroupBy column", s.DBName)
 			}
 			dir, derr := aggDirection(s.Direction)
 			if derr != nil {
-				return nil, derr
+				return nil, aggregateQueryError(derr)
 			}
 			parts = append(parts, col+" "+dir)
 		}

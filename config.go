@@ -27,6 +27,107 @@ type DocumentationConfig struct {
 	Middleware []HTTPMiddleware
 }
 
+// QueryLimits bounds client-controlled URL query and aggregate complexity.
+// Zero fields inherit the global/default value; negative fields explicitly
+// disable that individual limit. ModelConfig.QueryLimits can tighten or
+// override the global values for one model, except MaxURLBytes remains subject
+// to the global hard ceiling applied before route dispatch.
+type QueryLimits struct {
+	// MaxURLBytes bounds the complete request URI. Default: 8 KiB.
+	MaxURLBytes int
+	// MaxFilterClauses bounds all client-supplied filter expressions. Default: 32.
+	MaxFilterClauses int
+	// MaxFilterGroups bounds distinct bracketed OR groups. Default: 8.
+	MaxFilterGroups int
+	// MaxFiltersPerGroup bounds clauses within one bracketed OR group. Default: 8.
+	MaxFiltersPerGroup int
+	// MaxSortFields bounds comma-separated sort terms. Default: 8.
+	MaxSortFields int
+	// MaxSelectFields bounds projected fields. Default: 64.
+	MaxSelectFields int
+	// MaxIncludes bounds requested relation include paths. Default: 8.
+	MaxIncludes int
+
+	// MaxAggregateSelectFields bounds aggregate expressions. Default: 16.
+	MaxAggregateSelectFields int
+	// MaxAggregateGroupFields bounds GROUP BY columns. Default: 8.
+	MaxAggregateGroupFields int
+	// MaxAggregateFilters bounds aggregate WHERE conditions. Default: 32.
+	MaxAggregateFilters int
+	// MaxAggregateHaving bounds aggregate HAVING conditions. Default: 16.
+	MaxAggregateHaving int
+	// MaxAggregateSortFields bounds aggregate ORDER BY terms. Default: 8.
+	MaxAggregateSortFields int
+	// DefaultAggregateRows is used when the HTTP aggregate request omits limit.
+	// Default: 100.
+	DefaultAggregateRows int
+	// MaxAggregateRows clamps an HTTP aggregate request's positive limit.
+	// Default: 200.
+	MaxAggregateRows int
+}
+
+var defaultQueryLimits = QueryLimits{
+	MaxURLBytes:              8 << 10,
+	MaxFilterClauses:         32,
+	MaxFilterGroups:          8,
+	MaxFiltersPerGroup:       8,
+	MaxSortFields:            8,
+	MaxSelectFields:          64,
+	MaxIncludes:              8,
+	MaxAggregateSelectFields: 16,
+	MaxAggregateGroupFields:  8,
+	MaxAggregateFilters:      32,
+	MaxAggregateHaving:       16,
+	MaxAggregateSortFields:   8,
+	DefaultAggregateRows:     100,
+	MaxAggregateRows:         200,
+}
+
+func resolveQueryLimits(base, override QueryLimits) QueryLimits {
+	out := base
+	dst := []*int{
+		&out.MaxURLBytes,
+		&out.MaxFilterClauses,
+		&out.MaxFilterGroups,
+		&out.MaxFiltersPerGroup,
+		&out.MaxSortFields,
+		&out.MaxSelectFields,
+		&out.MaxIncludes,
+		&out.MaxAggregateSelectFields,
+		&out.MaxAggregateGroupFields,
+		&out.MaxAggregateFilters,
+		&out.MaxAggregateHaving,
+		&out.MaxAggregateSortFields,
+		&out.DefaultAggregateRows,
+		&out.MaxAggregateRows,
+	}
+	src := []int{
+		override.MaxURLBytes,
+		override.MaxFilterClauses,
+		override.MaxFilterGroups,
+		override.MaxFiltersPerGroup,
+		override.MaxSortFields,
+		override.MaxSelectFields,
+		override.MaxIncludes,
+		override.MaxAggregateSelectFields,
+		override.MaxAggregateGroupFields,
+		override.MaxAggregateFilters,
+		override.MaxAggregateHaving,
+		override.MaxAggregateSortFields,
+		override.DefaultAggregateRows,
+		override.MaxAggregateRows,
+	}
+	for i, value := range src {
+		if value != 0 {
+			*dst[i] = value
+		}
+	}
+	if out.MaxAggregateRows > 0 && out.DefaultAggregateRows > out.MaxAggregateRows {
+		out.DefaultAggregateRows = out.MaxAggregateRows
+	}
+	return out
+}
+
 // SoftDeleteStyle indicates how soft deletion is stored in the database.
 type SoftDeleteStyle int
 
@@ -71,6 +172,10 @@ type ModelConfig struct {
 	// Middleware holds per-model pipeline middleware installed at registration
 	// time. nil means no per-model middleware.
 	Middleware *ModelMiddleware
+
+	// QueryLimits overrides non-zero fields from Config.QueryLimits for this
+	// model. Use it to tighten expensive models independently.
+	QueryLimits QueryLimits
 
 	// Versioned enables field-change history for this model. AutoMigrate
 	// creates a sibling {model}_history table. Every write emits a history row
@@ -330,6 +435,10 @@ type Config struct {
 	// Documentation controls the generated OpenAPI and AsyncAPI endpoints.
 	// The zero value keeps them unmounted. See DocumentationConfig.
 	Documentation DocumentationConfig
+
+	// QueryLimits bounds client-controlled URL query and aggregate complexity.
+	// Zero fields receive production-safe defaults; see QueryLimits.
+	QueryLimits QueryLimits
 
 	// HTTPMiddlewares wrap the generated router in registration order. They run
 	// after panic recovery, request-ID assignment, and optional trusted-proxy IP
@@ -662,6 +771,7 @@ func (c *Config) ApplyDefaults() {
 	if c.PathPrefix == "" {
 		c.PathPrefix = "/api"
 	}
+	c.QueryLimits = resolveQueryLimits(defaultQueryLimits, c.QueryLimits)
 	if c.StaticPrefix == "" {
 		c.StaticPrefix = "/static"
 	}

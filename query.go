@@ -117,6 +117,18 @@ func (q *QueryParams) HasInclude(key string) bool {
 //	?sort=created_at:desc,title:asc
 //	?include=author,category
 func ParseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor) (*QueryParams, error) {
+	return parseQueryParams(r, model, reg, defaultQueryLimits)
+}
+
+func parseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor, limits QueryLimits) (*QueryParams, error) {
+	requestURI := r.RequestURI
+	if requestURI == "" && r.URL != nil {
+		requestURI = r.URL.RequestURI()
+	}
+	if limits.MaxURLBytes > 0 && len(requestURI) > limits.MaxURLBytes {
+		return nil, fmt.Errorf("request URI exceeds %d bytes", limits.MaxURLBytes)
+	}
+
 	q := &QueryParams{Page: defaultPage, Limit: defaultLimit}
 	query := r.URL.Query()
 
@@ -142,6 +154,8 @@ func ParseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor) (
 	// ── filters ───────────────────────────────────────────────────────────────
 	// Accepts both ?filter=x and ?filter[N]=x (bracket syntax for OR groups).
 	// Keys like ?filter[non-digit]=x are rejected with a 400.
+	filterCount := 0
+	filterGroups := make(map[int]int)
 	for key, vals := range query {
 		m := filterKeyRe.FindStringSubmatch(key)
 		if m == nil {
@@ -157,10 +171,29 @@ func ParseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor) (
 		// incl. the FilterExpr zero value) stays distinct from a user's group 0.
 		group := -1
 		if m[1] != "" {
-			n, _ := strconv.Atoi(m[1])
+			n, err := strconv.Atoi(m[1])
+			if err != nil || n == int(^uint(0)>>1) {
+				return nil, fmt.Errorf("invalid filter key %q: bracket index is too large", key)
+			}
 			group = n + 1
+			if _, exists := filterGroups[group]; !exists {
+				if limits.MaxFilterGroups > 0 && len(filterGroups) >= limits.MaxFilterGroups {
+					return nil, fmt.Errorf("too many filter groups: maximum is %d", limits.MaxFilterGroups)
+				}
+				filterGroups[group] = 0
+			}
 		}
 		for _, raw := range vals {
+			filterCount++
+			if limits.MaxFilterClauses > 0 && filterCount > limits.MaxFilterClauses {
+				return nil, fmt.Errorf("too many filter clauses: maximum is %d", limits.MaxFilterClauses)
+			}
+			if group > 0 {
+				filterGroups[group]++
+				if limits.MaxFiltersPerGroup > 0 && filterGroups[group] > limits.MaxFiltersPerGroup {
+					return nil, fmt.Errorf("too many clauses in filter group %d: maximum is %d", group-1, limits.MaxFiltersPerGroup)
+				}
+			}
 			expr, err := ParseFilterParam(raw, model, reg)
 			if err != nil {
 				return nil, fmt.Errorf("filter: %w", err)
@@ -178,6 +211,9 @@ func ParseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor) (
 	// ── sort ──────────────────────────────────────────────────────────────────
 	// ?sort=created_at:desc,title:asc
 	if s := query.Get("sort"); s != "" {
+		if n := countCSVTerms(s); limits.MaxSortFields > 0 && n > limits.MaxSortFields {
+			return nil, fmt.Errorf("too many sort fields: maximum is %d", limits.MaxSortFields)
+		}
 		for _, part := range strings.Split(s, ",") {
 			part = strings.TrimSpace(part)
 			if part == "" {
@@ -221,6 +257,9 @@ func ParseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor) (
 
 	// ── includes ─────────────────────────────────────────────────────────────
 	if inc := query.Get("include"); inc != "" {
+		if n := countCSVTerms(inc); limits.MaxIncludes > 0 && n > limits.MaxIncludes {
+			return nil, fmt.Errorf("too many includes: maximum is %d", limits.MaxIncludes)
+		}
 		if err := parseIncludes(q, inc, model, reg); err != nil {
 			return nil, err
 		}
@@ -230,6 +269,9 @@ func ParseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor) (
 	// ?select=id,name,department → only those columns are SELECTed from the DB.
 	// Hidden and write-only fields are still stripped in the response step.
 	if sel := query.Get("select"); sel != "" {
+		if n := countCSVTerms(sel); limits.MaxSelectFields > 0 && n > limits.MaxSelectFields {
+			return nil, fmt.Errorf("too many select fields: maximum is %d", limits.MaxSelectFields)
+		}
 		for _, name := range strings.Split(sel, ",") {
 			name = strings.TrimSpace(name)
 			if name == "" {
@@ -285,6 +327,16 @@ func ParseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor) (
 	}
 
 	return q, nil
+}
+
+func countCSVTerms(raw string) int {
+	count := 0
+	for _, term := range strings.Split(raw, ",") {
+		if strings.TrimSpace(term) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 // parseIncludes fills q.Includes and q.NestedIncludes from a raw ?include=

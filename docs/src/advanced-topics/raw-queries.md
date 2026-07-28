@@ -154,6 +154,15 @@ request `?filter=` conditions — including middleware-injected tenancy
 force-filters — are AND-ed into the aggregate WHERE alongside the spec's own
 `where`.
 
+The HTTP endpoint applies a default `limit` of 100 and clamps larger requested
+limits to 200; a negative limit is invalid. It also caps select, group, where,
+having, and order terms before SQL or placeholder lists are built. Configure
+the defaults through `Config.QueryLimits`, or override a model through
+`ModelConfig.QueryLimits`. Validated query mistakes return 400; database
+failures return a redacted 500, and cancellation/deadline failures return 504.
+These HTTP safeguards do not change programmatic `ctx.Aggregate` calls, whose
+`AggregateQuery.Limit` remains explicit.
+
 ## Tree traversal: `ctx.RecursiveQuery`
 
 For self-referential models — categories, org charts, threaded comments, bill of

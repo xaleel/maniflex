@@ -477,6 +477,7 @@ type Config struct {
     DB              DBAdapter      // required before Start
     DisableAutoMigrate bool        // migration runs by default; set to skip it
     QueryTimeout    time.Duration  // per-request DB deadline; 0 = unlimited
+    QueryLimits     QueryLimits    // URI/query/aggregate complexity caps
     ShutdownTimeout time.Duration  // default 30s
     Logger          *slog.Logger
     PanicLogger     *slog.Logger
@@ -526,6 +527,7 @@ server.MustRegister(MyModel{}, maniflex.ModelConfig{
     },
     Versioned:         true,
     VersionedDiffOnly: false,
+    QueryLimits:       maniflex.QueryLimits{MaxFilterClauses: 16},
     Indices:           []maniflex.IndexSpec{{Name, Columns, Unique}},
 })
 ```

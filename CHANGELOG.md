@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.1 (unreleased)
+
+- **Bugfix:** `time.Time` cursor pagination no longer skips rows on SQLite: versioned cursor tokens now carry typed, fixed-width canonical timestamps matching database bindings, while legacy tokens remain accepted and are normalized against cursor-field metadata.
+
 ## v0.4.0 (2026-07-28)
 
 - **Security:** file downloads now serialize stored filenames with standards-compliant `Content-Disposition` parameter encoding, preventing custom or backfilled metadata from injecting malformed parameters or response-header controls while preserving UTF-8 names via `filename*`.

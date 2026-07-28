@@ -7,6 +7,7 @@ package e2e
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/xaleel/maniflex"
 	"github.com/xaleel/maniflex/tests/e2e/testutil"
@@ -28,10 +29,21 @@ type CursorByTime struct {
 	Name               string `json:"name" db:"name" mfx:"required"`
 }
 
+// CursorAtTime exposes a caller-supplied timestamp so the regression can pin
+// whole-second, fractional, and tied values deterministically on both database
+// lanes.
+type CursorAtTime struct {
+	maniflex.BaseModel
+	Name    string    `json:"name" db:"name" mfx:"required"`
+	EventAt time.Time `json:"event_at" db:"event_at" mfx:"required,sortable,cursor_field:event_at"`
+}
+
 func cursorServer(t *testing.T) *testutil.Server {
 	t.Helper()
 	// Register a plain model too so the "not enabled" path can be probed.
-	return testutil.NewServer(t, testutil.Options{Models: []any{CursorEvent{}, CursorByTime{}, testutil.User{}}})
+	return testutil.NewServer(t, testutil.Options{
+		Models: []any{CursorEvent{}, CursorByTime{}, CursorAtTime{}, testutil.User{}},
+	})
 }
 
 func seedEvents(t *testing.T, srv *testutil.Server, n int) {
@@ -174,6 +186,75 @@ func TestCursorPagination(t *testing.T) {
 		}
 		if len(seen) != 5 {
 			t.Fatalf("walked %d distinct rows, want 5", len(seen))
+		}
+	})
+
+	t.Run("time_cursor_precision_ties_directions_and_projection", func(t *testing.T) {
+		t.Parallel()
+
+		base := time.Date(2026, 7, 28, 12, 34, 56, 0, time.UTC)
+		stamps := map[string]time.Time{
+			"whole-a": base,
+			"whole-b": base,
+			"micro":   base.Add(time.Microsecond),
+			"half":    base.Add(500 * time.Millisecond),
+			"next":    base.Add(time.Second),
+		}
+
+		for _, direction := range []struct {
+			name string
+			sort string
+			desc bool
+		}{
+			{name: "ascending"},
+			{name: "descending", sort: "&sort=event_at:desc", desc: true},
+		} {
+			t.Run(direction.name, func(t *testing.T) {
+				srv := cursorServer(t)
+				for name, stamp := range stamps {
+					srv.POST("/cursor_at_times", map[string]any{
+						"name":     name,
+						"event_at": stamp.Format(time.RFC3339Nano),
+					}).AssertStatus(http.StatusCreated)
+				}
+
+				var walked []string
+				cursor := ""
+				for pages := 0; pages < 10; pages++ {
+					// Selecting only name exercises the projection path: query
+					// parsing must retain event_at and id internally so it can
+					// build the next token.
+					resp := srv.GET("/cursor_at_times?cursor=" + cursor +
+						direction.sort + "&limit=2&select=name")
+					resp.AssertStatus(http.StatusOK)
+					for _, item := range resp.DataList() {
+						walked = append(walked, item.(map[string]any)["name"].(string))
+					}
+					if resp.Meta()["has_more"] != true {
+						break
+					}
+					cursor = resp.Meta()["next_cursor"].(string)
+				}
+
+				if len(walked) != len(stamps) {
+					t.Fatalf("walked %d rows (%v), want %d", len(walked), walked, len(stamps))
+				}
+				seen := make(map[string]bool, len(walked))
+				for i, name := range walked {
+					if seen[name] {
+						t.Fatalf("row %q returned twice: %v", name, walked)
+					}
+					seen[name] = true
+					if i == 0 {
+						continue
+					}
+					previous, current := stamps[walked[i-1]], stamps[name]
+					if (!direction.desc && current.Before(previous)) ||
+						(direction.desc && current.After(previous)) {
+						t.Fatalf("timestamps out of order at %q -> %q: %v", walked[i-1], name, walked)
+					}
+				}
+			})
 		}
 	})
 

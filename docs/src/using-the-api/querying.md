@@ -90,7 +90,11 @@ Cursor responses carry a different `meta` shape — no `total`/`page`/`pages`
 ```
 
 `has_more` is `false` and `next_cursor` is omitted on the last page. The token is
-opaque — treat it as a string and pass it back verbatim.
+opaque — treat it as a string and pass it back verbatim. Tokens carry the cursor
+value's type and are checked against the model field; a token for a different
+field type is rejected with `400`. Timestamp cursors use a fixed-width UTC
+representation so ordering is identical on SQLite and Postgres. Unversioned
+tokens issued by earlier Maniflex releases remain accepted during upgrades.
 
 ## `filter`
 

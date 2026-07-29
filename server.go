@@ -24,13 +24,13 @@ type loggerSetter interface {
 	SetLogger(*slog.Logger)
 }
 
-// ErrAlreadyStarted is returned when Start or StartWithContext is called while
-// the same Server is already starting or running.
+// ErrAlreadyStarted is returned when Start, StartWithContext, or StartServices
+// is called while the same Server already has an active startup owner.
 var ErrAlreadyStarted = errors.New("maniflex: server already started")
 
-// ErrStopped is returned when Start or StartWithContext is called after the
-// Server has stopped, failed to start, or had Shutdown called. A Server is not
-// restartable; construct a new one.
+// ErrStopped is returned when a startup method is called after the Server has
+// stopped, failed to start, or had Shutdown called. A Server is not restartable;
+// construct a new one.
 var ErrStopped = errors.New("maniflex: server has stopped")
 
 // ErrRegistrationClosed is returned when a route or specification contributor
@@ -43,6 +43,8 @@ const (
 	serverNew serverState = iota
 	serverStarting
 	serverRunning
+	serverServicesStarting
+	serverServicesRunning
 	serverStopping
 	serverStopped
 	serverFailed
@@ -79,17 +81,14 @@ type Server struct {
 	rollups      []compiledRollup    // maintained aggregate columns (set via RegisterRollup)
 	lifecycle    *lifecycle          // supervised services + Server.Go goroutines
 
-	// mu guards the four fields below — the only Server state mutated after
-	// construction, and the only state three different goroutines reach for:
-	// Start (conventionally its own), Handler (a test's, an embedding mux's), and
-	// Shutdown (a signal handler's). Registration is single-threaded by contract
-	// and needs no lock.
+	// mu guards listener ownership, router construction, registration sealing,
+	// and both the listener-owning and embedded lifecycle states.
 	mu      sync.Mutex
 	router  http.Handler // built exactly once, on the first Handler() or Start()
 	httpSrv *http.Server // published by StartWithContext just before the listener opens
-	state   serverState  // new -> starting -> running -> stopping -> stopped/failed
+	state   serverState
 
-	exited   chan struct{} // closed when StartWithContext returns; see markExited
+	exited   chan struct{} // closed when the accepted startup entrypoint returns
 	exitOnce sync.Once
 }
 
@@ -198,7 +197,7 @@ func (c *Server) MustRegister(args ...any) {
 // before the HTTP listener opens, and stop in reverse order during graceful
 // shutdown (before the background-goroutine drain). A Start error aborts boot.
 //
-// Must be called before Start/StartWithContext.
+// Must be called before Start, StartWithContext, or StartServices.
 //
 //	server.AddService(pool)                          // a custom Service
 //	server.AddService(maniflex.ServiceFunc(startFn)) // adapter for a bare func
@@ -259,6 +258,48 @@ func (c *Server) Start() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return c.StartWithContext(ctx)
+}
+
+// StartServices starts the application lifecycle without opening an HTTP
+// listener. It is the embedded-server counterpart to Start: it validates and
+// seals the router, runs OnStart, then starts registered services in order.
+//
+// Handler does not migrate. An embedding application that uses framework
+// migration should call MigrateOnly before StartServices, then mount Handler in
+// its own http.Server. During shutdown, stop the owner http.Server first so no
+// request can add background work, then call Server.Shutdown to stop services
+// and drain Server.Go and ctx.GoBackground work.
+//
+// Only one startup mode may own a Server. Calls while Start, StartWithContext,
+// or StartServices is active return ErrAlreadyStarted; calls after shutdown or
+// a failed startup return ErrStopped.
+func (c *Server) StartServices() error {
+	if err := c.beginServicesStart(); err != nil {
+		return err
+	}
+	defer c.markExited()
+
+	if _, err := c.handler(); err != nil {
+		c.abortGoroutines()
+		c.finishServicesStart(err)
+		return err
+	}
+	if err := c.lifecycle.start(&c.cfg); err != nil {
+		c.abortGoroutines()
+		c.finishServicesStart(err)
+		return err
+	}
+	if c.publishServices() {
+		return nil
+	}
+
+	// Shutdown arrived while a service was starting. Startup owns teardown so
+	// Shutdown cannot stop underneath a Service.Start still bringing work up.
+	stopCtx, cancel := context.WithTimeout(context.Background(), c.cfg.ShutdownTimeout)
+	c.stopAndDrain(stopCtx)
+	cancel()
+	c.finishServicesStart(nil)
+	return nil
 }
 
 // MigrateOnly runs auto-migration (if enabled in Config) and returns without
@@ -496,10 +537,44 @@ func (c *Server) beginStart() error {
 	case serverNew:
 		c.state = serverStarting
 		return nil
-	case serverStarting, serverRunning:
+	case serverStarting, serverRunning, serverServicesStarting, serverServicesRunning:
 		return ErrAlreadyStarted
 	default:
 		return ErrStopped
+	}
+}
+
+func (c *Server) beginServicesStart() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch c.state {
+	case serverNew:
+		c.state = serverServicesStarting
+		return nil
+	case serverStarting, serverRunning, serverServicesStarting, serverServicesRunning:
+		return ErrAlreadyStarted
+	default:
+		return ErrStopped
+	}
+}
+
+func (c *Server) publishServices() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != serverServicesStarting {
+		return false
+	}
+	c.state = serverServicesRunning
+	return true
+}
+
+func (c *Server) finishServicesStart(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err != nil {
+		c.state = serverFailed
+	} else {
+		c.state = serverStopped
 	}
 }
 
@@ -508,7 +583,8 @@ func (c *Server) beginStart() error {
 func (c *Server) markStopping() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.state == serverStarting || c.state == serverRunning {
+	if c.state == serverStarting || c.state == serverRunning ||
+		c.state == serverServicesStarting || c.state == serverServicesRunning {
 		c.state = serverStopping
 	}
 }
@@ -525,9 +601,8 @@ func (c *Server) finishStart(err error) {
 	}
 }
 
-// markExited releases a Shutdown that is waiting on a boot to finish tearing
-// itself down. It runs on every exit from StartWithContext, so the wait ends even
-// when boot failed instead of countermanding.
+// markExited releases a Shutdown waiting for StartWithContext or StartServices
+// to finish bringing work up or tearing it back down.
 func (c *Server) markExited() {
 	c.exitOnce.Do(func() { close(c.exited) })
 }
@@ -632,6 +707,21 @@ func (c *Server) stopAndDrain(ctx context.Context) {
 	}
 }
 
+// cancelAndDrain shuts down framework goroutines when the application
+// lifecycle itself was never started, as in a Handler-only embedding. It must
+// not call Service.Stop or OnShutdown because their matching start phases did
+// not run.
+func (c *Server) cancelAndDrain(ctx context.Context, reason string) {
+	c.lifecycle.cancel()
+	if !c.lifecycle.drain(ctx) {
+		c.cfg.logger().Warn("[maniflex] " + reason + ": Server.Go goroutines did not complete")
+	}
+	if dropped := c.steps.bg.Wait(ctx); dropped > 0 {
+		c.cfg.logger().Warn("[maniflex] "+reason+": background writes did not complete",
+			slog.Int64("in_flight", dropped))
+	}
+}
+
 // abortGoroutines tears down after a boot that failed before any service came up
 // — a failed migration, or a service whose Start returned an error (lifecycle.start
 // has already rolled back the ones before it, in its own window).
@@ -656,10 +746,12 @@ func (c *Server) abortGoroutines() {
 	}
 }
 
-// Shutdown initiates a graceful shutdown of the running server and waits for
-// in-flight requests AND tracked background goroutines (audit writes, cache
-// invalidations) to complete, bounded by the provided context. If the server was
-// never started, Shutdown is a no-op.
+// Shutdown initiates a graceful shutdown bounded by the provided context. When
+// Maniflex owns the listener it waits for in-flight requests and tracked
+// background goroutines (audit writes, cache invalidations). An embedding must
+// first drain its own http.Server; Shutdown then drains framework goroutines
+// without running services or hooks that were never started. Call StartServices
+// to opt an embedded server into those lifecycle phases.
 //
 // It is safe to call from another goroutine at any point in the server's life,
 // including while it is still booting — the usual shape in a test:
@@ -681,25 +773,43 @@ func (c *Server) Shutdown(ctx context.Context) error {
 	c.mu.Lock()
 	srv := c.httpSrv
 	booting := false
+	stopLifecycle := false
+	drainOnly := false
 	switch c.state {
 	case serverNew:
 		c.state = serverStopped
-		c.mu.Unlock()
-		return nil
+		drainOnly = true
 	case serverStarting:
 		c.state = serverStopping
 		booting = true
 	case serverRunning:
 		c.state = serverStopping
+	case serverServicesStarting:
+		c.state = serverStopping
+		booting = true
+	case serverServicesRunning:
+		c.state = serverStopping
+		stopLifecycle = true
 	case serverStopping:
-		booting = srv == nil
+		if srv == nil {
+			select {
+			case <-c.exited:
+				stopLifecycle = true
+			default:
+				booting = true
+			}
+		}
 	case serverStopped, serverFailed:
 		c.mu.Unlock()
 		return nil
 	}
 	c.mu.Unlock()
 
-	if srv != nil {
+	if drainOnly {
+		c.cancelAndDrain(ctx, "shutdown")
+		return nil
+	}
+	if srv != nil || stopLifecycle {
 		err := c.gracefulShutdown(ctx)
 		c.mu.Lock()
 		if err != nil {
@@ -731,6 +841,10 @@ func (c *Server) Shutdown(ctx context.Context) error {
 //
 // Unlike Start, Handler does NOT run auto-migration — call Start, MigrateOnly,
 // or the adapter's AutoMigrate first, or requests will fail against missing tables.
+//
+// Handler also does not start registered services or OnStart. Embeddings that
+// use them must call StartServices before serving and call Shutdown after their
+// owning http.Server has drained.
 //
 // The router is built on the first call and reused thereafter. Concurrent callers
 // block until it is built rather than each building one of their own: the build

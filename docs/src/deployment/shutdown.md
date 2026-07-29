@@ -23,10 +23,43 @@ If the deadline passes with requests still running, the underlying TCP
 connections are closed — those requests fail mid-flight but the process exits
 cleanly.
 
-> **Step 5 needs a *started* server.** `Shutdown` returns early on a server that
-> was only ever used through `Handler()` (embedded in your own mux), because it
-> was never started. Nothing is drained in that case — drive shutdown from
-> whatever owns the listener, and call `Close()` on any event bus yourself.
+## Embedding `Handler()` in your own server
+
+An embedding owns the HTTP listener, while Maniflex still owns its registered
+services, `Server.Go` loops, and request background work. Start and stop those
+two halves explicitly:
+
+```go
+if err := server.MigrateOnly(ctx); err != nil {
+    log.Fatal(err)
+}
+if err := server.StartServices(); err != nil {
+    log.Fatal(err)
+}
+
+httpServer := &http.Server{
+    Addr:    ":8080",
+    Handler: server.Handler(),
+}
+go httpServer.ListenAndServe()
+
+// On termination, stop requests first so none can add new background work.
+shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+_ = httpServer.Shutdown(shutdownCtx)
+_ = server.Shutdown(shutdownCtx)
+```
+
+`StartServices` validates and seals the router, runs `OnStart`, and starts
+services in registration order, but does not migrate or open a listener.
+`Server.Shutdown` then stops those services in reverse order, runs
+`OnShutdown`, cancels `Server.Go`, and drains both application and request
+background work.
+
+An embedding with no services or lifecycle hooks may omit `StartServices`.
+It must still call `Server.Shutdown` after its own `http.Server.Shutdown`;
+Maniflex will cancel and drain `Server.Go` and `ctx.GoBackground` work without
+running lifecycle phases that never started.
 
 ## Event buses
 
@@ -86,17 +119,18 @@ who wins. A `Shutdown` that lands while the server is still booting (migrating,
 or waiting on a service that dials its backend) **countermands** the boot: the
 listener is never opened, `Start` unwinds whatever it had already brought up and
 returns `nil`, and `Shutdown` waits for that to finish before returning. On a
-server that was never started at all, it does nothing.
+server that never started services or a listener, it still cancels and drains
+any `Server.Go` and request background work before returning.
 
 `Shutdown` is terminal rather than a pause: a server that has been shut down will
 not open a listener afterwards. `Start` following `Shutdown` returns
 `maniflex.ErrStopped`. A `Server` is not restartable — build a new one.
 
-Only one caller may own startup. A second `Start` or `StartWithContext` while the
-server is starting or running returns `maniflex.ErrAlreadyStarted`; it does not
-repeat validation, migration, service startup, or listener publication. Once the
-accepted start exits—cleanly or with a boot failure—later starts return
-`maniflex.ErrStopped`. Both errors support `errors.Is`.
+Only one caller may own startup. A second `Start`, `StartWithContext`, or
+`StartServices` while a startup mode is active returns
+`maniflex.ErrAlreadyStarted`; it does not repeat validation, migration, service
+startup, or listener publication. After shutdown or a startup failure, later
+startup calls return `maniflex.ErrStopped`. Both errors support `errors.Is`.
 
 ## Background writes
 
@@ -131,12 +165,12 @@ server.AddService(pool)                          // a custom Service
 server.AddService(maniflex.ServiceFunc(startFn)) // adapter for a bare start func
 ```
 
-`AddService` must be called before `Start` — it panics once `Start` has been
-entered, including while the server is still migrating or bringing earlier
-services up. Boot fixes the service list when it begins, so a service registered
-after that point would never be started, and a panic is a better answer than a
-component that silently never runs. The same applies to `Action`, `RealtimeDoc`
-and `EnableGlobalSearch`, which fix the routing table.
+`AddService` must be called before `Start` or `StartServices` — it panics once
+either startup path has been entered, including while earlier services are
+still starting. Startup fixes the service list when it begins, so a service
+registered after that point would never be started, and a panic is a better
+answer than a component that silently never runs. The same applies to `Action`,
+`RealtimeDoc` and `EnableGlobalSearch`, which fix the routing table.
 
 For app-scoped fire-and-forget work (e.g. a periodic reconciler) that doesn't
 need an ordered `Stop`, use `server.Go`. Its context is cancelled when shutdown
@@ -161,8 +195,10 @@ Callers that want a hook without defining a `Service` type can set the
 lightweight `Config.OnStart` / `Config.OnShutdown` functions.
 
 **Boot order:** `migrate → OnStart → Service.Start (registration order) →
-listen`. A `Start` (or `OnStart`) error aborts boot exactly like a failed
-migration; services that already started are stopped in reverse first.
+listen`. The embedded sequence performs migration explicitly, then
+`StartServices` runs `OnStart → Service.Start`; the caller opens its listener.
+A `StartServices`, `Start`, or `OnStart` error aborts startup; services that
+already started are stopped in reverse first.
 
 **A failed boot still tears down.** Whatever boot managed to bring up is put back
 down before `Start` returns the error — including the `server.Go` loops, which

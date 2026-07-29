@@ -701,11 +701,11 @@ type Config struct {
 	//   # → set HealthTimeout to 3s so 503 arrives before 5s probe timeout
 	HealthTimeout time.Duration
 
-	// OnStart is a lightweight lifecycle hook run once during boot, after
-	// migration and DB-ready but before the HTTP listener opens — the same slot
-	// as Service.Start, and ahead of any registered services. A non-nil error
-	// aborts boot exactly like a failed migration. The ctx is cancelled when
-	// shutdown begins.
+	// OnStart is a lightweight lifecycle hook run once during Start or
+	// StartServices. In the normal Start path it runs after migration and
+	// DB-ready but before the HTTP listener opens — the same slot as
+	// Service.Start, and ahead of any registered services. A non-nil error
+	// aborts boot. The ctx is cancelled when shutdown begins.
 	//
 	// Use it for callers that want a start hook without defining a Service type;
 	// for components that also need an ordered Stop, register a Service instead.

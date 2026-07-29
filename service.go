@@ -11,7 +11,7 @@ import (
 // by the Server: a poller, cache warmer, queue consumer, or an in-memory pool
 // manager. Register one with Server.AddService and the framework wires it into
 // the boot and shutdown lifecycle instead of the caller hand-supervising it
-// around Start.
+// around Start or StartServices.
 //
 // Boot order:    migrate → OnStart → Service.Start (registration order) → listen.
 // Shutdown order: http.Shutdown → Service.Stop (reverse order) → OnShutdown →
@@ -20,9 +20,10 @@ import (
 //
 // All of shutdown is bounded by Config.ShutdownTimeout.
 type Service interface {
-	// Start is called once, after migration and DB-ready, before the HTTP
-	// listener opens. It must return promptly — spawn any long-running loop on
-	// its own goroutine (or via Server.Go) rather than blocking here. The ctx
+	// Start is called once after migration and DB-ready in the normal Start
+	// path, or when an embedding calls StartServices after its own readiness
+	// step. It must return promptly — spawn any long-running loop on its own
+	// goroutine (or via Server.Go) rather than blocking here. The ctx
 	// is cancelled when shutdown begins, so a loop that selects on ctx.Done()
 	// winds itself down without waiting for Stop.
 	//

@@ -2,6 +2,7 @@
 
 ## v0.4.1 (unreleased)
 
+- **Bugfix:** embedded `Handler` deployments can now use `StartServices` plus `Shutdown` to supervise services and hooks, while Handler-only shutdown cancels and drains `Server.Go` and request background work without owning the caller's HTTP listener.
 - **Bugfix:** model, middleware, and other route/spec registration now closes atomically when `Handler` or `Start` seals the server; late `Register` calls return `ErrRegistrationClosed` without mutating the registry.
 - **Bugfix:** `Server.Start`/`StartWithContext` now atomically admit one lifecycle owner: active duplicate starts return `ErrAlreadyStarted`, and attempts after shutdown or failed boot return `ErrStopped` instead of rerunning migration, services, and listener publication.
 - **Bugfix:** `time.Time` cursor pagination no longer skips rows on SQLite: versioned cursor tokens now carry typed, fixed-width canonical timestamps matching database bindings, while legacy tokens remain accepted and are normalized against cursor-field metadata.

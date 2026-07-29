@@ -1,10 +1,14 @@
 package maniflex
 
 import (
+	"context"
 	"mime"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // TestSanitizeFilename pins the stricter rules introduced for roadmap §11C.2.
@@ -42,6 +46,77 @@ func TestSanitizeFilename_TruncatesLongNames(t *testing.T) {
 	got := sanitizeFilename(long)
 	if len(got) != maxFilenameLen {
 		t.Errorf("got length %d, want %d", len(got), maxFilenameLen)
+	}
+}
+
+func TestDecodeWildcardFileKeyDecodesExactlyOnce(t *testing.T) {
+	t.Parallel()
+
+	request := func(path, rawPath, wildcard string) *http.Request {
+		req := httptest.NewRequest("GET", "/files/test", nil)
+		req.URL.Path = path
+		req.URL.RawPath = rawPath
+		rctx := chi.NewRouteContext()
+		rctx.URLParams.Add("*", wildcard)
+		return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	}
+
+	for _, tc := range []struct {
+		name     string
+		path     string
+		rawPath  string
+		wildcard string
+		want     string
+		wantErr  bool
+	}{
+		{
+			name:     "ordinary wildcard is already decoded",
+			path:     "/files/report final.txt",
+			wildcard: "report final.txt",
+			want:     "report final.txt",
+		},
+		{
+			name:     "literal percent escape is not decoded twice",
+			path:     "/files/literal%2Fname.txt",
+			wildcard: "literal%2Fname.txt",
+			want:     "literal%2Fname.txt",
+		},
+		{
+			name:     "raw encoded slash is decoded",
+			path:     "/files/folder/name.txt",
+			rawPath:  "/files/folder%2Fname.txt",
+			wildcard: "folder%2Fname.txt",
+			want:     "folder/name.txt",
+		},
+		{
+			name:     "plus uses path not query semantics",
+			path:     "/files/a+b.txt",
+			rawPath:  "/files/a+b.txt",
+			wildcard: "a+b.txt",
+			want:     "a+b.txt",
+		},
+		{
+			name:     "malformed raw escape is rejected",
+			path:     "/files/bad",
+			rawPath:  "/files/bad%zz",
+			wildcard: "bad%zz",
+			wantErr:  true,
+		},
+		{
+			name:    "missing wildcard is rejected",
+			path:    "/files/",
+			wantErr: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := decodeWildcardFileKey(request(tc.path, tc.rawPath, tc.wildcard))
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("decode error = %v, wantErr %v", err, tc.wantErr)
+			}
+			if got != tc.want {
+				t.Errorf("decoded key = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

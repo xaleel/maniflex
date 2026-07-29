@@ -22,6 +22,31 @@ type fileHandlers struct {
 	config FilesConfig
 }
 
+var errMissingFileKey = errors.New("file key is required")
+
+// decodeWildcardFileKey returns the storage key captured by /files/*.
+//
+// net/http normally decodes URL.Path before Chi sees it. When an encoded slash
+// (or another non-canonical path escape) requires URL.RawPath, Chi deliberately
+// routes on that escaped form instead. Decode only in that case so every key is
+// decoded exactly once: unconditional unescaping would turn a literal "%2F"
+// key segment into "/", while QueryUnescape would incorrectly turn "+" into a
+// space.
+func decodeWildcardFileKey(r *http.Request) (string, error) {
+	key := chi.URLParam(r, "*")
+	if key == "" {
+		return "", errMissingFileKey
+	}
+	if r.URL == nil || r.URL.RawPath == "" {
+		return key, nil
+	}
+	decoded, err := url.PathUnescape(key)
+	if err != nil {
+		return "", fmt.Errorf("decode file key: %w", err)
+	}
+	return decoded, nil
+}
+
 func DefaultKeyGen(_ *ServerContext, header *multipart.FileHeader) string {
 	return fmt.Sprintf("uploads/%s/%s", uuid.New().String(),
 		sanitizeFilename(header.Filename))
@@ -155,20 +180,19 @@ func (fh *fileHandlers) Serve(ctx *ServerContext) http.HandlerFunc {
 			return
 		}
 
-		key := chi.URLParam(r, "*")
-		if key == "" {
+		key, err := decodeWildcardFileKey(r)
+		if errors.Is(err, errMissingFileKey) {
 			writeJSONError(w, http.StatusBadRequest, "MISSING_KEY",
 				"file key is required")
 			return
 		}
-		uriDecoded, err := url.QueryUnescape(key)
 		if err != nil {
 			writeJSONError(w, http.StatusBadRequest, "DECODE_ERROR",
 				"Failed to unescape URI encoded key")
 			return
 		}
 
-		if ferr := serveStoredFile(r.Context(), w, r, fh.config.Storage, uriDecoded); ferr != nil {
+		if ferr := serveStoredFile(r.Context(), w, r, fh.config.Storage, key); ferr != nil {
 			ctx.logServerError(ferr.Status, ferr.Code, ferr.Message)
 			writeJSONError(w, ferr.Status, ferr.Code, ferr.Message)
 		}
@@ -260,10 +284,15 @@ func (fh *fileHandlers) Delete(ctx *ServerContext) http.HandlerFunc {
 			return
 		}
 
-		key := chi.URLParam(r, "*")
-		if key == "" {
+		key, err := decodeWildcardFileKey(r)
+		if errors.Is(err, errMissingFileKey) {
 			writeJSONError(w, http.StatusBadRequest, "MISSING_KEY",
 				"file key is required")
+			return
+		}
+		if err != nil {
+			writeJSONError(w, http.StatusBadRequest, "DECODE_ERROR",
+				"Failed to unescape URI encoded key")
 			return
 		}
 

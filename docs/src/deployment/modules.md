@@ -42,6 +42,7 @@ middleware/
 
 examples/                    # runnable example apps — its own module
 tests/                       # e2e suite — its own module
+maniflextest/                # supported consumer integration-test harness
 ```
 
 ## Why split modules
@@ -68,6 +69,7 @@ go get github.com/xaleel/maniflex                 # core
 go get github.com/xaleel/maniflex/db/sqlite       # SQLite adapter
 go get github.com/xaleel/maniflex/middleware/auth # auth helpers
 go get github.com/xaleel/maniflex/events/kafka    # Kafka publisher
+go get github.com/xaleel/maniflex/maniflextest    # application test harness
 ```
 
 In code:

@@ -1,251 +1,168 @@
 # 9. Testing the API
 
-A useful test suite for a maniflex app exercises the HTTP layer, not just the
-database. The framework is built on `net/http`, so the standard
-`httptest.Server` is enough — start an in-memory SQLite, register everything,
-hit the routes, assert on responses.
-
-## A test harness
-
-`tests/setup.go`:
-
-```go
-package tests
-
-import (
-    "context"
-    "log"
-    "net/http/httptest"
-
-    "github.com/xaleel/maniflex"
-    "github.com/xaleel/maniflex/db/sqlite"
-
-    "bookstore/middleware"
-    "bookstore/models"
-)
-
-// newTestServer returns a running httptest.Server backed by an in-memory
-// SQLite. Each test gets a fresh database.
-func newTestServer(t *testing.T) (*httptest.Server, *maniflex.Server) {
-    t.Helper()
-
-    server := maniflex.New(maniflex.Config{
-        Port:        0,
-        PathPrefix:  "/api",
-    })
-
-    server.MustRegister(
-        models.User{}, models.Author{}, models.Genre{},
-        models.Book{}, models.BookGenre{}, models.Review{},
-        models.Order{}, models.OrderLine{}, models.OutboxEvent{},
-    )
-
-    db, err := sqlite.Open(":memory:", server.Registry())
-    if err != nil {
-        t.Fatal(err)
-    }
-    t.Cleanup(func() { db.Close() })
-    server.SetDB(db)
-
-    middleware.Register(server)
-
-    // Handler() does NOT migrate — only Start() does, and tests mount Handler()
-    // directly. MigrateOnly validates the complete app, seals registration,
-    // runs the migration, and honours AutoMigrate.
-    if err := server.MigrateOnly(context.Background()); err != nil {
-        t.Fatal(err)
-    }
-
-    ts := httptest.NewServer(server.Handler())
-    t.Cleanup(ts.Close)
-    return ts, server
-}
-```
-
-Three notes:
-
-- **`:memory:`** opens an in-memory SQLite database. There is no file to
-  clean up; closing the connection discards it.
-- **`server.MigrateOnly(...)`** validates the assembled app and creates the
-  tables. It seals model, route, and middleware registration, so finish all
-  setup before calling it. `server.Handler()` returns the already validated
-  router but does **not** migrate on its own.
-- **`server.Handler()`** returns the chi router — `httptest.NewServer`
-  wraps it and serves requests in-process.
-
-A small JSON helper keeps tests readable:
-
-```go
-func do(t *testing.T, ts *httptest.Server, method, path, token string, body any) (int, map[string]any) {
-    t.Helper()
-    var rdr io.Reader
-    if body != nil {
-        b, _ := json.Marshal(body)
-        rdr = bytes.NewReader(b)
-    }
-    req, _ := http.NewRequest(method, ts.URL+path, rdr)
-    if token != "" {
-        req.Header.Set("Authorization", "Bearer "+token)
-    }
-    req.Header.Set("Content-Type", "application/json")
-    resp, err := ts.Client().Do(req)
-    if err != nil {
-        t.Fatal(err)
-    }
-    defer resp.Body.Close()
-    var out map[string]any
-    json.NewDecoder(resp.Body).Decode(&out)
-    return resp.StatusCode, out
-}
-```
-
-## Happy-path sign-up + login
-
-```go
-func TestSignupAndLogin(t *testing.T) {
-    ts, _ := newTestServer(t)
-
-    code, body := do(t, ts, "POST", "/api/users", "", map[string]any{
-        "email":    "alice@example.com",
-        "password": "hunter22!",
-        "name":     "Alice",
-    })
-    if code != 201 {
-        t.Fatalf("signup: %d %v", code, body)
-    }
-
-    code, body = do(t, ts, "POST", "/api/auth/login", "", map[string]any{
-        "email":    "alice@example.com",
-        "password": "hunter22!",
-    })
-    if code != 200 || body["data"].(map[string]any)["token"] == "" {
-        t.Fatalf("login: %d %v", code, body)
-    }
-}
-```
-
-A new in-memory database for each `t.Run` keeps the tests isolated; nothing
-to truncate, nothing to seed beyond the test's own writes.
-
-## Validation failures
-
-The exact response shape matters because clients depend on it. Pin it down:
-
-```go
-func TestInvalidEmail(t *testing.T) {
-    ts, _ := newTestServer(t)
-    code, body := do(t, ts, "POST", "/api/users", "", map[string]any{
-        "password": "hunter22!",
-        "name":     "Alice",
-        // email missing
-    })
-    if code != 422 {
-        t.Fatalf("got %d, want 422", code)
-    }
-    if body["error"].(map[string]any)["code"] != "VALIDATION_ERROR" {
-        t.Fatalf("code = %v", body["error"])
-    }
-}
-```
-
-## Stock contention
-
-The order-placement transaction is the most interesting code path. The
-test starts two goroutines that race for the last unit:
-
-```go
-func TestStockContention(t *testing.T) {
-    ts, _ := newTestServer(t)
-    tok, bookID := seedOneBookOneCustomer(t, ts, 1) // stock = 1
-
-    var wg sync.WaitGroup
-    results := make([]int, 2)
-
-    for i := range results {
-        wg.Add(1)
-        go func(i int) {
-            defer wg.Done()
-            results[i], _ = do(t, ts, "POST", "/api/orders/place", tok, map[string]any{
-                "lines": []map[string]any{{"book_id": bookID, "quantity": 1}},
-            })
-        }(i)
-    }
-    wg.Wait()
-
-    // Exactly one 201 Created, exactly one 409 Conflict.
-    sort.Ints(results)
-    if results[0] != 201 || results[1] != 409 {
-        t.Fatalf("expected one 201 and one 409, got %v", results)
-    }
-}
-```
-
-`LockForUpdate` ensures only one of the two transactions wins; the other
-sees the decremented stock and aborts with `OUT_OF_STOCK`.
-
-## Worker tests
-
-The background worker is plain Go. Inject a stub mailer and assert on it:
-
-```go
-func TestOutboxWorker(t *testing.T) {
-    ts, server := newTestServer(t)
-    tok, bookID := seedOneBookOneCustomer(t, ts, 5)
-
-    // Place an order — should write an outbox row.
-    do(t, ts, "POST", "/api/orders/place", tok, map[string]any{
-        "lines": []map[string]any{{"book_id": bookID, "quantity": 1}},
-    })
-
-    stub := &captureMailer{}
-    ctx, cancel := context.WithCancel(context.Background())
-    defer cancel()
-    go jobs.RunOutboxOnce(ctx, server, stub) // single iteration
-
-    // Give the worker a moment.
-    if !waitFor(time.Second, func() bool { return len(stub.Sent) == 1 }) {
-        t.Fatalf("expected 1 email, got %d", len(stub.Sent))
-    }
-    if stub.Sent[0].Subject != "Thank you for your order" {
-        t.Fatalf("wrong subject: %q", stub.Sent[0].Subject)
-    }
-}
-```
-
-Run worker logic in a one-shot variant (`RunOutboxOnce`) for testability —
-or accept a `context.Context` and cancel it after the assertions pass. Both
-patterns avoid `time.Sleep` in tests.
-
-## The framework's own test suite
-
-The framework ships an end-to-end suite under `tests/e2e/`. It is the
-canonical reference for what a thorough maniflex test looks like — every step
-of the pipeline, every adapter, every middleware option. Run it with:
+A useful test suite for a Maniflex app exercises the HTTP layer, not just the
+database. The supported `maniflextest` module starts a real HTTP server,
+migrates a fresh in-memory SQLite database, and registers all cleanup with the
+test:
 
 ```bash
-go test ./tests/e2e/...
+go get github.com/xaleel/maniflex/maniflextest
 ```
 
-…and look at the test files for patterns you can lift into your own suite.
+## A test server
+
+The harness takes the same models and setup function as the application. Calls
+such as `POST("/widgets", ...)` are relative to the configured API prefix
+(`/api` by default).
+
+```go
+{{#include ../../../maniflextest/consumer_test.go:basic-harness}}
+```
+
+`maniflextest.New` completes the repetitive integration-test work:
+
+- registers the supplied models and application setup;
+- opens a unique in-memory SQLite database and runs `MigrateOnly`;
+- starts an `httptest.Server`;
+- shuts down services, drops test data, and closes the adapter automatically.
+
+Each call to `New` is isolated, including separate calls in nested `t.Run`
+tests. Use `server.App()` when a worker or background operation needs the
+underlying `*maniflex.Server`.
+
+## Test principals
+
+`maniflextest.As` injects a complete `maniflex.AuthInfo` before the
+application's Auth middleware runs:
+
+```go
+admin := maniflextest.Human("user-42", "admin")
+response := server.POST(
+    "/orders",
+    map[string]any{"book_id": bookID},
+    maniflextest.As(admin),
+)
+response.AssertStatus(http.StatusCreated)
+```
+
+Use `ServiceAccount(id, scopes...)` for machine callers. For tenant, claim, or
+session-specific tests, construct `maniflex.AuthInfo` directly and pass it to
+`As`.
+
+The injected principal is only a test transport; it is not production
+authentication. Set `DisableTestAuth: true` and use `maniflextest.Bearer` when
+testing a real JWT or API-key middleware end to end.
+
+## Typed responses
+
+Responses are buffered so status, headers, raw bytes, envelopes, and typed
+models can all be asserted:
+
+```go
+created := server.POST("/books", input).AssertStatus(http.StatusCreated)
+book := maniflextest.DecodeData[models.Book](created)
+
+books := maniflextest.DecodeDataList[models.Book](
+    server.GET("/books?sort=title").AssertStatus(http.StatusOK),
+)
+```
+
+For error paths, use `response.ErrorCode()`:
+
+```go
+response := server.POST("/users", map[string]any{"name": "Alice"})
+response.AssertStatus(http.StatusUnprocessableEntity)
+if code := response.ErrorCode(); code != "VALIDATION_ERROR" {
+    t.Fatalf("error code: got %q", code)
+}
+```
+
+## Fixtures and factories
+
+Fixtures are ordinary API creates, so they pass through validation, middleware,
+and hooks instead of inserting a database shape the application could never
+produce:
+
+```go
+fixtures := server.Seed(
+    maniflextest.Fixture{
+        Name: "alice",
+        Path: "/users",
+        Body: map[string]any{"name": "Alice", "email": "alice@example.com"},
+    },
+)
+aliceID := fixtures.ID(t, "alice")
+```
+
+Use a factory for repeated data:
+
+```go
+books := maniflextest.Factory(
+    "book",
+    "/books",
+    10,
+    func(i int) map[string]any {
+        return map[string]any{"title": fmt.Sprintf("Book %02d", i)}
+    },
+    maniflextest.As(maniflextest.Human("author-1")),
+)
+fixtures := server.Seed(books...)
+firstID := fixtures.ID(t, "book[0]")
+```
+
+Names are stable (`book[0]`, `book[1]`, and so on), making relationships easy
+to express without relying on insertion order or hard-coded IDs.
+
+## PostgreSQL-specific tests
+
+Most application behaviour should use the fast SQLite default. When SQL
+dialect, locking, or transaction semantics matter, give the harness a
+PostgreSQL DSN:
+
+```go
+server := maniflextest.New(t, maniflextest.Options{
+    Models:   appModels(),
+    Setup:    registerApplication,
+    Database: maniflextest.Postgres(os.Getenv("MANIFLEX_TEST_PG_DSN")),
+})
+```
+
+Every server receives a randomly named schema. Cleanup drops the entire schema,
+so tests do not share rows and there is no truncation list to maintain. The
+database user must be allowed to create and drop schemas.
+
+## Contention and workers
+
+For a contention test, create one harness server and send concurrent requests
+through it. Do not call `t.Fatal` from request goroutines; collect each
+response's `StatusCode` and assert from the test goroutine after they join.
+
+Set `StartServices: true` when the behaviour under test needs registered
+services or lifecycle hooks. Prefer a one-shot worker entry point where
+possible; otherwise make the worker accept a `context.Context` and stop it
+before the test returns. Harness cleanup calls `Server.Shutdown`, so framework
+background work is drained rather than abandoned.
+
+See [Testing Applications](../reference/testing.md) for the complete supported
+surface and customization points.
 
 ## Coverage strategy
 
-For a typical bookstore-shaped app, a useful test split:
+For a typical bookstore-shaped app, a useful split is:
 
-- **Per model**: happy-path create + read + update + delete.
-- **Per `mfx:` tag rule**: at least one negative test (`required`, `enum`,
-  `min`/`max`, `unique`).
-- **Per custom middleware**: at least one happy-path and one rejection.
-- **Per action**: happy path, a representative failure, and a contention
-  test.
-- **The outbox worker**: receives an event, processes it, marks it done.
+- per model: happy-path create, read, update, and delete;
+- per `mfx:` rule: at least one representative rejection;
+- per custom middleware: one accepted and one rejected request;
+- per action: a happy path, a representative failure, and any important
+  contention case;
+- per worker: one event is received, processed, and acknowledged.
 
-That covers the surface area without exploding into combinatorial tests of
-every filter operator and every relation include — those are exercised by
-the framework's own e2e suite, which you depend on transitively.
+The framework's own end-to-end suite covers adapter and query permutations.
+Application tests should concentrate on the policies and business behaviour
+the application adds.
 
 ## Next
 
 In **[Part 10 — Deploying to Production](10-deploy.md)** we swap SQLite for
-PostgreSQL, drive configuration from environment variables, enable the
-health probe, and produce a single binary suitable for a container image.
+PostgreSQL, drive configuration from environment variables, enable the health
+probe, and produce a single binary suitable for a container image.

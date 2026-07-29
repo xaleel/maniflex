@@ -3,7 +3,6 @@ package realtime_test
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 	"testing"
 	"time"
 
@@ -227,50 +226,13 @@ func TestWS_ServerHeartbeatPing(t *testing.T) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-// sseMessage is a decoded SSE frame including its id and event lines, which the
-// shared recvEvent helper discards.
-type sseMessage struct {
-	id    string
-	event string
-	data  map[string]any
-}
-
 func (c *sseClient) recvFull(d time.Duration) (sseMessage, bool) {
-	type result struct {
-		m  sseMessage
-		ok bool
-	}
-	ch := make(chan result, 1)
-	go func() {
-		var msg sseMessage
-		hasData := false
-		for c.sc.Scan() {
-			line := c.sc.Text()
-			if line == "" {
-				if hasData {
-					ch <- result{m: msg, ok: true}
-					return
-				}
-				continue
-			}
-			switch {
-			case strings.HasPrefix(line, "id: "):
-				msg.id = strings.TrimPrefix(line, "id: ")
-			case strings.HasPrefix(line, "event: "):
-				msg.event = strings.TrimPrefix(line, "event: ")
-			case strings.HasPrefix(line, "data: "):
-				var parsed map[string]any
-				json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &parsed) //nolint:errcheck
-				msg.data = parsed
-				hasData = true
-			}
-		}
-		ch <- result{}
-	}()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 	select {
-	case r := <-ch:
-		return r.m, r.ok
-	case <-time.After(d):
+	case msg, ok := <-c.frames:
+		return msg, ok
+	case <-timer.C:
 		return sseMessage{}, false
 	}
 }

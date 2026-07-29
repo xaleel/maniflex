@@ -99,6 +99,29 @@ func TestSSE_MultiplePatterns(t *testing.T) {
 	}
 }
 
+// ── SSE receive timeout ───────────────────────────────────────────────────────
+
+func TestSSE_ReceiveTimeoutDoesNotStealLaterEvent(t *testing.T) {
+	t.Parallel()
+	bus := inproc.New()
+	hub := mustHub(t, realtime.HubConfig{Bus: bus})
+	ts := newHubTestServer(t, hub)
+
+	c := dialSSE(t, ts, "/sse?subscribe=*")
+	if _, ok := c.recvEvent(25 * time.Millisecond); ok {
+		t.Fatal("unexpected event before publish")
+	}
+
+	publish(t, bus, "appointment.created", "appt/1")
+	msg, ok := c.recvEvent(2 * time.Second)
+	if !ok {
+		t.Fatal("SSE reader timed out after an earlier timeout stole the event")
+	}
+	if typ, _ := msg["type"].(string); typ != "appointment.created" {
+		t.Errorf("expected appointment.created, got %q", typ)
+	}
+}
+
 // ── SSE Content-Type and headers ──────────────────────────────────────────────
 
 func TestSSE_ResponseContentType(t *testing.T) {

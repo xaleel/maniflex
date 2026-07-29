@@ -395,13 +395,6 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.Header().Set("Cache-Control", "no-cache")
-		w.Header().Set("Connection", "keep-alive")
-		w.Header().Set("X-Accel-Buffering", "no")
-		w.WriteHeader(http.StatusOK)
-		flusher.Flush()
-
 		sc := &sseClient{
 			hub:        h,
 			w:          w,
@@ -427,6 +420,17 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 			h.connN.Add(-1)
 			h.wg.Done()
 		}()
+
+		// Register the client before committing the response. Once Flush makes
+		// the 200 visible, callers may immediately publish; sc must already be
+		// discoverable by fanout so those events queue instead of falling into
+		// the gap between a successful dial and client registration.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
+		flusher.Flush()
 
 		// Resume: replay events the client missed before entering the live
 		// loop. Registration above already queues live events into sc.out, but

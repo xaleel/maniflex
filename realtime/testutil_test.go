@@ -362,9 +362,18 @@ func (c *wsClient) closeGracefully() {
 
 // sseClient reads Server-Sent Events from a hub SSE endpoint.
 type sseClient struct {
-	t    *testing.T
-	resp *http.Response
-	sc   *bufio.Scanner
+	resp   *http.Response
+	frames chan sseMessage
+	done   chan struct{}
+}
+
+// sseMessage is one complete SSE frame. A single reader goroutine owns the
+// response scanner for the lifetime of the client and sends parsed frames here;
+// timed-out callers therefore cannot leave competing Scanner.Scan calls behind.
+type sseMessage struct {
+	id    string
+	event string
+	data  map[string]any
 }
 
 // dialSSE opens an SSE connection to path on ts. Subscribe patterns should be
@@ -401,8 +410,16 @@ func dialSSE(t *testing.T, ts *httptest.Server, path string, headers ...http.Hea
 		t.Fatalf("dialSSE: expected Content-Type text/event-stream, got %q", ct)
 	}
 
-	c := &sseClient{t: t, resp: resp, sc: bufio.NewScanner(resp.Body)}
-	t.Cleanup(func() { resp.Body.Close() })
+	c := &sseClient{
+		resp:   resp,
+		frames: make(chan sseMessage, 1),
+		done:   make(chan struct{}),
+	}
+	go c.readEvents()
+	t.Cleanup(func() {
+		close(c.done)
+		resp.Body.Close()
+	})
 	return c
 }
 
@@ -426,39 +443,51 @@ func dialSSEExpectStatus(t *testing.T, ts *httptest.Server, path string, headers
 	return resp.StatusCode
 }
 
+// readEvents is the sole owner of resp.Body and its scanner. It lives until the
+// response closes or test cleanup closes done, so recv timeouts only stop that
+// particular wait and never strand a goroutine that can steal a later event.
+func (c *sseClient) readEvents() {
+	defer close(c.frames)
+
+	sc := bufio.NewScanner(c.resp.Body)
+	var msg sseMessage
+	hasData := false
+	for sc.Scan() {
+		line := sc.Text()
+		if line == "" {
+			if !hasData {
+				continue
+			}
+			select {
+			case c.frames <- msg:
+			case <-c.done:
+				return
+			}
+			msg = sseMessage{}
+			hasData = false
+			continue
+		}
+		switch {
+		case strings.HasPrefix(line, "id: "):
+			msg.id = strings.TrimPrefix(line, "id: ")
+		case strings.HasPrefix(line, "event: "):
+			msg.event = strings.TrimPrefix(line, "event: ")
+		case strings.HasPrefix(line, "data: "):
+			json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &msg.data) //nolint:errcheck
+			hasData = true
+		}
+	}
+}
+
 // recvEvent reads the next SSE event within d. Returns (nil, false) on timeout.
 // The "data:" line is decoded as JSON into a map.
 func (c *sseClient) recvEvent(d time.Duration) (map[string]any, bool) {
-	type result struct {
-		msg map[string]any
-		ok  bool
-	}
-	ch := make(chan result, 1)
-
-	go func() {
-		var dataLine string
-		for c.sc.Scan() {
-			line := c.sc.Text()
-			if line == "" {
-				if dataLine != "" {
-					var msg map[string]any
-					json.Unmarshal([]byte(dataLine), &msg)
-					ch <- result{msg: msg, ok: msg != nil}
-					return
-				}
-				continue
-			}
-			if after, ok := strings.CutPrefix(line, "data: "); ok {
-				dataLine = after
-			}
-		}
-		ch <- result{}
-	}()
-
+	timer := time.NewTimer(d)
+	defer timer.Stop()
 	select {
-	case r := <-ch:
-		return r.msg, r.ok
-	case <-time.After(d):
+	case msg, ok := <-c.frames:
+		return msg.data, ok && msg.data != nil
+	case <-timer.C:
 		return nil, false
 	}
 }

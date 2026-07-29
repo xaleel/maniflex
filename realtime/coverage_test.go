@@ -240,9 +240,9 @@ func TestResume_ZeroCapacityDefaults(t *testing.T) {
 // ── Raw SSE reader (captures id: lines and comment lines) ──────────────────────
 
 type rawSSE struct {
-	t    *testing.T
-	resp *http.Response
-	sc   *bufio.Scanner
+	resp  *http.Response
+	lines chan string
+	done  chan struct{}
 }
 
 func openRawSSE(t *testing.T, ts *httptest.Server, path string, headers ...http.Header) *rawSSE {
@@ -264,30 +264,53 @@ func openRawSSE(t *testing.T, ts *httptest.Server, path string, headers ...http.
 		resp.Body.Close()
 		t.Fatalf("openRawSSE: want 200, got %d", resp.StatusCode)
 	}
-	t.Cleanup(func() { resp.Body.Close() })
-	return &rawSSE{t: t, resp: resp, sc: bufio.NewScanner(resp.Body)}
+	r := &rawSSE{
+		resp:  resp,
+		lines: make(chan string, 1),
+		done:  make(chan struct{}),
+	}
+	go r.readLines()
+	t.Cleanup(func() {
+		close(r.done)
+		resp.Body.Close()
+	})
+	return r
+}
+
+// readLines is the only goroutine that scans the response. next and waitLine
+// apply deadlines while receiving from lines, so timing out cannot leave an
+// abandoned scanner racing a subsequent call.
+func (r *rawSSE) readLines() {
+	defer close(r.lines)
+	sc := bufio.NewScanner(r.resp.Body)
+	for sc.Scan() {
+		select {
+		case r.lines <- sc.Text():
+		case <-r.done:
+			return
+		}
+	}
 }
 
 // next reads one SSE event, returning its id: and decoded data: within d.
 func (r *rawSSE) next(d time.Duration) (id string, data map[string]any, ok bool) {
-	type res struct {
-		id   string
-		data map[string]any
-		ok   bool
-	}
-	ch := make(chan res, 1)
-	go func() {
-		var curID, dataLine string
-		for r.sc.Scan() {
-			line := r.sc.Text()
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	var curID, dataLine string
+	for {
+		select {
+		case line, open := <-r.lines:
+			if !open {
+				return "", nil, false
+			}
 			if line == "" {
-				if dataLine != "" {
-					var m map[string]any
-					json.Unmarshal([]byte(dataLine), &m) //nolint:errcheck
-					ch <- res{curID, m, m != nil}
-					return
+				if dataLine == "" {
+					continue
 				}
-				continue
+				var m map[string]any
+				json.Unmarshal([]byte(dataLine), &m) //nolint:errcheck
+				return curID, m, m != nil
 			}
 			if after, ok := strings.CutPrefix(line, "id: "); ok {
 				curID = after
@@ -295,33 +318,28 @@ func (r *rawSSE) next(d time.Duration) (id string, data map[string]any, ok bool)
 			if after, ok := strings.CutPrefix(line, "data: "); ok {
 				dataLine = after
 			}
+		case <-timer.C:
+			return "", nil, false
 		}
-		ch <- res{}
-	}()
-	select {
-	case v := <-ch:
-		return v.id, v.data, v.ok
-	case <-time.After(d):
-		return "", nil, false
 	}
 }
 
 // waitLine reports whether a raw line containing substr arrives within d.
 func (r *rawSSE) waitLine(substr string, d time.Duration) bool {
-	ch := make(chan bool, 1)
-	go func() {
-		for r.sc.Scan() {
-			if strings.Contains(r.sc.Text(), substr) {
-				ch <- true
-				return
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	for {
+		select {
+		case line, open := <-r.lines:
+			if !open {
+				return false
 			}
+			if strings.Contains(line, substr) {
+				return true
+			}
+		case <-timer.C:
+			return false
 		}
-		ch <- false
-	}()
-	select {
-	case v := <-ch:
-		return v
-	case <-time.After(d):
-		return false
 	}
 }

@@ -60,7 +60,7 @@ func adminAdapter() (maniflex.DBAdapter, error) {
 	pgAdminOnce.Do(func() {
 		dsn := postgresDSN()
 		if dsn == "" {
-			pgAdminErr = fmt.Errorf("Postgres lane selected but no DSN configured")
+			pgAdminErr = fmt.Errorf("postgres lane selected but no DSN configured")
 			return
 		}
 		pub := publicSchema()

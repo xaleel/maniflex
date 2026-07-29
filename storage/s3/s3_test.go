@@ -11,7 +11,7 @@ import (
 	"time"
 
 	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
-	s3manager "github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
@@ -22,7 +22,7 @@ import (
 type fakeS3 struct {
 	objects map[string]fakeObject
 	// puts captures every Upload/PutObject call so tests can inspect inputs.
-	puts []*awss3.PutObjectInput
+	puts []*transfermanager.UploadObjectInput
 }
 
 type fakeObject struct {
@@ -34,7 +34,7 @@ type fakeObject struct {
 
 func newFake() *fakeS3 { return &fakeS3{objects: map[string]fakeObject{}} }
 
-func (f *fakeS3) Upload(_ context.Context, in *awss3.PutObjectInput, _ ...func(*s3manager.Uploader)) (*s3manager.UploadOutput, error) {
+func (f *fakeS3) UploadObject(_ context.Context, in *transfermanager.UploadObjectInput, _ ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error) {
 	body, err := io.ReadAll(in.Body)
 	if err != nil {
 		return nil, err
@@ -47,12 +47,7 @@ func (f *fakeS3) Upload(_ context.Context, in *awss3.PutObjectInput, _ ...func(*
 	f.objects[*in.Key] = o
 	cp := *in
 	f.puts = append(f.puts, &cp)
-	return &s3manager.UploadOutput{}, nil
-}
-
-func (f *fakeS3) PutObject(ctx context.Context, in *awss3.PutObjectInput, _ ...func(*awss3.Options)) (*awss3.PutObjectOutput, error) {
-	_, err := f.Upload(ctx, in)
-	return &awss3.PutObjectOutput{}, err
+	return &transfermanager.UploadObjectOutput{}, nil
 }
 
 func (f *fakeS3) GetObject(_ context.Context, in *awss3.GetObjectInput, _ ...func(*awss3.Options)) (*awss3.GetObjectOutput, error) {
@@ -127,7 +122,7 @@ func TestStoreRetrieveDelete_RoundTrip(t *testing.T) {
 
 	// Inspect what was sent to S3.
 	if len(fake.puts) != 1 {
-		t.Fatalf("expected 1 PutObject call, got %d", len(fake.puts))
+		t.Fatalf("expected 1 UploadObject call, got %d", len(fake.puts))
 	}
 	put := fake.puts[0]
 	if *put.Key != "docs/hello.txt" {
@@ -285,11 +280,11 @@ func TestMetadata_CaseInsensitiveLookup(t *testing.T) {
 
 func TestNormalisePrefix(t *testing.T) {
 	for in, want := range map[string]string{
-		"":          "",
-		"a":         "a/",
-		"a/":        "a/",
-		"a/b":       "a/b/",
-		"a/b///":    "a/b/",
+		"":       "",
+		"a":      "a/",
+		"a/":     "a/",
+		"a/b":    "a/b/",
+		"a/b///": "a/b/",
 	} {
 		if got := normalisePrefix(in); got != want {
 			t.Errorf("normalisePrefix(%q) = %q, want %q", in, got, want)

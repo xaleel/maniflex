@@ -103,8 +103,8 @@ func ReadAudit(sink ReadAuditSink) maniflex.MiddlewareFunc {
 }
 
 // extractIP returns the client IP from the request's RemoteAddr. When the
-// server trusts proxy headers (Config.TrustProxyHeaders), chi's RealIP
-// middleware has already rewritten RemoteAddr from X-Forwarded-For / X-Real-IP,
+// server trusts proxy headers (Config.TrustProxyHeaders), the router has already
+// rewritten RemoteAddr from X-Forwarded-For / X-Real-IP,
 // so the resolved client IP flows through here; otherwise RemoteAddr is the
 // direct TCP peer. extractIP deliberately does NOT read the forwarding headers
 // itself — trusting a client-supplied address even when proxy headers are

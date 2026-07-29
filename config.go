@@ -514,7 +514,7 @@ type Config struct {
 	MaxConcurrentExports int
 
 	// TrustProxyHeaders controls whether the client IP is derived from the
-	// X-Forwarded-For / X-Real-IP request headers (via chi's RealIP middleware).
+	// X-Forwarded-For / X-Real-IP request headers.
 	// It is OFF by default: RemoteAddr stays the real TCP peer, so a client
 	// cannot forge its own address.
 	//
@@ -525,8 +525,8 @@ type Config struct {
 	//
 	// Enable it ONLY when the server sits behind a trusted reverse proxy or load
 	// balancer that (a) sets X-Forwarded-For to the real client and (b) strips any
-	// inbound XFF sent by the client. Turning it on while directly internet-facing
-	// lets an attacker spoof its address with an X-Forwarded-For header, defeating
+	// inbound X-Forwarded-For and X-Real-IP values sent by the client. Turning it on
+	// while directly internet-facing lets an attacker spoof its address, defeating
 	// per-IP rate limits and poisoning audit logs (SEC-5).
 	TrustProxyHeaders bool
 

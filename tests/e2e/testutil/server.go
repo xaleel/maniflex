@@ -78,7 +78,7 @@ type Options struct {
 	FilesConfig *maniflex.FilesConfig
 	// KeyProvider sets the encryption key provider for mfx:"encrypted" fields.
 	KeyProvider maniflex.KeyProvider
-	// TrustProxyHeaders sets Config.TrustProxyHeaders — when true, chi's RealIP
+	// TrustProxyHeaders sets Config.TrustProxyHeaders — when true, the router
 	// derives RemoteAddr from X-Forwarded-For / X-Real-IP. Off by default.
 	TrustProxyHeaders bool
 	// Config, when non-nil, is handed the assembled maniflex.Config just before

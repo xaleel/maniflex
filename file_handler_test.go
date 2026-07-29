@@ -182,7 +182,7 @@ func TestSanitizeFilename_StripsLeadingDotsFromHostileNames(t *testing.T) {
 	cases := []string{
 		"....htaccess",
 		". .start",
-		"..​.start",
+		"..\u200b.start",
 	}
 	for _, in := range cases {
 		got := sanitizeFilename(in)

@@ -249,9 +249,9 @@ preflight already returned `204 No Content` before this pipeline began.
 
 chi's RequestID middleware (registered at the router root, outside the maniflex
 pipeline) wraps the whole exchange — it has already set `X-Request-Id` on the
-response by the time we get here. chi's RealIP is registered alongside it only
-when `Config.TrustProxyHeaders` is set, so `RemoteAddr` reflects the forwarded
-client IP just for servers that opted into trusting proxy headers.
+response by the time we get here. Maniflex's trusted-proxy resolver is registered
+alongside it only when `Config.TrustProxyHeaders` is set, so `RemoteAddr` reflects
+the forwarded client IP just for servers that opted into trusting proxy headers.
 
 ## The dispatch cleanup
 

@@ -2,6 +2,7 @@
 
 ## v0.4.2 (unreleased)
 
+- **Maintenance:** cleared the Staticcheck baseline by replacing deprecated Chi `RealIP` and AWS S3 uploader usage and resolving the remaining test findings.
 - **Feature:** `BaseModel.CreatedAt` is now filterable through the generated list endpoints, in addition to being sortable.
 - **Developer experience (breaking):** `response.Logging` and `response.Metrics` now register through `Server.ObserveRequests`, measuring router entry through response writing and recording Auth rejections while retaining model, operation, status, actor, resource, and request labels.
 - **Developer experience:** added the supported `maniflextest` module with isolated SQLite and PostgreSQL servers, typed HTTP/auth helpers, and declarative fixtures/factories for consumer integration tests.

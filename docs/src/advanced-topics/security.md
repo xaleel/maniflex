@@ -99,8 +99,8 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
 - **Set `Config.TrustProxyHeaders: true` only when behind a trusted proxy.**
   It is **off by default**: the client IP is the direct TCP peer, so a caller
   cannot forge it. When on, the IP is read from `X-Forwarded-For` / `X-Real-IP`,
-  which is only safe if the proxy overwrites (not appends) any inbound value the
-  client sent. Every IP-keyed feature — `db.RateLimit`, idempotency scoping, and
+  which is only safe if the proxy strips both inbound headers and supplies its own
+  trusted value. Every IP-keyed feature — `db.RateLimit`, idempotency scoping, and
   read-audit records — depends on this being correct; leaving it off while
   directly internet-facing keeps per-IP limits and audit logs honest.
 - **Set `Config.PathPrefix` to a non-default value** if the proxy mounts the

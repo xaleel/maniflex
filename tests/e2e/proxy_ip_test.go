@@ -18,8 +18,8 @@ type ProxyTarget struct {
 
 // ipKeyRateLimit registers a per-IP create limit keyed on the client-IP portion
 // of RemoteAddr (dropping the ephemeral TCP port so the bucket is stable across a
-// keep-alive connection). Reading RemoteAddr is exactly what chi's RealIP
-// rewrites when proxy headers are trusted, so this exercises the SEC-5 surface.
+// keep-alive connection). Reading RemoteAddr is exactly what the trusted-proxy
+// resolver rewrites, so this exercises the SEC-5 surface.
 func ipKeyRateLimit(srv *maniflex.Server, perMinute int) {
 	srv.Pipeline.DB.Register(
 		dbmw.RateLimit(dbmw.RateLimitConfig{
@@ -38,7 +38,7 @@ func ipKeyRateLimit(srv *maniflex.Server, perMinute int) {
 }
 
 // SEC-5: with TrustProxyHeaders off (the default), a client cannot escape a
-// per-IP rate limit by rotating X-Forwarded-For. RealIP is not mounted, so
+// per-IP rate limit by rotating X-Forwarded-For. Proxy resolution is not mounted, so
 // RemoteAddr stays the real TCP peer and every spoofed request shares one bucket.
 func TestTrustProxyHeaders_OffRejectsSpoofedXFF(t *testing.T) {
 	s := testutil.NewServer(t, testutil.Options{
@@ -60,7 +60,7 @@ func TestTrustProxyHeaders_OffRejectsSpoofedXFF(t *testing.T) {
 	spoof("10.0.0.4").AssertStatus(http.StatusTooManyRequests)
 }
 
-// SEC-5: with TrustProxyHeaders on, chi's RealIP honours X-Forwarded-For, so
+// SEC-5: with TrustProxyHeaders on, the router honours X-Forwarded-For, so
 // each forwarded IP gets its own bucket. This documents why the switch must only
 // be enabled behind a proxy that strips inbound XFF — directly internet-facing it
 // would let a client spoof its way around the limit (the case above prevents).

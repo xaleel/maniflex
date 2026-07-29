@@ -27,7 +27,8 @@ import (
 
 	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	s3manager "github.com/aws/aws-sdk-go-v2/feature/s3/manager"
+	"github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager"
+	transferTypes "github.com/aws/aws-sdk-go-v2/feature/s3/transfermanager/types"
 	awss3 "github.com/aws/aws-sdk-go-v2/service/s3"
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
@@ -88,7 +89,6 @@ type S3Storage struct {
 // s3API is the slice of the AWS SDK we depend on. Defining it as an interface
 // lets tests inject a fake without spinning up a real HTTP server.
 type s3API interface {
-	PutObject(ctx context.Context, in *awss3.PutObjectInput, opts ...func(*awss3.Options)) (*awss3.PutObjectOutput, error)
 	GetObject(ctx context.Context, in *awss3.GetObjectInput, opts ...func(*awss3.Options)) (*awss3.GetObjectOutput, error)
 	HeadObject(ctx context.Context, in *awss3.HeadObjectInput, opts ...func(*awss3.Options)) (*awss3.HeadObjectOutput, error)
 	DeleteObject(ctx context.Context, in *awss3.DeleteObjectInput, opts ...func(*awss3.Options)) (*awss3.DeleteObjectOutput, error)
@@ -97,7 +97,7 @@ type s3API interface {
 // uploaderAPI wraps the multipart-aware S3 uploader so Store streams large
 // bodies in chunks instead of buffering the whole payload.
 type uploaderAPI interface {
-	Upload(ctx context.Context, in *awss3.PutObjectInput, opts ...func(*s3manager.Uploader)) (*s3manager.UploadOutput, error)
+	UploadObject(ctx context.Context, in *transfermanager.UploadObjectInput, opts ...func(*transfermanager.Options)) (*transfermanager.UploadObjectOutput, error)
 }
 
 // New constructs an S3Storage. It validates the config, loads AWS credentials
@@ -139,7 +139,7 @@ func New(ctx context.Context, cfg Config) (*S3Storage, error) {
 		}
 		o.UsePathStyle = cfg.UsePathStyle
 	})
-	uploader := s3manager.NewUploader(client)
+	uploader := transfermanager.New(client)
 	presignClient := awss3.NewPresignClient(client)
 
 	s := newWithClient(cfg, client, uploader, nil)
@@ -204,7 +204,7 @@ func (s *S3Storage) Store(ctx context.Context, key string, r io.Reader, meta man
 		return err
 	}
 
-	in := &awss3.PutObjectInput{
+	in := &transfermanager.UploadObjectInput{
 		Bucket:   awsv2.String(s.cfg.Bucket),
 		Key:      awsv2.String(full),
 		Body:     r,
@@ -214,10 +214,10 @@ func (s *S3Storage) Store(ctx context.Context, key string, r io.Reader, meta man
 		in.ContentType = awsv2.String(meta.ContentType)
 	}
 	if s.cfg.ACL != "" {
-		in.ACL = s3types.ObjectCannedACL(s.cfg.ACL)
+		in.ACL = transferTypes.ObjectCannedACL(s.cfg.ACL)
 	}
 
-	if _, err := s.uploader.Upload(ctx, in); err != nil {
+	if _, err := s.uploader.UploadObject(ctx, in); err != nil {
 		return fmt.Errorf("s3: store %q: %w", key, err)
 	}
 	return nil

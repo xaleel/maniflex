@@ -226,7 +226,7 @@ type FileStorage interface {
 	// a streamed upload (mfx:"file,upload:stream" or POST /files) is piped through
 	// before its length is known, so the backend must store an unsized reader —
 	// read r to EOF rather than trusting meta.Size. On S3 this means a multipart
-	// upload; the AWS SDK's manager.Uploader does it transparently.
+	// upload; the AWS SDK's transfer manager does it transparently.
 	Store(ctx context.Context, key string, r io.Reader, meta FileMeta) error
 
 	// Retrieve returns a ReadCloser for the file at key, along with its metadata.

@@ -311,7 +311,15 @@ func (c *Server) StartServices() error {
 //	    log.Fatal(server.MigrateOnly(ctx))
 //	}
 //	log.Fatal(server.Start())
+//
+// MigrateOnly first validates and seals the complete router and middleware
+// configuration, exactly as Start does before migration. Register all models,
+// actions, and middleware before calling it. A validation error is returned
+// before any adapter's AutoMigrate method can alter schema.
 func (c *Server) MigrateOnly(ctx context.Context) error {
+	if _, err := c.handler(); err != nil {
+		return err
+	}
 	return c.migrate(ctx)
 }
 
@@ -864,9 +872,10 @@ func (c *Server) Handler() http.Handler {
 // handler is Handler's error-returning form: it validates the assembled registry
 // and builds the router once.
 //
-// The split exists because the two callers want different things from the same
-// failure. Handler has no error channel and must panic; Start does have one and
-// should use it, and needs to fail before it migrates.
+// The split exists because callers want different things from the same failure.
+// Handler has no error channel and must panic; StartServices, StartWithContext,
+// and MigrateOnly return the error, and the migration paths need to fail before
+// an adapter can alter schema.
 func (c *Server) handler() (http.Handler, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

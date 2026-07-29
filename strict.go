@@ -76,8 +76,9 @@ func (issueList) line(iss startupIssue) string {
 //
 // It is the single place startup validation happens. Handler panics on a
 // non-empty result, preserving its contract — it has no error return — while
-// StartWithContext calls this directly, before migrating, so a misconfigured
-// application fails without having altered the schema or started a service.
+// StartWithContext, StartServices, and MigrateOnly use the error-returning
+// assembly path. Migration therefore cannot alter schema for an application
+// that would fail when its router is built.
 //
 // Every check here needs the complete registry, which is why none of them can
 // run at Register time: a relation's target may be registered after the model

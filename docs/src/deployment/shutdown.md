@@ -27,7 +27,8 @@ cleanly.
 
 An embedding owns the HTTP listener, while Maniflex still owns its registered
 services, `Server.Go` loops, and request background work. Start and stop those
-two halves explicitly:
+two halves explicitly. Finish model, action, and middleware registration before
+calling `MigrateOnly`, which validates and seals that configuration:
 
 ```go
 if err := server.MigrateOnly(ctx); err != nil {

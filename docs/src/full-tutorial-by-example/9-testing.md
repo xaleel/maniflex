@@ -47,13 +47,14 @@ func newTestServer(t *testing.T) (*httptest.Server, *maniflex.Server) {
     t.Cleanup(func() { db.Close() })
     server.SetDB(db)
 
+    middleware.Register(server)
+
     // Handler() does NOT migrate — only Start() does, and tests mount Handler()
-    // directly. MigrateOnly runs the migration and honours AutoMigrate.
+    // directly. MigrateOnly validates the complete app, seals registration,
+    // runs the migration, and honours AutoMigrate.
     if err := server.MigrateOnly(context.Background()); err != nil {
         t.Fatal(err)
     }
-
-    middleware.Register(server)
 
     ts := httptest.NewServer(server.Handler())
     t.Cleanup(ts.Close)
@@ -65,10 +66,10 @@ Three notes:
 
 - **`:memory:`** opens an in-memory SQLite database. There is no file to
   clean up; closing the connection discards it.
-- **`server.MigrateOnly(...)`** creates the tables. `server.Handler()` builds
-  the router but does **not** migrate — only `Start()` does that. When you mount
-  `Handler()` yourself (tests, embedding), migrate explicitly first or every
-  request fails against missing tables.
+- **`server.MigrateOnly(...)`** validates the assembled app and creates the
+  tables. It seals model, route, and middleware registration, so finish all
+  setup before calling it. `server.Handler()` returns the already validated
+  router but does **not** migrate on its own.
 - **`server.Handler()`** returns the chi router — `httptest.NewServer`
   wraps it and serves requests in-process.
 

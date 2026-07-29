@@ -679,9 +679,9 @@ func newTestServer(t *testing.T) (*httptest.Server, *maniflex.Server) {
     if err != nil { t.Fatal(err) }
     t.Cleanup(func() { db.Close() })
     server.SetDB(db)
+    middleware.Register(server)
     // Handler() does not migrate — only Start() does. Migrate explicitly.
     if err := server.MigrateOnly(context.Background()); err != nil { t.Fatal(err) }
-    middleware.Register(server)
     ts := httptest.NewServer(server.Handler())
     t.Cleanup(ts.Close)
     return ts, server
@@ -689,7 +689,8 @@ func newTestServer(t *testing.T) (*httptest.Server, *maniflex.Server) {
 ```
 
 In-memory SQLite per test. `server.Handler()` returns the chi router but does
-**not** migrate — `MigrateOnly` creates the tables up front.
+**not** migrate — `MigrateOnly` validates and seals the fully configured app,
+then creates the tables up front.
 
 ## Sentinels & constants
 

@@ -295,7 +295,9 @@ tx, _ := ctx.BeginTx(ctx.Ctx, nil)
 ctx.Tx = tx
 defer tx.Rollback()
 
-rows, err := ctx.RecursiveQuery("Category", maniflex.RecursiveQuery{...})
+rows, err := ctx.RecursiveQuery("Category", maniflex.RecursiveQuery{
+    // traversal options
+})
 tx.Commit()
 ```
 

@@ -283,7 +283,9 @@ type Product struct {
 }
 
 func main() {
-    server := maniflex.New(maniflex.Config{...})
+    server := maniflex.New(maniflex.Config{
+        // application settings
+    })
 
     server.Pipeline.Deserialize.Register(maniflex.LocaleResolver(maniflex.LocaleOptions{
         Supported:  []string{"en", "ar"},

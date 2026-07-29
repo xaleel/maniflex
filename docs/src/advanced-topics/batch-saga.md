@@ -17,7 +17,9 @@ server.Action(maniflex.ActionConfig{
     Path:    "/users/import",
     Handler: importUsers,
 })
+```
 
+```go
 func importUsers(ctx *maniflex.ServerContext) error {
     var req struct {
         Users []map[string]any `json:"users"`

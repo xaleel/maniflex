@@ -2,6 +2,7 @@
 
 ## v0.4.2 (unreleased)
 
+- **Developer experience:** CI now syntax-checks every Go documentation fence in its appropriate fragment context, resolves compiled mdBook includes, and requires explicit reasons for pseudocode exemptions.
 - **Bugfix:** SSE clients are now registered before their successful response is exposed, preventing events published immediately after connection from being lost; test SSE readers also retain one lifecycle-bound scanner across receive timeouts.
 - **Breaking:** removed the deprecated `ServerContext.QueryModel`; migrate `ctx.QueryModel(name, q)` to `ctx.GetModel(name).List(q)`. PostgreSQL session initialization now uses the context-aware `driver.ExecerContext` interface instead of the deprecated `driver.Execer`.
 - **Developer experience:** GitHub Actions now gates pull requests, `main`, and release tags across the minimum/current Go versions, all workspace modules, vet/staticcheck/vulnerability/race checks, SQLite and PostgreSQL e2e, docs/examples, a 30% coverage floor, independent-module release smoke tests, and path-scoped real-S3 pull-request tests against MinIO.

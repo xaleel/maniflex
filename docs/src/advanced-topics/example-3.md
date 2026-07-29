@@ -57,7 +57,9 @@ server.Action(maniflex.ActionConfig{
     Handler: placeOrder,
     Middleware: []maniflex.MiddlewareFunc{auth.JWTAuth(secret)},
 })
+```
 
+```go
 func placeOrder(ctx *maniflex.ServerContext) error {
     var req struct {
         Lines []struct {

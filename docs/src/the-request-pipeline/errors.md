@@ -65,7 +65,7 @@ is logged at `DEBUG`, not as an error.
 The standard way to produce an error from middleware is `ctx.Abort`:
 
 ```go
-func ctx.Abort(statusCode int, code, message string)
+ctx.Abort(statusCode, code, message)
 ```
 
 It populates `ctx.Response` with an error envelope. The caller must then return

@@ -168,7 +168,10 @@ more complex than a single row.
 `AutoMigrate` is enabled by default. For larger production databases, prefer:
 
 ```go
-server := maniflex.New(maniflex.Config{DisableAutoMigrate: true, ...})
+server := maniflex.New(maniflex.Config{
+    DisableAutoMigrate: true,
+    // other application settings
+})
 ```
 
 …and run schema changes through a dedicated migration tool (sqlc-migrate,

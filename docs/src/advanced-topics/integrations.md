@@ -17,7 +17,9 @@ func init() {
         "Authorization": "Bearer " + secrets.Billing,
     }
 }
+```
 
+```go
 // Inside a handler / job / cron tick:
 var resp struct {
     InvoiceID string `json:"invoice_id"`

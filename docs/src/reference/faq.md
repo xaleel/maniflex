@@ -197,7 +197,10 @@ See [Soft Delete](../defining-your-api/soft-delete.md).
 
 ```go
 fs, _ := storage.NewLocalStorage("./uploads")
-server := maniflex.New(maniflex.Config{FileStorage: fs, ...})
+server := maniflex.New(maniflex.Config{
+    FileStorage: fs,
+    // other application settings
+})
 ```
 
 See [File Fields & Uploads](../defining-your-api/files.md).

@@ -126,6 +126,8 @@ jobs:
       - name: Build runnable examples
         working-directory: examples
         run: go build ./...
+      - name: Validate Go documentation examples
+        run: go run ./internal/cmd/doccheck -root .
       - name: Build documentation
         shell: pwsh
         run: ./docs/build.ps1

@@ -138,7 +138,9 @@ server.Action(maniflex.ActionConfig{
     Path:    "/auth/login",
     Handler: login,
 })
+```
 
+```go
 func login(ctx *maniflex.ServerContext) error {
     var req struct {
         Email    string `json:"email"`

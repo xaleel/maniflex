@@ -27,7 +27,8 @@ A typical workflow is:
 6. Run `go vet ./...` and `goimports -w .` (or `gofmt -w .`) to match Go
    formatting conventions. Release candidates must also pass
    `bash scripts/vulncheck-all.sh` (or `scripts/vulncheck-all.ps1` on
-   Windows), which scans every module in `go.work`.
+   Windows), which scans every module in `go.work`. Documentation changes
+   containing Go examples must pass `go run ./internal/cmd/doccheck -root .`.
 7. Update docs and `CHANGELOG.md` if the change is user-facing.
 8. [Add, commit, and push your changes.][git-help]
 9. [Submit a pull request][pull-req]. Keep it focused and link any
@@ -41,6 +42,13 @@ cover vet/staticcheck, vulnerability scanning, the Linux race detector, SQLite a
 PostgreSQL end-to-end tests, docs/examples, coverage, and independent-module release
 smoke tests. Real S3 integration tests run against MinIO when a pull request changes
 the S3 adapter, its core/dependency inputs, or the integration workflow.
+
+Go documentation fences may contain complete files, declarations, statements,
+struct fields, or expressions; `doccheck` syntax-checks each in an appropriate
+context. Important API and security examples should live in compiled `.go` files
+and be inserted with an anchored mdBook `{{#include ...}}`. Truly non-Go
+pseudocode must be preceded immediately by
+`<!-- doccheck:ignore reason="why this cannot be checked" -->`.
 
 [fork]: https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/fork-a-repo
 [branch]: https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-branches

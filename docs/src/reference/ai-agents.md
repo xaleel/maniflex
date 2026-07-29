@@ -284,7 +284,9 @@ server.Action(maniflex.ActionConfig{
         // any maniflex.MiddlewareFunc — runs between Auth and the handler
     },
 })
+```
 
+```go
 func cancelOrder(ctx *maniflex.ServerContext) error {
     id := ctx.URLParam("id")
     var req MyReq
@@ -316,6 +318,7 @@ Auto-cleanup: stored file deleted on hard-delete or field overwrite. `auto_delet
 
 ## Catalogue middleware
 
+<!-- doccheck:ignore reason="catalogue entries are independent call shapes with application-defined placeholders" -->
 ```go
 import (
     "github.com/xaleel/maniflex/middleware/auth"
@@ -453,8 +456,8 @@ import "github.com/xaleel/maniflex/scheduled"
 runner, _ := scheduled.New(server, scheduled.Config{
     Interval:  time.Minute,
     BatchSize: 500,
-    OnDelete:   func(model, id string) { ... },
-    OnSetField: func(model, id, field, to string) { ... },
+    OnDelete:   func(model, id string) { /* application hook */ },
+    OnSetField: func(model, id, field, to string) { /* application hook */ },
 })
 ctx, cancel := context.WithCancel(context.Background())
 defer cancel()
@@ -524,12 +527,12 @@ server.MustRegister(MyModel{}, maniflex.ModelConfig{
     TableName:         "custom_table",
     SoftDelete:        maniflex.SoftDeleteConfig{Enabled: true, Field: "deleted_at", FieldType: maniflex.SoftDeleteTimestamp},
     Middleware:        &maniflex.ModelMiddleware{
-        Auth:        []maniflex.MiddlewareFunc{...},
-        Deserialize: []maniflex.MiddlewareFunc{...},
-        Validate:    []maniflex.MiddlewareFunc{...},
-        Service:     []maniflex.MiddlewareFunc{...},
-        DB:          []maniflex.MiddlewareFunc{...},
-        Response:    []maniflex.MiddlewareFunc{...},
+        Auth:        []maniflex.MiddlewareFunc{/* configured middleware */},
+        Deserialize: []maniflex.MiddlewareFunc{/* configured middleware */},
+        Validate:    []maniflex.MiddlewareFunc{/* configured middleware */},
+        Service:     []maniflex.MiddlewareFunc{/* configured middleware */},
+        DB:          []maniflex.MiddlewareFunc{/* configured middleware */},
+        Response:    []maniflex.MiddlewareFunc{/* configured middleware */},
     },
     Versioned:         true,
     VersionedDiffOnly: false,
@@ -694,6 +697,7 @@ then creates the tables up front.
 
 ## Sentinels & constants
 
+<!-- doccheck:ignore reason="symbol catalogue lists independent expressions and types rather than one executable fragment" -->
 ```go
 maniflex.OpCreate, maniflex.OpRead, maniflex.OpUpdate, maniflex.OpDelete, maniflex.OpList, maniflex.OpOptions, maniflex.OpAction
 maniflex.Before, maniflex.After, maniflex.Replace

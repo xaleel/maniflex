@@ -10,6 +10,7 @@ import (
 )
 
 func ExampleAdaptAuth() {
+	// ANCHOR: adapt-auth
 	const jwtSecret = "replace-with-a-strong-32-byte-secret"
 	server := maniflex.New(maniflex.Config{
 		Documentation: maniflex.DocumentationConfig{
@@ -21,6 +22,7 @@ func ExampleAdaptAuth() {
 			},
 		},
 	})
+	// ANCHOR_END: adapt-auth
 
 	req := httptest.NewRequest(http.MethodGet, "/api/openapi.json", nil)
 	rec := httptest.NewRecorder()

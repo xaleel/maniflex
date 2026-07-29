@@ -144,18 +144,7 @@ the middleware shares one context, so `JWTAuth` can populate the identity used
 by `RequireRole`:
 
 ```go
-import "github.com/xaleel/maniflex/middleware/auth"
-
-server := maniflex.New(maniflex.Config{
-    Documentation: maniflex.DocumentationConfig{
-        Middleware: []maniflex.HTTPMiddleware{
-            maniflex.AdaptAuth(
-                auth.JWTAuth(jwtSecret),
-                auth.RequireRole("internal"),
-            ),
-        },
-    },
-})
+{{#include ../../../documentation_example_test.go:adapt-auth}}
 ```
 
 This mounts generated documentation behind the policy; it does not affect model

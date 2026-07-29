@@ -205,17 +205,6 @@ response middleware (redaction, field hiding, CDN rewriting) is **not** inherite
 by data read through the accessor. When accessor output is forwarded outside the
 process, that shaping is the caller's responsibility.
 
-## `QueryModel` is the former name for `List`
-
-`ctx.QueryModel(name, q)` remains available and now delegates to
-`ctx.GetModel(name).List(q)`. The accessor is preferred: it exposes `Read`,
-`Create`, `Update`, and `Delete` on the same object rather than reading alone.
-
-```go
-rows, err := ctx.QueryModel("User", nil)      // deprecated
-rows, err := ctx.GetModel("User").List(nil)   // preferred
-```
-
 ## Typed accessor: `map[string]any` → `*T`
 
 The string-named accessor is dynamic — suited to cases where the model name is

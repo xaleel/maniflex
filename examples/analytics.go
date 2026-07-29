@@ -27,7 +27,7 @@
 //	     GROUP BY aggregations inside action handlers — cases where the
 //	     query builder cannot yet express what is needed.
 //
-//	3D.3 ctx.QueryModel
+//	3D.3 ctx.GetModel
 //	     Cross-model reads inside action handlers, participating in the
 //	     active transaction when one is present.
 //
@@ -355,7 +355,7 @@ func registerActions(s *maniflex.Server, rsaPub *rsa.PublicKey, eventMeta *manif
 	})
 
 	// GET /sites/{id}/stats
-	// Demonstrates 3D.3 ctx.QueryModel (ownership check) and
+	// Demonstrates 3D.3 ctx.GetModel (ownership check) and
 	// 3D.2 ctx.RawQuery (aggregate counts).
 	s.Action(maniflex.ActionConfig{
 		Method:     "GET",
@@ -415,7 +415,7 @@ func registerActions(s *maniflex.Server, rsaPub *rsa.PublicKey, eventMeta *manif
 
 	// POST /ingest — intentionally no Middleware slice.
 	// Browser tracker scripts call this anonymously with just the site token.
-	// Demonstrates 3D.1 (anonymous action) + 3D.3 ctx.QueryModel (site lookup)
+	// Demonstrates 3D.1 (anonymous action) + 3D.3 ctx.GetModel (site lookup)
 	// + ctx.BeginTx for a transactional write.
 	s.Action(maniflex.ActionConfig{
 		Method:  "POST",
@@ -452,7 +452,7 @@ func registerActions(s *maniflex.Server, rsaPub *rsa.PublicKey, eventMeta *manif
 
 // siteStatsHandler returns aggregate metrics for a single site.
 //
-// 3D.3 ctx.QueryModel: verify the site exists and is accessible to the caller.
+// 3D.3 ctx.GetModel: verify the site exists and is accessible to the caller.
 //
 // 3D.2 ctx.RawQuery: run a CASE-based aggregate that the query builder cannot
 // yet express (roadmap 4.5 ctx.Aggregate is still pending).
@@ -471,11 +471,11 @@ func siteStatsHandler(ctx *maniflex.ServerContext) error {
 		})
 	}
 
-	// 3D.3: QueryModel reads from the Site model using the standard FindMany
+	// 3D.3: GetModel("Site").List reads using the standard FindMany
 	// path (including any active transaction). This is the right tool when you
 	// need cross-model reads inside a custom handler — it respects soft-delete
 	// and the model's field mapping automatically.
-	sites, err := ctx.QueryModel("Site", &maniflex.QueryParams{
+	sites, err := ctx.GetModel("Site").List(&maniflex.QueryParams{
 		Filters: filters,
 		Page:    1,
 		Limit:   1,

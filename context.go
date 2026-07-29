@@ -262,7 +262,7 @@ type ServerContext struct {
 	// so a per-model Adapter override takes precedence over the global.
 	adapter DBAdapter
 
-	// reg is the model registry, used by QueryModel. Set by the handler.
+	// reg is the model registry, used by GetModel. Set by the handler.
 	reg RegistryAccessor
 
 	// actionScope is the row-level scope in force for a custom Action, set by
@@ -836,16 +836,6 @@ func (c *ServerContext) LockForUpdate(modelName, id string) (map[string]any, err
 		return nil, err
 	}
 	return recordToMap(meta, v), nil
-}
-
-// QueryModel reads records from any registered model using the standard
-// FindMany path. When ctx.Tx is active the query participates in it.
-// q may be nil — defaults to page 1, limit 20 with no filters or sorts.
-//
-// Deprecated: prefer ctx.GetModel(name).List(q) which also exposes Read,
-// Create, Update, and Delete on the same accessor (3D.5).
-func (c *ServerContext) QueryModel(modelName string, q *QueryParams) ([]map[string]any, error) {
-	return c.GetModel(modelName).List(q)
 }
 
 // GetModel returns a ModelAccessor for the named registered model. All five

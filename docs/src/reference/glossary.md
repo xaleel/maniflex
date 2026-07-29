@@ -223,11 +223,6 @@ See [Pipeline Overview](../the-request-pipeline/pipeline.md).
 
 ## Q
 
-**Query model.** `ctx.QueryModel` (a `*ServerContext` method) is a read
-helper that fetches any registered model through the standard List path,
-returning filtered, sorted, paginated results without a full request. See
-[Raw Queries & Query Models](../advanced-topics/raw-queries.md).
-
 **`QueryParams`.** The parsed `?page=&limit=&filter=&sort=&include=` of
 a request, stored on `ctx.Query`. See [Querying](../using-the-api/querying.md).
 

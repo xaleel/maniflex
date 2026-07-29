@@ -344,21 +344,20 @@ func (c *sessionConnector) Connect(ctx context.Context) (driver.Conn, error) {
 		return conn, nil
 	}
 
-	// driver.Execer is the standard interface for executing statements on a
-	// raw driver connection. pq always implements it, so the fallback branch
-	// below should never be reached in practice.
-	if ex, ok := conn.(driver.Execer); ok {
-		if _, err := ex.Exec(setSQL, nil); err != nil {
+	// pq implements the context-aware driver interface, so session setup obeys
+	// the same connection deadline/cancellation as the dial itself.
+	if ex, ok := conn.(driver.ExecerContext); ok {
+		if _, err := ex.ExecContext(ctx, setSQL, nil); err != nil {
 			conn.Close()
 			return nil, fmt.Errorf("postgres: session init: %w", err)
 		}
 		return conn, nil
 	}
 
-	// Fallback: if the driver does not support Exec (non-pq drivers), close the
-	// connection and surface a clear error rather than silently skipping session init.
+	// A connector without context-aware execution cannot safely apply session
+	// settings: close it rather than silently skipping them or losing cancellation.
 	conn.Close()
-	return nil, fmt.Errorf("postgres: driver does not implement driver.Execer; cannot apply session settings")
+	return nil, fmt.Errorf("postgres: driver does not implement driver.ExecerContext; cannot apply session settings")
 }
 
 // buildSetSQL constructs a single SQL string containing all session SET

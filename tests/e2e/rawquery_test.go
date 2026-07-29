@@ -295,8 +295,8 @@ func TestRawQuery(t *testing.T) {
 	})
 }
 
-// TestQueryModel covers ctx.QueryModel (3D.3).
-func TestQueryModel(t *testing.T) {
+// TestModelAccessorList covers cross-model List calls from middleware and Actions.
+func TestModelAccessorList(t *testing.T) {
 	t.Parallel()
 
 	t.Run("basic_returns_registered_model_records", func(t *testing.T) {
@@ -310,9 +310,9 @@ func TestQueryModel(t *testing.T) {
 					if err := next(); err != nil {
 						return err
 					}
-					rows, err := ctx.QueryModel("User", nil)
+					rows, err := ctx.GetModel("User").List(nil)
 					if err != nil {
-						return fmt.Errorf("QueryModel: %w", err)
+						return fmt.Errorf("GetModel.List: %w", err)
 					}
 					mu.Lock()
 					captured = rows
@@ -352,7 +352,7 @@ func TestQueryModel(t *testing.T) {
 					if err := next(); err != nil {
 						return err
 					}
-					rows, err := ctx.QueryModel("User", &maniflex.QueryParams{
+					rows, err := ctx.GetModel("User").List(&maniflex.QueryParams{
 						Filters: []*maniflex.FilterExpr{
 							{Field: "role", Operator: maniflex.OpEq, Value: "admin"},
 						},
@@ -360,7 +360,7 @@ func TestQueryModel(t *testing.T) {
 						Limit: 100,
 					})
 					if err != nil {
-						return fmt.Errorf("QueryModel: %w", err)
+						return fmt.Errorf("GetModel.List: %w", err)
 					}
 					mu.Lock()
 					captured = rows
@@ -400,9 +400,9 @@ func TestQueryModel(t *testing.T) {
 					if err := next(); err != nil {
 						return err
 					}
-					rows, err := ctx.QueryModel("User", nil)
+					rows, err := ctx.GetModel("User").List(nil)
 					if err != nil {
-						return fmt.Errorf("QueryModel nil params: %w", err)
+						return fmt.Errorf("GetModel.List nil params: %w", err)
 					}
 					mu.Lock()
 					captured = rows
@@ -434,7 +434,7 @@ func TestQueryModel(t *testing.T) {
 					if err := next(); err != nil {
 						return err
 					}
-					_, err := ctx.QueryModel("NoSuchModel", nil)
+					_, err := ctx.GetModel("NoSuchModel").List(nil)
 					mu.Lock()
 					capturedErr = err
 					mu.Unlock()
@@ -454,7 +454,7 @@ func TestQueryModel(t *testing.T) {
 	})
 
 	t.Run("in_tx_sees_uncommitted_create", func(t *testing.T) {
-		// QueryModel inside a transaction must see rows created via the same Tx.
+		// GetModel.List inside a transaction must see rows created via the same Tx.
 		t.Parallel()
 		var capturedCount int
 		var mu sync.Mutex
@@ -482,9 +482,9 @@ func TestQueryModel(t *testing.T) {
 					if err := next(); err != nil {
 						return err
 					}
-					rows, err := ctx.QueryModel("User", nil)
+					rows, err := ctx.GetModel("User").List(nil)
 					if err != nil {
-						return fmt.Errorf("QueryModel in tx: %w", err)
+						return fmt.Errorf("GetModel.List in tx: %w", err)
 					}
 					mu.Lock()
 					capturedCount = len(rows)
@@ -500,12 +500,12 @@ func TestQueryModel(t *testing.T) {
 		c := capturedCount
 		mu.Unlock()
 		if c < 1 {
-			t.Errorf("within-tx QueryModel count: got %d, want >= 1", c)
+			t.Errorf("within-tx GetModel.List count: got %d, want >= 1", c)
 		}
 	})
 
 	t.Run("from_action_handler", func(t *testing.T) {
-		// Action handler uses ctx.QueryModel to read data from another model
+		// Action handler uses ctx.GetModel(...).List to read data from another model
 		// and ctx.RawExec to write via raw SQL — covers the action.md example.
 		t.Parallel()
 
@@ -515,7 +515,7 @@ func TestQueryModel(t *testing.T) {
 					Method: "GET",
 					Path:   "/user-summary",
 					Handler: func(ctx *maniflex.ServerContext) error {
-						rows, err := ctx.QueryModel("User", &maniflex.QueryParams{
+						rows, err := ctx.GetModel("User").List(&maniflex.QueryParams{
 							Page:  1,
 							Limit: 100,
 						})
@@ -543,7 +543,7 @@ func TestQueryModel(t *testing.T) {
 	})
 
 	t.Run("raw_exec_from_action_with_tx", func(t *testing.T) {
-		// Action handler uses ctx.BeginTx + ctx.RawExec + ctx.QueryModel,
+		// Action handler uses ctx.BeginTx + ctx.RawExec + ctx.GetModel(...).List,
 		// then rolls back — verifying the whole Tx chain works from an action.
 		t.Parallel()
 		skipRawSQLOnPostgres(t)
@@ -571,7 +571,7 @@ func TestQueryModel(t *testing.T) {
 						}
 
 						// Read back within same transaction.
-						rows, err := ctx.QueryModel("User", &maniflex.QueryParams{
+						rows, err := ctx.GetModel("User").List(&maniflex.QueryParams{
 							Filters: []*maniflex.FilterExpr{
 								{Field: "id", Operator: maniflex.OpEq, Value: ctx.ResourceID},
 							},

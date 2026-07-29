@@ -90,7 +90,7 @@ yet supported in `Aggregate` — use the raw-query escape hatch when you need
 them.
 
 When `ctx.Tx` is active the aggregate participates in the transaction,
-matching `RawQuery`/`QueryModel`.
+matching `RawQuery`/`GetModel(...).List`.
 
 To keep an aggregate on a parent column rather than compute it per request —
 `Order.PaidAmount` maintained as `SUM(OrderPayment.amount)` — see

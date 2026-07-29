@@ -364,38 +364,4 @@ func TestGetModel(t *testing.T) {
 		}
 	})
 
-	t.Run("query_model_backward_compat", func(t *testing.T) {
-		// ctx.QueryModel must still work unchanged (it now delegates to GetModel.List).
-		t.Parallel()
-		var captured []map[string]any
-		var mu sync.Mutex
-
-		srv := testutil.NewServer(t, testutil.Options{
-			Middleware: func(s *maniflex.Server) {
-				s.Pipeline.DB.Register(func(ctx *maniflex.ServerContext, next func() error) error {
-					if err := next(); err != nil {
-						return err
-					}
-					rows, err := ctx.QueryModel("User", nil)
-					if err != nil {
-						return fmt.Errorf("QueryModel: %w", err)
-					}
-					mu.Lock()
-					captured = rows
-					mu.Unlock()
-					return nil
-				}, maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpList), maniflex.AtPosition(maniflex.After))
-			},
-		})
-
-		srv.CreateUser("Zara", "gm9@x.com", "viewer").AssertStatus(http.StatusCreated)
-		srv.GET("/users").AssertStatus(http.StatusOK)
-
-		mu.Lock()
-		rows := captured
-		mu.Unlock()
-		if len(rows) != 1 {
-			t.Fatalf("QueryModel compat: want 1 row, got %d", len(rows))
-		}
-	})
 }

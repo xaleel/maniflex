@@ -2,6 +2,7 @@
 
 ## v0.4.1 (unreleased)
 
+- **Bugfix:** `Server.Start`/`StartWithContext` now atomically admit one lifecycle owner: active duplicate starts return `ErrAlreadyStarted`, and attempts after shutdown or failed boot return `ErrStopped` instead of rerunning migration, services, and listener publication.
 - **Bugfix:** `time.Time` cursor pagination no longer skips rows on SQLite: versioned cursor tokens now carry typed, fixed-width canonical timestamps matching database bindings, while legacy tokens remain accepted and are normalized against cursor-field metadata.
 
 ## v0.4.0 (2026-07-28)

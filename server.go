@@ -24,6 +24,26 @@ type loggerSetter interface {
 	SetLogger(*slog.Logger)
 }
 
+// ErrAlreadyStarted is returned when Start or StartWithContext is called while
+// the same Server is already starting or running.
+var ErrAlreadyStarted = errors.New("maniflex: server already started")
+
+// ErrStopped is returned when Start or StartWithContext is called after the
+// Server has stopped, failed to start, or had Shutdown called. A Server is not
+// restartable; construct a new one.
+var ErrStopped = errors.New("maniflex: server has stopped")
+
+type serverState uint8
+
+const (
+	serverNew serverState = iota
+	serverStarting
+	serverRunning
+	serverStopping
+	serverStopped
+	serverFailed
+)
+
 // Server is the top-level server.
 //
 // Typical usage — signals handled automatically:
@@ -60,11 +80,10 @@ type Server struct {
 	// Start (conventionally its own), Handler (a test's, an embedding mux's), and
 	// Shutdown (a signal handler's). Registration is single-threaded by contract
 	// and needs no lock.
-	mu       sync.Mutex
-	router   http.Handler // built exactly once, on the first Handler() or Start()
-	httpSrv  *http.Server // published by StartWithContext just before the listener opens
-	started  bool         // StartWithContext has been entered
-	stopping bool         // Shutdown has been called — the listener must not open
+	mu      sync.Mutex
+	router  http.Handler // built exactly once, on the first Handler() or Start()
+	httpSrv *http.Server // published by StartWithContext just before the listener opens
+	state   serverState  // new -> starting -> running -> stopping -> stopped/failed
 
 	exited   chan struct{} // closed when StartWithContext returns; see markExited
 	exitOnce sync.Once
@@ -189,7 +208,7 @@ func (c *Server) AddService(s Service) {
 func (c *Server) hasStarted() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.started
+	return c.state != serverNew
 }
 
 // sealed reports whether the routing table is fixed — the router has been built,
@@ -199,7 +218,7 @@ func (c *Server) hasStarted() bool {
 func (c *Server) sealed() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.started || c.router != nil
+	return c.state != serverNew || c.router != nil
 }
 
 // Go runs fn on an application-scoped goroutine that the server drains during
@@ -378,9 +397,14 @@ func (c *Server) adapterGroups() ([]adapterGroup, error) {
 //	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 //	defer cancel()
 //	server.StartWithContext(ctx) // server stops after 5 minutes
-func (c *Server) StartWithContext(ctx context.Context) error {
-	c.markStarted()
-	defer c.markExited()
+func (c *Server) StartWithContext(ctx context.Context) (returnErr error) {
+	if err := c.beginStart(); err != nil {
+		return err
+	}
+	defer func() {
+		c.finishStart(returnErr)
+		c.markExited()
+	}()
 
 	// Validate and assemble the router FIRST, before anything with a side effect
 	// (10.1). This used to happen at the Handler call below, after migrating and
@@ -459,18 +483,49 @@ func (c *Server) StartWithContext(ctx context.Context) error {
 	}
 
 	// Give the whole graceful path a single bounded window.
+	c.markStopping()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), c.cfg.ShutdownTimeout)
 	defer cancel()
 	return c.gracefulShutdown(shutdownCtx)
 }
 
-// markStarted records that boot has begun, before it has done anything. Every
-// "must be called before Start" guard reads this, and Shutdown reads it to tell a
-// server that is booting from one that was never started at all.
-func (c *Server) markStarted() {
+// beginStart atomically claims the one permitted start. Checking then setting
+// under the same lock prevents two concurrent callers from both validating,
+// migrating, starting services, and publishing competing listeners.
+func (c *Server) beginStart() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.started = true
+	switch c.state {
+	case serverNew:
+		c.state = serverStarting
+		return nil
+	case serverStarting, serverRunning:
+		return ErrAlreadyStarted
+	default:
+		return ErrStopped
+	}
+}
+
+// markStopping makes the terminal direction visible before graceful shutdown
+// begins, so a concurrent Start gets ErrStopped rather than claiming a restart.
+func (c *Server) markStopping() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state == serverStarting || c.state == serverRunning {
+		c.state = serverStopping
+	}
+}
+
+// finishStart records the terminal result of the one accepted start.
+func (c *Server) finishStart(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.httpSrv = nil
+	if err != nil {
+		c.state = serverFailed
+	} else {
+		c.state = serverStopped
+	}
 }
 
 // markExited releases a Shutdown that is waiting on a boot to finish tearing
@@ -491,10 +546,11 @@ func (c *Server) markExited() {
 func (c *Server) publishListener(addr string, h http.Handler) (*http.Server, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.stopping {
+	if c.state != serverStarting {
 		return nil, false
 	}
 	c.httpSrv = newHTTPServer(addr, h, &c.cfg)
+	c.state = serverRunning
 	return c.httpSrv, true
 }
 
@@ -626,27 +682,51 @@ func (c *Server) abortGoroutines() {
 // called. A Server is not restartable.
 func (c *Server) Shutdown(ctx context.Context) error {
 	c.mu.Lock()
-	srv, booting := c.httpSrv, c.started
-	c.stopping = true
+	srv := c.httpSrv
+	booting := false
+	switch c.state {
+	case serverNew:
+		c.state = serverStopped
+		c.mu.Unlock()
+		return nil
+	case serverStarting:
+		c.state = serverStopping
+		booting = true
+	case serverRunning:
+		c.state = serverStopping
+	case serverStopping:
+		booting = srv == nil
+	case serverStopped, serverFailed:
+		c.mu.Unlock()
+		return nil
+	}
 	c.mu.Unlock()
 
 	if srv != nil {
-		return c.gracefulShutdown(ctx)
-	}
-	if !booting {
-		return nil // never started — the documented no-op
+		err := c.gracefulShutdown(ctx)
+		c.mu.Lock()
+		if err != nil {
+			c.state = serverFailed
+		} else if c.state == serverStopping {
+			c.state = serverStopped
+		}
+		c.mu.Unlock()
+		return err
 	}
 	// Started, but the listener is not up yet: boot is inside migration or service
 	// start. Tearing down from here would race it — stopping services underneath a
 	// lifecycle.start that is still bringing them up leaks whatever it starts after
-	// us. The stopping flag we just set makes boot abort instead of listening and
-	// unwind itself, so wait for it, on the caller's budget.
-	select {
-	case <-c.exited:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	// us. The stopping state we just set makes boot abort instead of listening
+	// and unwind itself, so wait for it, on the caller's budget.
+	if booting {
+		select {
+		case <-c.exited:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
+	return nil
 }
 
 // Handler returns the underlying http.Handler without starting the server.

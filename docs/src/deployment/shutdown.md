@@ -89,8 +89,14 @@ returns `nil`, and `Shutdown` waits for that to finish before returning. On a
 server that was never started at all, it does nothing.
 
 `Shutdown` is terminal rather than a pause: a server that has been shut down will
-not open a listener afterwards, so a `Start` following a `Shutdown` returns `nil`
-without serving. A `Server` is not restartable — build a new one.
+not open a listener afterwards. `Start` following `Shutdown` returns
+`maniflex.ErrStopped`. A `Server` is not restartable — build a new one.
+
+Only one caller may own startup. A second `Start` or `StartWithContext` while the
+server is starting or running returns `maniflex.ErrAlreadyStarted`; it does not
+repeat validation, migration, service startup, or listener publication. Once the
+accepted start exits—cleanly or with a boot failure—later starts return
+`maniflex.ErrStopped`. Both errors support `errors.Is`.
 
 ## Background writes
 

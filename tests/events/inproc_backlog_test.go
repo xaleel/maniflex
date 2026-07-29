@@ -49,12 +49,6 @@ func (h *blockingHandler) handle(ctx context.Context, _ events.Event) error {
 
 func (h *blockingHandler) unblock() { close(h.release) }
 
-func (h *blockingHandler) count() int {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return h.started
-}
-
 // TestInprocBacklog_IsBounded is the EV-11 regression. Publishing far more
 // events than the bus can process must not grow the goroutine count without
 // limit.

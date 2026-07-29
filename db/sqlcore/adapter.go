@@ -1846,9 +1846,6 @@ func filterConds(model *maniflex.ModelMeta, filters []*maniflex.FilterExpr, driv
 	// zero value) each become their own AND clause. Filters with the same
 	// Group >= 1 are OR-ed together. The URL parser maps ?filter[N]= onto N+1,
 	// so user-facing group 0 lands here as group 1.
-	type groupEntry struct {
-		exprs []*maniflex.FilterExpr
-	}
 	ungrouped := make([]*maniflex.FilterExpr, 0)
 	grouped := make(map[int][]*maniflex.FilterExpr)
 	var groupOrder []int
@@ -2343,10 +2340,6 @@ func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex
 
 	// Step 2: collect remote IDs and build junction payload index
 	// junctionByRemote: remoteID → list of through payloads (one per parent that shares the same remote)
-	type junctionEntry struct {
-		parentID string
-		through  map[string]any
-	}
 	remoteIDSet := make(map[string]bool)
 	// parentID → []{ remoteID, through }
 	type pair struct {

@@ -92,17 +92,6 @@ func addM2MIfMissing(src, dst, junction *ModelMeta, localFK, remoteFK string) er
 	return nil
 }
 
-// belongsToRelations returns all BelongsTo relations on m.
-func belongsToRelations(m *ModelMeta) []RelationMeta {
-	var out []RelationMeta
-	for _, r := range m.Relations {
-		if r.Kind == BelongsTo {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
 // junctionFKs inspects junction model j and returns the FK columns for
 // localModel and remoteModel respectively. Returns an error if the junction
 // does not have exactly one BelongsTo relation to each model.

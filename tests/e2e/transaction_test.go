@@ -264,7 +264,7 @@ func TestTransaction(t *testing.T) {
 		// BeginTx on a context with no adapter set returns ErrNoAdapter.
 		t.Parallel()
 		ctx := &maniflex.ServerContext{}
-		_, err := ctx.BeginTx(nil, nil) //nolint:staticcheck
+		_, err := ctx.BeginTx(ctx.Ctx, nil)
 		if err == nil {
 			t.Error("expected error from BeginTx with no adapter, got nil")
 		}

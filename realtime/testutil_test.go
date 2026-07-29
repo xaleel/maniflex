@@ -254,9 +254,6 @@ func (c *wsClient) sendJSON(v any) {
 	c.sendFrame(wsOpcodeText, b)
 }
 
-// sendPing sends a WebSocket ping frame.
-func (c *wsClient) sendPing() { c.sendFrame(wsOpcodePing, []byte("ping")) }
-
 // recv blocks until a text/binary JSON frame arrives; fails on close frame.
 func (c *wsClient) recv() map[string]any {
 	c.t.Helper()

@@ -1,0 +1,17 @@
+# Known Staticcheck debt. Keep entries exact and remove them as the underlying
+# finding is fixed. scripts/lint-all.sh fails on additions and removals.
+github.com/xaleel/maniflex/db/postgres|postgres.go:350:21: driver.Execer has been deprecated since Go 1.8: Drivers should implement [ExecerContext] instead.  (SA1019)
+github.com/xaleel/maniflex/storage/s3|s3.go:100:70: s3manager.Uploader is deprecated: superceded by feature/s3/transfermanager. See https://github.com/aws/aws-sdk-go-v2/discussions/3306  (SA1019)
+github.com/xaleel/maniflex/storage/s3|s3.go:142:14: s3manager.NewUploader is deprecated: superceded by feature/s3/transfermanager. See https://github.com/aws/aws-sdk-go-v2/discussions/3306  (SA1019)
+github.com/xaleel/maniflex/storage/s3|s3_test.go:37:81: s3manager.Uploader is deprecated: superceded by feature/s3/transfermanager. See https://github.com/aws/aws-sdk-go-v2/discussions/3306  (SA1019)
+github.com/xaleel/maniflex/tests|e2e/get_model_test.go:379:19: ctx.QueryModel is deprecated: prefer ctx.GetModel(name).List(q) which also exposes Read, Create, Update, and Delete on the same accessor (3D.5).  (SA1019)
+github.com/xaleel/maniflex/tests|e2e/rawquery_test.go:313:19: ctx.QueryModel is deprecated: prefer ctx.GetModel(name).List(q) which also exposes Read, Create, Update, and Delete on the same accessor (3D.5).  (SA1019)
+github.com/xaleel/maniflex/tests|e2e/rawquery_test.go:355:19: ctx.QueryModel is deprecated: prefer ctx.GetModel(name).List(q) which also exposes Read, Create, Update, and Delete on the same accessor (3D.5).  (SA1019)
+github.com/xaleel/maniflex/tests|e2e/rawquery_test.go:403:19: ctx.QueryModel is deprecated: prefer ctx.GetModel(name).List(q) which also exposes Read, Create, Update, and Delete on the same accessor (3D.5).  (SA1019)
+github.com/xaleel/maniflex/tests|e2e/rawquery_test.go:437:16: ctx.QueryModel is deprecated: prefer ctx.GetModel(name).List(q) which also exposes Read, Create, Update, and Delete on the same accessor (3D.5).  (SA1019)
+github.com/xaleel/maniflex/tests|e2e/rawquery_test.go:485:19: ctx.QueryModel is deprecated: prefer ctx.GetModel(name).List(q) which also exposes Read, Create, Update, and Delete on the same accessor (3D.5).  (SA1019)
+github.com/xaleel/maniflex/tests|e2e/rawquery_test.go:518:20: ctx.QueryModel is deprecated: prefer ctx.GetModel(name).List(q) which also exposes Read, Create, Update, and Delete on the same accessor (3D.5).  (SA1019)
+github.com/xaleel/maniflex/tests|e2e/rawquery_test.go:574:20: ctx.QueryModel is deprecated: prefer ctx.GetModel(name).List(q) which also exposes Read, Create, Update, and Delete on the same accessor (3D.5).  (SA1019)
+github.com/xaleel/maniflex/tests|e2e/testutil/postgres.go:63:17: error strings should not be capitalized (ST1005)
+github.com/xaleel/maniflex|file_handler_test.go:185:3: string literal contains the Unicode format character U+200B, consider using the '\u200b' escape sequence instead (ST1018)
+github.com/xaleel/maniflex|router.go:48:9: chiMiddleware.RealIP is deprecated: RealIP is vulnerable to IP spoofing — it mutates r.RemoteAddr to the leftmost X-Forwarded-For value, or to True-Client-IP / X-Real-IP whether or not your infrastructure actually sets them. See GHSA-3fxj-6jh8-hvhx, GHSA-rjr7-jggh-pgcp, GHSA-9g5q-2w5x-hmxf. (SA1019)

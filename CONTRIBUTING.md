@@ -33,6 +33,15 @@ A typical workflow is:
 9. [Submit a pull request][pull-req]. Keep it focused and link any
    related issue.
 
+## Continuous integration
+
+GitHub Actions runs every workspace module on the minimum supported Go release and
+the current stable release for each pull request and `main` push. CI lanes also
+cover vet/staticcheck, vulnerability scanning, the Linux race detector, SQLite and
+PostgreSQL end-to-end tests, docs/examples, coverage, and independent-module release
+smoke tests. Real S3 integration tests run against MinIO when a pull request changes
+the S3 adapter, its core/dependency inputs, or the integration workflow.
+
 [fork]: https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/fork-a-repo
 [branch]: https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/about-branches
 [git-help]: https://docs.github.com/en/get-started/using-git/pushing-commits-to-a-remote-repository

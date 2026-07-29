@@ -4,3 +4,4 @@
 llms-full.txt
 /todo
 /.*
+!/.github/

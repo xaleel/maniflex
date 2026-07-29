@@ -1,0 +1,174 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+      - "**/v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  modules:
+    name: All modules / Go ${{ matrix.go-version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        go-version: ["1.25.12", stable]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ matrix.go-version }}
+          cache-dependency-path: |
+            **/go.sum
+      - name: Build and test every go.work module
+        run: bash scripts/test-all.sh sqlite
+
+  analysis:
+    name: Vet, Staticcheck, and govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            **/go.sum
+      - name: Install pinned Staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@v0.7.0
+      - name: Vet and check the Staticcheck baseline in every module
+        run: bash scripts/lint-all.sh
+      - name: Scan every module for reachable vulnerabilities
+        run: bash scripts/vulncheck-all.sh
+
+  race:
+    name: Linux race detector
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            **/go.sum
+      - name: Core, realtime, events, jobs, middleware, and caches
+        run: go test -race ./...
+      - name: End-to-end and cross-package suites
+        working-directory: tests
+        run: go test -race ./...
+
+  postgres:
+    name: PostgreSQL end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: maniflex_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d maniflex_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            **/go.sum
+      - name: Run the tests module against PostgreSQL
+        working-directory: tests
+        env:
+          MANIFLEX_TEST_DB: postgres
+          MANIFLEX_TEST_PG_DSN: postgres://postgres:postgres@127.0.0.1:5432/maniflex_test?sslmode=disable
+        run: go test ./...
+
+  docs-examples:
+    name: Documentation and examples
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.25.12"
+          cache-dependency-path: |
+            **/go.sum
+      - name: Build runnable examples
+        working-directory: examples
+        run: go build ./...
+      - name: Build documentation
+        shell: pwsh
+        run: ./docs/build.ps1
+
+  coverage:
+    name: Core coverage floor
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            **/go.sum
+      - name: Generate coverage profile
+        run: go test -covermode=atomic -coverprofile=coverage.out ./...
+      - name: Enforce 30% aggregate floor
+        shell: bash
+        run: |
+          total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%", "", $3); print $3}')"
+          echo "Aggregate coverage: ${total}%"
+          awk -v total="$total" 'BEGIN { if (total + 0 < 30.0) exit 1 }'
+      - uses: actions/upload-artifact@v7
+        with:
+          name: core-coverage
+          path: coverage.out
+          if-no-files-found: error
+
+  release-dry-run:
+    name: Independent module release smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            **/go.sum
+      - name: Test publishable modules without go.work
+        run: bash scripts/release-dry-run.sh

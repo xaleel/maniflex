@@ -53,7 +53,6 @@ func MaxBodySize(maxBytes int64) maniflex.MiddlewareFunc {
 
 func isMaxBytesError(err error) bool {
 	// Go 1.19+ wraps this as *http.MaxBytesError; for older versions check message.
-	type maxBytesError interface{ Error() string }
 	if err == nil {
 		return false
 	}

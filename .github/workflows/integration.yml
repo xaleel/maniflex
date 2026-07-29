@@ -1,0 +1,65 @@
+name: Scheduled integrations
+
+on:
+  pull_request:
+    paths:
+      - "storage/s3/**"
+      - "*.go"
+      - "go.mod"
+      - "go.sum"
+      - "go.work"
+      - "go.work.sum"
+      - ".github/workflows/integration.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: integrations-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  minio:
+    name: S3 adapter against MinIO
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          cache-dependency-path: |
+            **/go.sum
+      - name: Start MinIO
+        run: |
+          docker run --detach --name minio \
+            --publish 9000:9000 \
+            --env MINIO_ROOT_USER=minioadmin \
+            --env MINIO_ROOT_PASSWORD=minioadmin \
+            quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z server /data
+          for attempt in {1..30}; do
+            if curl --fail --silent http://127.0.0.1:9000/minio/health/ready; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs minio
+          exit 1
+      - name: Create test bucket
+        run: |
+          docker run --rm --network host --entrypoint /bin/sh \
+            quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
+            'mc alias set local http://127.0.0.1:9000 minioadmin minioadmin &&
+             mc mb local/maniflex-ci'
+      - name: Run real S3 integration tests
+        working-directory: storage/s3
+        env:
+          S3_TEST_BUCKET: maniflex-ci
+          S3_TEST_REGION: us-east-1
+          S3_TEST_ENDPOINT: http://127.0.0.1:9000
+          S3_TEST_ACCESS_KEY: minioadmin
+          S3_TEST_SECRET_KEY: minioadmin
+          S3_TEST_PATH_STYLE: "1"
+        run: go test -tags=integration ./...

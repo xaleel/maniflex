@@ -1,5 +1,7 @@
 # maniflex
 
+[![CI](https://github.com/xaleel/maniflex/actions/workflows/ci.yml/badge.svg)](https://github.com/xaleel/maniflex/actions/workflows/ci.yml)
+
 _manifold + flexible_ - many shapes from one flexible core.
 
 A Go framework that turns annotated structs into a complete REST API: filtering,

@@ -60,8 +60,7 @@ func uploadMemoryOr(configured int64) int64 {
 	return DefaultMaxUploadMemory
 }
 
-func (c FilesConfig) uploadLimit() int64  { return uploadLimitOr(c.MaxUploadBytes) }
-func (c FilesConfig) uploadMemory() int64 { return uploadMemoryOr(c.MaxUploadMemory) }
+func (c FilesConfig) uploadLimit() int64 { return uploadLimitOr(c.MaxUploadBytes) }
 
 // FileMeta describes an uploaded file's metadata.
 type FileMeta struct {

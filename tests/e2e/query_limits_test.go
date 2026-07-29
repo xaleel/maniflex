@@ -3,6 +3,7 @@ package e2e
 import (
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -82,6 +83,29 @@ func TestQueryLimits_ListQueryShapes(t *testing.T) {
 				},
 			})
 			resp := srv.GET("/posts?" + tc.query.Encode())
+			resp.AssertStatus(http.StatusBadRequest)
+			if got := resp.ErrorCode(); got != "INVALID_QUERY" {
+				t.Errorf("error code: got %q, want INVALID_QUERY", got)
+			}
+		})
+	}
+}
+
+func TestQueryArithmeticBoundsReturnInvalidQuery(t *testing.T) {
+	t.Parallel()
+
+	srv := testutil.NewServer(t, testutil.Options{})
+	maxInt := int(^uint(0) >> 1)
+	queries := map[string]string{
+		"page above maximum": "page=1000001&limit=200",
+		"page at int limit":  "page=" + strconv.Itoa(maxInt),
+		"filter group wrap": url.Values{
+			"filter[" + strconv.Itoa(maxInt) + "]": {"status:eq:draft"},
+		}.Encode(),
+	}
+	for name, query := range queries {
+		t.Run(name, func(t *testing.T) {
+			resp := srv.GET("/posts?" + query)
 			resp.AssertStatus(http.StatusBadRequest)
 			if got := resp.ErrorCode(); got != "INVALID_QUERY" {
 				t.Errorf("error code: got %q, want INVALID_QUERY", got)

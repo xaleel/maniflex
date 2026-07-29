@@ -28,11 +28,12 @@ Standard offset pagination.
 
 | Parameter | Default | Maximum |
 |---|---|---|
-| `page` | `1` | unbounded |
+| `page` | `1` | `1,000,000` |
 | `limit` | `20` | `200` |
 
-Values above the maximum are clamped silently. Negative or non-numeric values
-are rejected with `400 INVALID_QUERY`.
+Limits above the maximum are clamped silently. Pages above the maximum, values
+whose pagination arithmetic cannot fit, and negative or non-numeric values are
+rejected with `400 INVALID_QUERY`.
 
 The response carries `meta.total`, `meta.page`, `meta.limit`, and `meta.pages`
 — see [Response Envelope](responses.md).

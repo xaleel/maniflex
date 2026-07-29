@@ -428,8 +428,9 @@ func buildModelPaths(spec *OpenAPISpec, m *ModelMeta, cfg *Config) {
 					idParam,
 					{
 						Name: "page", In: "query",
-						Description: "Page number (1-based)",
-						Schema:      &OASSchema{Type: "integer", Minimum: float64ptr(1)},
+						Description: fmt.Sprintf("Page number (1-based, max %d)", maxPage),
+						Schema: &OASSchema{Type: "integer", Minimum: float64ptr(1),
+							Maximum: float64ptr(maxPage)},
 					},
 					{
 						Name: "limit", In: "query",
@@ -500,8 +501,9 @@ func listParameters(m *ModelMeta) []OASParameter {
 	params := []OASParameter{
 		{
 			Name: "page", In: "query",
-			Description: "Page number (1-based)",
-			Schema:      &OASSchema{Type: "integer", Minimum: float64ptr(1)},
+			Description: fmt.Sprintf("Page number (1-based, max %d)", maxPage),
+			Schema: &OASSchema{Type: "integer", Minimum: float64ptr(1),
+				Maximum: float64ptr(maxPage)},
 		},
 		{
 			Name: "limit", In: "query",

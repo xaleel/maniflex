@@ -14,7 +14,10 @@ var filterKeyRe = regexp.MustCompile(`^filter(?:\[(\d+)\])?$`)
 const (
 	defaultPage  = 1
 	defaultLimit = 20
-	maxLimit     = 200
+	// maxPage keeps the largest HTTP offset safe even on 32-bit platforms:
+	// (maxPage-1)*maxLimit is below MaxInt32.
+	maxPage  = 1_000_000
+	maxLimit = 200
 )
 
 // SortDir is a sort direction.
@@ -92,12 +95,18 @@ type QueryParams struct {
 	Cursor *CursorParams
 }
 
-// Offset returns the DB offset for the current page.
+// Offset returns the DB offset for the current page. Hand-built QueryParams
+// outside the HTTP parser saturate at MaxInt instead of wrapping negative.
 func (q *QueryParams) Offset() int {
-	if q.Page < 1 {
+	if q == nil || q.Page <= 1 || q.Limit <= 0 {
 		return 0
 	}
-	return (q.Page - 1) * q.Limit
+	pageIndex := q.Page - 1
+	maxInt := int(^uint(0) >> 1)
+	if pageIndex > maxInt/q.Limit {
+		return maxInt
+	}
+	return pageIndex * q.Limit
 }
 
 // HasInclude reports whether key is in the include list.
@@ -135,7 +144,7 @@ func parseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor, l
 	// ── pagination ────────────────────────────────────────────────────────────
 	if p := query.Get("page"); p != "" {
 		n, err := strconv.Atoi(p)
-		if err != nil || n < 1 {
+		if err != nil || n < 1 || n > maxPage {
 			return nil, fmt.Errorf("invalid page %q", p)
 		}
 		q.Page = n
@@ -172,7 +181,7 @@ func parseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor, l
 		group := -1
 		if m[1] != "" {
 			n, err := strconv.Atoi(m[1])
-			if err != nil || n == int(^uint(0)>>1) {
+			if err != nil || n >= int(^uint(0)>>1) {
 				return nil, fmt.Errorf("invalid filter key %q: bracket index is too large", key)
 			}
 			group = n + 1

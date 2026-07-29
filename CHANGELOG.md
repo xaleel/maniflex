@@ -2,6 +2,7 @@
 
 ## v0.4.1 (unreleased)
 
+- **Bugfix:** offset pages are now capped at 1,000,000, overflow-safe even for programmatic `QueryParams`, and oversized filter-group indices return `400 INVALID_QUERY` instead of wrapping into invalid SQL semantics.
 - **Bugfix:** cursor tokens now require a non-empty row ID and one scalar value compatible with the configured cursor field, returning `400 INVALID_QUERY` for malformed, trailing, out-of-range, or database-unbindable values before query execution.
 - **Bugfix:** `MigrateOnly` now validates and seals the complete registry, routes, and middleware before calling any adapter, preventing invalid applications from partially altering schema.
 - **Bugfix:** embedded `Handler` deployments can now use `StartServices` plus `Shutdown` to supervise services and hooks, while Handler-only shutdown cancels and drains `Server.Go` and request background work without owning the caller's HTTP listener.

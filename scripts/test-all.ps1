@@ -19,23 +19,24 @@ if (-not $Driver) {
 $env:MANIFLEX_TEST_DB = $Driver
 Write-Host "Driver: $env:MANIFLEX_TEST_DB" -ForegroundColor Cyan
 
-$modules = @(
-    '.',
-    'db/postgres', 'db/sqlite',
-    'events/kafka', 'events/nats', 'events/rabbitmq', 'events/redis',
-    'jobs/redis', 'middleware/auth/redis', 'middleware/db/redis', 'middleware/service/bcrypt',
-    'pkg/otel',
-    'examples', 'tests'
-)
+$moduleLines = @(go list -m -f '{{if .Main}}{{.Path}}|{{.Dir}}{{end}}')
+if ($LASTEXITCODE -ne 0 -or $moduleLines.Count -eq 0) {
+    Write-Host 'Could not discover workspace modules.' -ForegroundColor Red
+    exit 1
+}
 
 $failed = @()
-foreach ($m in $modules) {
-    Write-Host "=== $m ===" -ForegroundColor Cyan
-    Push-Location $m
+foreach ($line in $moduleLines) {
+    if (-not $line) {
+        continue
+    }
+    $modulePath, $moduleDir = $line -split '\|', 2
+    Write-Host "=== $modulePath ===" -ForegroundColor Cyan
+    Push-Location $moduleDir
     go build ./...
-    if ($LASTEXITCODE -ne 0) { $failed += "$m (build)" }
+    if ($LASTEXITCODE -ne 0) { $failed += "$modulePath (build)" }
     go test ./...
-    if ($LASTEXITCODE -ne 0) { $failed += "$m (test)" }
+    if ($LASTEXITCODE -ne 0) { $failed += "$modulePath (test)" }
     Pop-Location
 }
 

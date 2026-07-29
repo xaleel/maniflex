@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.4.2 (unreleased)
+
+- **Developer experience:** the all-module build/test scripts now discover every active module from `go.work`, preventing `admin`, `storage/s3`, and future modules from being silently skipped.
+
 ## v0.4.1 (2026-07-29)
 
 - **Bugfix:** standalone file GET and DELETE now share one path-aware wildcard decoder, so encoded separators, spaces, literal plus/percent text, reserved characters, and Unicode storage keys resolve identically without double decoding.

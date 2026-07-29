@@ -1020,7 +1020,10 @@ func (c *Server) DB() DBAdapter {
 }
 
 // SetStorage injects or replaces the file storage backend after construction.
-// This allows the two-step init pattern (analogous to SetDB):
+// This allows the two-step init pattern (analogous to SetDB). It must be called
+// before Handler, Start, StartServices, or MigrateOnly seals the server; a late
+// call panics rather than leaving the fixed routes inconsistent with the active
+// storage backend.
 //
 //	server := maniflex.New(maniflex.Config{...})
 //	fs, _ := storage.NewLocalStorage("./uploads")
@@ -1029,18 +1032,24 @@ func (c *Server) SetStorage(fs FileStorage) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.sealedLocked() {
-		panic("maniflex: SetStorage must be called before Start() or Handler()")
+		panic("maniflex: SetStorage cannot be called after server configuration is sealed")
 	}
 	c.cfg.FilesConfig.Storage = fs
 	c.steps.storage = fs
 }
 
 // SetKeyProvider injects or replaces the KeyProvider after construction.
-// This allows the two-step init pattern:
+// This allows the two-step init pattern. It must be called before Handler,
+// Start, StartServices, or MigrateOnly seals the server; a late call panics.
 //
 //	server := maniflex.New(maniflex.Config{...})
 //	server.SetKeyProvider(&encryption.EnvKeyProvider{Prefix: "MYAPP_KEY"})
 func (c *Server) SetKeyProvider(kp KeyProvider) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sealedLocked() {
+		panic("maniflex: SetKeyProvider cannot be called after server configuration is sealed")
+	}
 	c.cfg.KeyProvider = kp
 	c.steps.keyProvider = kp
 }
@@ -1053,7 +1062,8 @@ func (c *Server) SetKeyProvider(kp KeyProvider) {
 func (c *Server) KeyProvider() KeyProvider { return c.cfg.KeyProvider }
 
 // SetDB injects or replaces the database adapter after construction.
-// This allows the two-step init pattern:
+// This allows the two-step init pattern. It must be called before Handler,
+// Start, StartServices, or MigrateOnly seals the server; a late call panics.
 //
 //	server := maniflex.New(maniflex.Config{...})
 //	server.MustRegister(User{}, Post{})
@@ -1061,6 +1071,11 @@ func (c *Server) KeyProvider() KeyProvider { return c.cfg.KeyProvider }
 //	server.SetDB(db)
 //	server.Start()
 func (c *Server) SetDB(db DBAdapter) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sealedLocked() {
+		panic("maniflex: SetDB cannot be called after server configuration is sealed")
+	}
 	c.cfg.DB = db
 	c.steps.adapter = db
 }

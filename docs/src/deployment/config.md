@@ -100,6 +100,13 @@ URIs return `414 URI_TOO_LONG`; invalid list-query shapes return
 
 See [Database Backends](databases.md) for adapter construction.
 
+`SetDB`, `SetStorage`, and `SetKeyProvider` support two-step initialization, but
+they are configuration methods rather than runtime rotation APIs. Call them
+before `Handler`, `Start`, `StartServices`, or `MigrateOnly`; those entry points
+seal the server, and a later setter call panics without changing either the
+configured or active backend. Construct a new server when these dependencies
+must change.
+
 ## File storage and encryption
 
 | Field | Purpose |

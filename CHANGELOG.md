@@ -2,6 +2,7 @@
 
 ## v0.4.1 (unreleased)
 
+- **Bugfix:** `SetDB`, `SetStorage`, and `SetKeyProvider` now mutate configuration atomically only before the server is sealed and panic on late calls, preventing live requests and fixed routes from observing inconsistent runtime dependencies.
 - **Bugfix:** offset pages are now capped at 1,000,000, overflow-safe even for programmatic `QueryParams`, and oversized filter-group indices return `400 INVALID_QUERY` instead of wrapping into invalid SQL semantics.
 - **Bugfix:** cursor tokens now require a non-empty row ID and one scalar value compatible with the configured cursor field, returning `400 INVALID_QUERY` for malformed, trailing, out-of-range, or database-unbindable values before query execution.
 - **Bugfix:** `MigrateOnly` now validates and seals the complete registry, routes, and middleware before calling any adapter, preventing invalid applications from partially altering schema.

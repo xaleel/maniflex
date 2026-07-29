@@ -1,5 +1,5 @@
-// Package response provides router-level CORS handling plus Response-step
-// middleware for caching, field transforms, custom envelopes, and observability.
+// Package response provides router-level CORS and observability handling plus
+// Response-step middleware for caching, field transforms, and custom envelopes.
 package response
 
 import (
@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"time"
 
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/xaleel/maniflex"
@@ -560,57 +559,43 @@ func AddHeader(key, value string) maniflex.MiddlewareFunc {
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 
-// Logging emits a structured log line after every request using slog.
-// Register it with AtPosition(After) on the Response step.
+// Logging emits a structured log line after every HTTP request using slog.
+// Register it with Server.ObserveRequests.
 //
-//	server.Pipeline.Response.Register(
+//	server.ObserveRequests(
 //	    response.Logging(slog.Default()),
-//	    maniflex.AtPosition(maniflex.After),
 //	)
-func Logging(logger *slog.Logger) maniflex.MiddlewareFunc {
-	return func(ctx *maniflex.ServerContext, next func() error) error {
-		start := time.Now()
-		if err := next(); err != nil {
-			return err
-		}
-
-		status := 0
-		if ctx.Response != nil {
-			status = ctx.Response.StatusCode
-		}
-		actor := ""
-		if ctx.Auth != nil {
-			actor = ctx.Auth.UserID
-		}
-
+func Logging(logger *slog.Logger) maniflex.RequestObserver {
+	return func(observation maniflex.RequestObservation) {
 		attrs := []slog.Attr{
-			slog.String("method", ctx.Request.Method),
-			slog.String("path", ctx.Request.URL.Path),
-			slog.String("model", ctx.Model.Name),
-			slog.String("op", string(ctx.Operation)),
-			slog.Int("status", status),
-			// TODO capture duration more accurately (before 1st step to after last)
-			slog.Duration("duration", time.Since(start)),
+			slog.String("method", observation.Method),
+			slog.String("path", observation.Path),
+			slog.String("model", observation.Model),
+			slog.String("op", string(observation.Operation)),
+			slog.Int("status", observation.Status),
+			slog.Duration("duration", observation.Duration),
 		}
-		if ctx.RequestID != "" {
-			attrs = append(attrs, slog.String("request_id", ctx.RequestID))
+		if observation.RequestID != "" {
+			attrs = append(attrs, slog.String("request_id", observation.RequestID))
 		}
-		if actor != "" {
-			attrs = append(attrs, slog.String("actor", actor))
+		if observation.TraceID != "" {
+			attrs = append(attrs, slog.String("trace_id", observation.TraceID))
 		}
-		if ctx.ResourceID != "" {
-			attrs = append(attrs, slog.String("resource_id", ctx.ResourceID))
+		if observation.Actor != "" {
+			attrs = append(attrs, slog.String("actor", observation.Actor))
+		}
+		if observation.ResourceID != "" {
+			attrs = append(attrs, slog.String("resource_id", observation.ResourceID))
 		}
 
 		level := slog.LevelInfo
-		if status >= 500 {
+		if observation.Status >= 500 {
 			level = slog.LevelError
-		} else if status >= 400 {
+		} else if observation.Status >= 400 {
 			level = slog.LevelWarn
 		}
 
 		logger.LogAttrs(context.Background(), level, "request", attrs...)
-		return nil
 	}
 }
 
@@ -625,34 +610,22 @@ type MetricsCollector interface {
 	ObserveHistogram(name string, value float64, labels map[string]string)
 }
 
-// Metrics records request counters and latency histograms.
-// Register it with AtPosition(After) on the Response step.
+// Metrics records request counters and full router-to-response latency
+// histograms. Register it with Server.ObserveRequests.
 //
-//	server.Pipeline.Response.Register(
+//	server.ObserveRequests(
 //	    response.Metrics(myCollector),
-//	    maniflex.AtPosition(maniflex.After),
 //	)
-func Metrics(collector MetricsCollector) maniflex.MiddlewareFunc {
-	return func(ctx *maniflex.ServerContext, next func() error) error {
-		start := time.Now()
-		if err := next(); err != nil {
-			return err
-		}
-
-		status := "0"
-		if ctx.Response != nil {
-			status = fmt.Sprintf("%d", ctx.Response.StatusCode)
-		}
+func Metrics(collector MetricsCollector) maniflex.RequestObserver {
+	return func(observation maniflex.RequestObservation) {
 		labels := map[string]string{
-			"model":     ctx.Model.Name,
-			"operation": string(ctx.Operation),
-			"status":    status,
+			"model":     observation.Model,
+			"operation": string(observation.Operation),
+			"status":    fmt.Sprintf("%d", observation.Status),
 		}
 
 		collector.IncCounter("maniflex_requests_total", labels)
 		collector.ObserveHistogram("maniflex_request_duration_seconds",
-			time.Since(start).Seconds(), labels)
-
-		return nil
+			observation.Duration.Seconds(), labels)
 	}
 }

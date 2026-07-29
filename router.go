@@ -23,6 +23,14 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 	// with every other maniflex error envelope.
 	r.Use(PanicRecoverer(cfg.PanicLogger))
 	r.Use(chiMiddleware.RequestID)
+	if len(cfg.RequestObservers) > 0 {
+		for i, observer := range cfg.RequestObservers {
+			if observer == nil {
+				panic(fmt.Sprintf("maniflex: Config.RequestObservers[%d] must not be nil", i))
+			}
+		}
+		r.Use(requestObservationMiddleware(cfg.logger(), cfg.RequestObservers))
+	}
 	if max := cfg.QueryLimits.MaxURLBytes; max > 0 {
 		r.Use(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

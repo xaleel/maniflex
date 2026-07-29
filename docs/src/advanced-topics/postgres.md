@@ -197,7 +197,7 @@ the work.
 ## Observability
 
 - The adapter exposes pool statistics via `sql.DB.Stats()`; export them with
-  the `response.Metrics` middleware or a separate collector.
+  the `response.Metrics` request observer or a separate collector.
 - Set `Config.QueryTimeout` to bound slow queries; offending requests return
   `504 TIMEOUT` rather than holding a connection open.
 - Postgres logs (`log_min_duration_statement`) and `pg_stat_statements` are

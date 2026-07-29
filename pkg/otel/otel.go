@@ -32,12 +32,13 @@
 // Metrics. Instrument bridges the framework's response.MetricsCollector
 // extension point to an OTel meter, recording a maniflex_requests_total counter
 // and a maniflex_request_duration_seconds histogram, each labelled with model,
-// operation, and status.
+// operation, and status. Measurement spans router entry through response writing.
 package otel
 
 import (
 	"context"
 	"net/http"
+	"reflect"
 
 	"github.com/xaleel/maniflex"
 	"github.com/xaleel/maniflex/middleware/response"
@@ -109,12 +110,28 @@ func Instrument(s *maniflex.Server, opts Options) {
 
 	if opts.MeterProvider != nil {
 		collector := NewMetricsCollector(opts.MeterProvider, scope)
-		s.Pipeline.Response.Register(
-			response.Metrics(collector),
-			maniflex.AtPosition(maniflex.After),
-			maniflex.WithName("otel.metrics"),
-		)
+		registerMetrics(s, collector)
 	}
+}
+
+// registerMetrics keeps this independently versioned satellite buildable with
+// both the previous core (where response.Metrics was Response middleware) and
+// the current core (where it is a router-level RequestObserver). Reflection is
+// limited to this version bridge; current cores always take ObserveRequests.
+func registerMetrics(s *maniflex.Server, collector response.MetricsCollector) {
+	adapter := reflect.ValueOf(response.Metrics).Call([]reflect.Value{
+		reflect.ValueOf(collector),
+	})[0]
+
+	if observe := reflect.ValueOf(s).MethodByName("ObserveRequests"); observe.IsValid() {
+		observe.Call([]reflect.Value{adapter})
+		return
+	}
+
+	// Compatibility with core <= v0.4.1. This branch can be removed when the
+	// satellite's minimum core version includes Server.ObserveRequests.
+	register := reflect.ValueOf(s.Pipeline.Response).MethodByName("Register")
+	register.Call([]reflect.Value{adapter})
 }
 
 // rootSpanMW returns the Auth-step middleware that opens the per-request server

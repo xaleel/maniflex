@@ -2,6 +2,8 @@
 
 ## v0.4.2 (unreleased)
 
+- **Feature:** `BaseModel.CreatedAt` is now filterable through the generated list endpoints, in addition to being sortable.
+- **Developer experience (breaking):** `response.Logging` and `response.Metrics` now register through `Server.ObserveRequests`, measuring router entry through response writing and recording Auth rejections while retaining model, operation, status, actor, resource, and request labels.
 - **Developer experience:** added the supported `maniflextest` module with isolated SQLite and PostgreSQL servers, typed HTTP/auth helpers, and declarative fixtures/factories for consumer integration tests.
 - **Developer experience:** CI now syntax-checks every Go documentation fence in its appropriate fragment context, resolves compiled mdBook includes, and requires explicit reasons for pseudocode exemptions.
 - **Bugfix:** SSE clients are now registered before their successful response is exposed, preventing events published immediately after connection from being lost; test SSE readers also retain one lifecycle-bound scanner across receive timeouts.

@@ -20,7 +20,7 @@ const TABLE_NAME_PREFIX = ""
 // If edited here, make sure the names are edited in the `injectTimestamp` function
 type BaseModel struct {
 	ID        string    `json:"id"         db:"id"`
-	CreatedAt time.Time `json:"created_at" db:"created_at" mfx:"readonly,sortable"`
+	CreatedAt time.Time `json:"created_at" db:"created_at" mfx:"readonly,filterable,sortable"`
 	UpdatedAt time.Time `json:"updated_at" db:"updated_at" mfx:"readonly,sortable"`
 
 	// ── framework-internal carriers (typed-models migration, Phase 1) ──

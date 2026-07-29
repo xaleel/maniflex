@@ -379,14 +379,16 @@ db.Invalidate(cache, func(ctx) []string { return ["keys", ...] })  // AtPosition
 // HTTP ROUTER (Config.HTTPMiddlewares; before route dispatch/Auth)
 response.CORSHeaders("https://app.example.com")  // validates preflight; origins required; "*" panics with credentials
 
+// REQUEST OBSERVERS (Server.ObserveRequests; router entry through response writing)
+response.Logging(slog.Default())
+response.Metrics(collector)
+
 // RESPONSE (Response step)
 response.Cache(response.CacheConfig{MaxAge: 300}) // private by default; AtPosition(After)
 response.TransformField("avatar_url", func(v any) any { return cdn+v.(string) })
 response.RedactField("phone", func(ctx) bool { return !ctx.HasRole("support") })
 response.Envelope(func(ctx, data, meta) any { return ... })
 response.AddHeader("Strict-Transport-Security", "max-age=63072000")
-response.Logging(slog.Default())             // AtPosition(After)
-response.Metrics(collector)                  // AtPosition(After)
 
 // OPENAPI (OpenAPI.Generate step, maniflex.After position)
 openapi.SetTitle("My API")

@@ -452,6 +452,13 @@ type Config struct {
 	//   }
 	HTTPMiddlewares []HTTPMiddleware
 
+	// RequestObservers receive the final status, full router-to-response
+	// duration, and route metadata for every HTTP request. Unlike pipeline
+	// middleware, observers also see requests rejected by Auth or before
+	// dispatch. Use response.Logging and response.Metrics for the built-in
+	// adapters, or Server.ObserveRequests after New.
+	RequestObservers []RequestObserver
+
 	// HTTPAccessControlled declares that HTTPMiddlewares contains an access
 	// policy which protects every route before dispatch. ValidateProduction
 	// treats this as an explicit protected-access decision for generated model,

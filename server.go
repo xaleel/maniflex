@@ -1080,6 +1080,27 @@ func (c *Server) SetDB(db DBAdapter) {
 	c.steps.adapter = db
 }
 
+// ObserveRequests registers router-level request observers. It must be called
+// before Handler, Start, StartServices, or MigrateOnly seals the server.
+//
+//	server.ObserveRequests(
+//	    response.Logging(slog.Default()),
+//	    response.Metrics(collector),
+//	)
+func (c *Server) ObserveRequests(observers ...RequestObserver) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sealedLocked() {
+		panic("maniflex: ObserveRequests cannot be called after server configuration is sealed")
+	}
+	for i, observer := range observers {
+		if observer == nil {
+			panic(fmt.Sprintf("maniflex: ObserveRequests observer %d must not be nil", i))
+		}
+	}
+	c.cfg.RequestObservers = append(c.cfg.RequestObservers, observers...)
+}
+
 // Action registers a custom HTTP endpoint that participates in the Auth and
 // Response pipeline steps. Deserialize, Validate, Service, and DB steps are
 // skipped; the handler is responsible for body parsing (ctx.BindJSON) and

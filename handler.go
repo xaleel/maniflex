@@ -146,6 +146,7 @@ func (h *handlers) buildContext(w http.ResponseWriter, r *http.Request, meta *Mo
 		trace:       h.cfg.traceConfig(),
 		bg:          h.steps.bg,
 	}
+	attachRequestObservation(r, ctx)
 	if id := chi.URLParam(r, "id"); id != "" {
 		ctx.ResourceID = id
 	}

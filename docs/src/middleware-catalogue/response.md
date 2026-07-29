@@ -206,29 +206,30 @@ re-enveloped.
 
 ### `Logging`
 
-Writes a structured access log line per request at `maniflex.After`:
+Writes a structured access log after the complete HTTP request:
 
 ```go
-server.Pipeline.Response.Register(
+server.ObserveRequests(
     response.Logging(slog.Default()),
-    maniflex.AtPosition(maniflex.After),
 )
 ```
 
-The line carries request ID, trace ID, method, path, status, duration, and the
-authenticated user when set.
+The line carries request ID, method, path, model, operation, final status, full
+router-to-response duration, and the authenticated user when set. Router-level
+observation also records requests rejected during Auth, before they can reach
+the Response step.
 
 ### `Metrics`
 
-Records per-request metrics — count, latency, status class — into a configured
+Records per-request metrics — count, latency, and exact status — into a configured
 collector:
 
 ```go
-server.Pipeline.Response.Register(
+server.ObserveRequests(
     response.Metrics(myCollector),
-    maniflex.AtPosition(maniflex.After),
 )
 ```
 
-A reference Prometheus collector is provided; any sink with the same interface
-works.
+Any sink implementing `MetricsCollector` works. Counters and histograms retain
+model, operation, and status labels; non-model routes use empty model and
+operation labels.

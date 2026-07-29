@@ -60,8 +60,7 @@ s.Pipeline.Response.Register(response.TransformField("avatar_url", func(v any) a
 s.Pipeline.Response.Register(response.RedactField("phone", func(ctx *maniflex.ServerContext) bool { return !ctx.HasRole("support") }))
 s.Pipeline.Response.Register(response.Envelope(func(ctx *maniflex.ServerContext, data any, meta \*maniflex.ResponseMeta) any { return map[string]any{"result": data} }))
 s.Pipeline.Response.Register(response.AddHeader("Strict-Transport-Security", "max-age=63072000"))
-s.Pipeline.Response.Register(response.Logging(slog.Default()), maniflex.AtPosition(maniflex.After))
-s.Pipeline.Response.Register(response.Metrics(myCollector), maniflex.AtPosition(maniflex.After))
+s.ObserveRequests(response.Logging(slog.Default()), response.Metrics(myCollector))
 
 // ── OpenAPI ───────────────────────────────────────────────────────────────────
 s.Pipeline.OpenAPI.Generate.Register(openapi.AddSecurityScheme("bearerAuth", maniflex.OASSecurityScheme{Type: "http", Scheme: "bearer"}), maniflex.After)

@@ -313,7 +313,7 @@ func TestRequestID(t *testing.T) {
 }
 
 // loggingMiddleware is a thin wrapper so we can pass a specific logger to the
-// response.Logging middleware from within the test without importing the
+// response.Logging observer from within the test without importing the
 // middleware package (which would create a cycle in the test assertions).
 func loggingMiddleware(logger *slog.Logger) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {

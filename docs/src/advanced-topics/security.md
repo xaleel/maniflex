@@ -156,6 +156,5 @@ server.Pipeline.DB.Register(db.AuditLog(auditSink),
 // Response pipeline
 server.Pipeline.Response.Register(
     response.AddHeader("Strict-Transport-Security", "max-age=63072000"))
-server.Pipeline.Response.Register(response.Logging(slog.Default()),
-    maniflex.AtPosition(maniflex.After))
+server.ObserveRequests(response.Logging(slog.Default()))
 ```

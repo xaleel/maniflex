@@ -92,15 +92,15 @@ func TestMedium_Logging(t *testing.T) {
 
 		srv := testutil.NewServer(t, testutil.Options{
 			Middleware: func(s *maniflex.Server) {
-				s.Pipeline.Response.Register(
+				s.ObserveRequests(
 					response.Logging(slog.New(&captureSlogHandler{mu: &mu, records: &records})),
-					maniflex.AtPosition(maniflex.After),
 				)
 			},
 		})
 		srv.MustID(srv.CreateUser("U", "log1@x.com", "viewer"))
 		srv.GET("/users")
 
+		waitForLogRecords(t, &mu, &records, 2)
 		mu.Lock()
 		n := len(records)
 		mu.Unlock()
@@ -116,13 +116,13 @@ func TestMedium_Logging(t *testing.T) {
 
 		srv := testutil.NewServer(t, testutil.Options{
 			Middleware: func(s *maniflex.Server) {
-				s.Pipeline.DB.Register(
+				s.ObserveRequests(
 					response.Logging(slog.New(&captureSlogHandler{mu: &mu, records: &records})),
-					maniflex.AtPosition(maniflex.Before),
 				)
 			},
 		})
 		srv.GET("/users/00000000-0000-0000-0000-000000000000") // 404
+		waitForLogRecords(t, &mu, &records, 1)
 		mu.Lock()
 		recs := append([]slog.Record{}, records...)
 		mu.Unlock()
@@ -141,14 +141,14 @@ func TestMedium_Logging(t *testing.T) {
 
 		srv := testutil.NewServer(t, testutil.Options{
 			Middleware: func(s *maniflex.Server) {
-				s.Pipeline.Response.Register(
+				s.ObserveRequests(
 					response.Logging(slog.New(&captureSlogHandler{mu: &mu, records: &records})),
-					maniflex.AtPosition(maniflex.After),
 				)
 			},
 		})
 		srv.GET("/users")
 
+		waitForLogRecords(t, &mu, &records, 1)
 		mu.Lock()
 		recs := append([]slog.Record{}, records...)
 		mu.Unlock()
@@ -1752,6 +1752,21 @@ type captureSlogHandler struct {
 	records *[]slog.Record
 	attrs   []slog.Attr
 	groups  []string
+}
+
+func waitForLogRecords(t *testing.T, mu *sync.Mutex, records *[]slog.Record, want int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		got := len(*records)
+		mu.Unlock()
+		if got >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d request log record(s)", want)
 }
 
 func (h *captureSlogHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }

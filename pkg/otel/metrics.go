@@ -12,10 +12,10 @@ import (
 
 // NewMetricsCollector returns a response.MetricsCollector backed by an OTel
 // meter from mp. Use it directly with response.Metrics when you wire the
-// Response step yourself instead of calling Instrument:
+// request observer yourself instead of calling Instrument:
 //
 //	c := otel.NewMetricsCollector(meterProvider, "")
-//	srv.Pipeline.Response.Register(response.Metrics(c), maniflex.AtPosition(maniflex.After))
+//	srv.ObserveRequests(response.Metrics(c))
 //
 // scope names the instrumentation scope; "" defaults to "maniflex". Counters
 // and histograms are created lazily, once per metric name, and cached.

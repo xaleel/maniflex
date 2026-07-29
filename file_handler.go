@@ -348,6 +348,7 @@ func wrapFileMiddleware(cfg *Config, hf func(ctx *ServerContext) http.HandlerFun
 			serviceName: cfg.ServiceName,
 			trace:       cfg.traceConfig(),
 		}
+		attachRequestObservation(r, ctx)
 		if reqID != "" {
 			w.Header().Set("X-Request-Id", reqID)
 		}

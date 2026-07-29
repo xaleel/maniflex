@@ -38,6 +38,7 @@ func AdaptAuth(middleware ...MiddlewareFunc) HTTPMiddleware {
 				Writer:  w,
 				Ctx:     r.Context(),
 			}
+			attachRequestObservation(r, ctx)
 
 			var run func(int) error
 			run = func(i int) error {

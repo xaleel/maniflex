@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -808,19 +809,27 @@ func TestMiddlewareStack(t *testing.T) {
 
 	t.Run("metrics_collector_called_per_request", func(t *testing.T) {
 		t.Parallel()
-		mc := &testMetricsCollector{}
+		mc := &testMetricsCollector{histogramDone: make(chan struct{}, 5)}
 
 		srv := testutil.NewServer(t, testutil.Options{
 			Middleware: func(s *maniflex.Server) {
-				s.Pipeline.Response.Register(response.Metrics(mc), maniflex.AtPosition(maniflex.After))
+				s.ObserveRequests(response.Metrics(mc))
 			},
 		})
 		for range 5 {
 			srv.GET("/users")
 		}
+		for range 5 {
+			select {
+			case <-mc.histogramDone:
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for request metric")
+			}
+		}
 		mc.mu.Lock()
 		counter := mc.counterCalls
 		histo := mc.histoCalls
+		labels := maps.Clone(mc.lastLabels)
 		mc.mu.Unlock()
 
 		if counter < 5 {
@@ -828,6 +837,10 @@ func TestMiddlewareStack(t *testing.T) {
 		}
 		if histo < 5 {
 			t.Errorf("ObserveHistogram called %d times for 5 requests", histo)
+		}
+		if labels["model"] != "User" || labels["operation"] != string(maniflex.OpList) ||
+			labels["status"] != "200" {
+			t.Errorf("metric labels = %#v, want User/list/200", labels)
 		}
 	})
 }
@@ -844,21 +857,26 @@ func (s *testAuditSink) Write(_ context.Context, r db.AuditRecord) error {
 }
 
 type testMetricsCollector struct {
-	mu           sync.Mutex
-	counterCalls int
-	histoCalls   int
+	mu            sync.Mutex
+	counterCalls  int
+	histoCalls    int
+	lastLabels    map[string]string
+	histogramDone chan struct{}
 }
 
-func (m *testMetricsCollector) IncCounter(_ string, _ map[string]string) {
+func (m *testMetricsCollector) IncCounter(_ string, labels map[string]string) {
 	m.mu.Lock()
 	m.counterCalls++
+	m.lastLabels = maps.Clone(labels)
 	m.mu.Unlock()
 }
 
-func (m *testMetricsCollector) ObserveHistogram(_ string, _ float64, _ map[string]string) {
+func (m *testMetricsCollector) ObserveHistogram(_ string, value float64, labels map[string]string) {
 	m.mu.Lock()
 	m.histoCalls++
+	m.lastLabels = maps.Clone(labels)
 	m.mu.Unlock()
+	m.histogramDone <- struct{}{}
 }
 
 // makeJWT builds a minimal HS256 JWT that matches what middleware/auth/jwt.go parses.

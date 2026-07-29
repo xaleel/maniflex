@@ -3,6 +3,7 @@ package e2e
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/xaleel/maniflex/tests/e2e/testutil"
@@ -46,6 +47,19 @@ func TestFilter(t *testing.T) {
 		srv, _, _ := seed(t)
 		items := srv.GET("/posts?filter=status:eq:nonexistent").DataList()
 		testutil.AssertLen(t, "no match", items, 0)
+	})
+
+	t.Run("eq_on_basemodel_created_at", func(t *testing.T) {
+		t.Parallel()
+		srv := testutil.NewServer(t, testutil.Options{})
+		created := srv.CreateUser("Timestamped", "timestamped@x.com", "viewer").
+			AssertStatus(http.StatusCreated)
+		createdAt := testutil.Field(t, created.Data(), "created_at")
+
+		items := srv.GET("/users?filter=created_at:eq:" + url.QueryEscape(createdAt)).DataList()
+		testutil.AssertLen(t, "users created at exact timestamp", items, 1)
+		got := items[0].(map[string]any)
+		testutil.AssertEqual(t, "matching user ID", testutil.Field(t, got, "id"), created.ID())
 	})
 
 	t.Run("eq_on_non_filterable_field_returns_400", func(t *testing.T) {

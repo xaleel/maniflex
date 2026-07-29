@@ -94,6 +94,36 @@ func TestCORSPreflightRunsBeforeJWTAndSupportsOptimisticLocking(t *testing.T) {
 	assertCORSBrowserHeaders(t, updated.Header, origin)
 }
 
+// BUG-12: an OPTIONS request with an Origin is not necessarily a CORS
+// preflight. Without Access-Control-Request-Method it must continue to the
+// generated OPTIONS route, preserving that route's 204/Allow/empty-body
+// contract while CORS adds the ordinary cross-origin response headers.
+func TestCORSPlainOptionsUsesGeneratedRouteContract(t *testing.T) {
+	t.Parallel()
+
+	const origin = "https://app.example.com"
+	srv := testutil.NewServer(t, testutil.Options{
+		Config: func(cfg *maniflex.Config) {
+			cfg.HTTPMiddlewares = append(cfg.HTTPMiddlewares,
+				response.CORSHeaders(origin),
+			)
+		},
+	})
+
+	options := srv.Do(http.MethodOptions, srv.APIPath("/users"), nil,
+		map[string]string{"Origin": origin})
+	options.AssertStatus(http.StatusNoContent)
+	if len(options.Body) != 0 {
+		t.Errorf("OPTIONS body = %q, want empty", options.Body)
+	}
+	if got := options.Header.Get("Allow"); got != "GET, HEAD, POST, OPTIONS" {
+		t.Errorf("Allow = %q, want %q", got, "GET, HEAD, POST, OPTIONS")
+	}
+	if got := options.Header.Get("Access-Control-Allow-Origin"); got != origin {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, origin)
+	}
+}
+
 func assertCORSBrowserHeaders(t *testing.T, header http.Header, origin string) {
 	t.Helper()
 	if got := header.Get("Access-Control-Allow-Origin"); got != origin {

@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.4.1 (unreleased)
+## v0.4.1 (2026-07-29)
 
 - **Bugfix:** standalone file GET and DELETE now share one path-aware wildcard decoder, so encoded separators, spaces, literal plus/percent text, reserved characters, and Unicode storage keys resolve identically without double decoding.
 - **Bugfix:** `SetDB`, `SetStorage`, and `SetKeyProvider` now mutate configuration atomically only before the server is sealed and panic on late calls, preventing live requests and fixed routes from observing inconsistent runtime dependencies.

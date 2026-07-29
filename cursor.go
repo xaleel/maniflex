@@ -5,8 +5,11 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
+	"math"
 	"reflect"
 	"slices"
+	"strconv"
 	"time"
 )
 
@@ -69,7 +72,13 @@ type cursorToken struct {
 // keyset ordering. It is base64url(JSON) so it survives in a query string and
 // carries no separator-collision risk.
 func EncodeCursor(value any, id string) string {
-	value, valueType := encodeCursorValue(value)
+	if id == "" {
+		return ""
+	}
+	value, valueType, ok := encodeCursorValue(value)
+	if !ok {
+		return ""
+	}
 	b, err := json.Marshal(cursorToken{
 		Version: cursorTokenVersion,
 		Type:    valueType,
@@ -85,36 +94,48 @@ func EncodeCursor(value any, id string) string {
 // encodeCursorValue converts values into an explicitly typed wire
 // representation. In particular, time.Time uses the same fixed-width UTC form
 // SQLite stores, rather than time.Time's variable-width RFC3339Nano JSON.
-func encodeCursorValue(value any) (any, string) {
+func encodeCursorValue(value any) (any, string, bool) {
 	switch v := value.(type) {
 	case time.Time:
-		return CanonicalTime(v), cursorTypeTime
+		return CanonicalTime(v), cursorTypeTime, true
 	case *time.Time:
 		if v != nil {
-			return CanonicalTime(*v), cursorTypeTime
+			return CanonicalTime(*v), cursorTypeTime, true
 		}
 	case string:
-		return v, cursorTypeString
+		return v, cursorTypeString, true
 	case bool:
-		return v, cursorTypeBoolean
+		return v, cursorTypeBoolean, true
 	case json.Number:
-		if _, err := v.Int64(); err == nil {
-			return v, cursorTypeInteger
+		if _, err := parseCursorInteger(v); err == nil {
+			return v, cursorTypeInteger, true
 		}
-		return v, cursorTypeNumber
+		if f, err := v.Float64(); err == nil && !math.IsInf(f, 0) && !math.IsNaN(f) {
+			return v, cursorTypeNumber, true
+		}
 	}
 	if value == nil {
-		return nil, cursorTypeJSON
+		return nil, "", false
 	}
-	switch reflect.TypeOf(value).Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		return value, cursorTypeInteger
+	rv := reflect.ValueOf(value)
+	switch rv.Kind() {
+	case reflect.String:
+		return rv.String(), cursorTypeString, true
+	case reflect.Bool:
+		return rv.Bool(), cursorTypeBoolean, true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return rv.Int(), cursorTypeInteger, true
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return rv.Uint(), cursorTypeInteger, true
 	case reflect.Float32, reflect.Float64:
-		return value, cursorTypeNumber
+		f := rv.Float()
+		if !math.IsInf(f, 0) && !math.IsNaN(f) {
+			return f, cursorTypeNumber, true
+		}
 	default:
-		return value, cursorTypeJSON
+		return nil, "", false
 	}
+	return nil, "", false
 }
 
 // DecodeCursor reverses EncodeCursor. It accepts legacy unversioned tokens so
@@ -134,16 +155,30 @@ func decodeCursorToken(token string) (cursorToken, any, error) {
 	}
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.UseNumber()
+	dec.DisallowUnknownFields()
 	var t cursorToken
 	if err := dec.Decode(&t); err != nil {
 		return cursorToken{}, nil, fmt.Errorf("malformed cursor token")
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		return cursorToken{}, nil, fmt.Errorf("malformed cursor token")
+	}
+	if t.ID == "" {
+		return cursorToken{}, nil, fmt.Errorf("cursor id must not be empty")
+	}
+	if t.V == nil {
+		return cursorToken{}, nil, fmt.Errorf("cursor value must not be null")
 	}
 
 	if t.Version == 0 {
 		if t.Type != "" {
 			return cursorToken{}, nil, fmt.Errorf("malformed cursor token")
 		}
-		return t, normalizeCursorValue(t.V), nil
+		value, err := decodeLegacyCursorValue(t.V)
+		if err != nil {
+			return cursorToken{}, nil, err
+		}
+		return t, value, nil
 	}
 	if t.Version != cursorTokenVersion {
 		return cursorToken{}, nil, fmt.Errorf("unsupported cursor token version")
@@ -165,7 +200,7 @@ func decodeCursorToken(token string) (cursorToken, any, error) {
 		if !ok {
 			return cursorToken{}, nil, fmt.Errorf("malformed integer cursor value")
 		}
-		i, err := n.Int64()
+		i, err := parseCursorInteger(n)
 		if err != nil {
 			return cursorToken{}, nil, fmt.Errorf("malformed integer cursor value")
 		}
@@ -176,7 +211,7 @@ func decodeCursorToken(token string) (cursorToken, any, error) {
 			return cursorToken{}, nil, fmt.Errorf("malformed numeric cursor value")
 		}
 		f, err := n.Float64()
-		if err != nil {
+		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
 			return cursorToken{}, nil, fmt.Errorf("malformed numeric cursor value")
 		}
 		return t, f, nil
@@ -191,26 +226,38 @@ func decodeCursorToken(token string) (cursorToken, any, error) {
 		}
 		return t, canonical, nil
 	case cursorTypeJSON:
-		return t, normalizeCursorValue(t.V), nil
+		return cursorToken{}, nil, fmt.Errorf("unsupported cursor value type")
 	default:
 		return cursorToken{}, nil, fmt.Errorf("unknown cursor value type")
 	}
 }
 
-// normalizeCursorValue converts a json.Number into the narrowest stdlib numeric
-// type so database/sql binds it as a number. Non-numeric values pass through.
-func normalizeCursorValue(v any) any {
-	n, ok := v.(json.Number)
-	if !ok {
-		return v
-	}
+func parseCursorInteger(n json.Number) (any, error) {
 	if i, err := n.Int64(); err == nil {
-		return i
+		return i, nil
 	}
-	if f, err := n.Float64(); err == nil {
-		return f
+	if u, err := strconv.ParseUint(n.String(), 10, 64); err == nil {
+		return u, nil
 	}
-	return n.String()
+	return nil, fmt.Errorf("not an integer")
+}
+
+func decodeLegacyCursorValue(v any) (any, error) {
+	switch v := v.(type) {
+	case string, bool:
+		return v, nil
+	case json.Number:
+		if i, err := parseCursorInteger(v); err == nil {
+			return i, nil
+		}
+		f, err := v.Float64()
+		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) {
+			return nil, fmt.Errorf("malformed numeric cursor value")
+		}
+		return f, nil
+	default:
+		return nil, fmt.Errorf("cursor value must be a string, number, or boolean")
+	}
 }
 
 // decodeCursorForField validates a token value against the configured cursor
@@ -271,26 +318,58 @@ func decodeCursorForField(token string, field *FieldMeta) (value any, id string,
 			return nil, "", fmt.Errorf("cursor value type does not match field %q", field.Tags.DBName)
 		}
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		i, ok := value.(int64)
-		if !ok || reflect.New(fieldType).Elem().OverflowInt(i) {
+		var i int64
+		switch n := value.(type) {
+		case int64:
+			i = n
+		case uint64:
+			if n > math.MaxInt64 {
+				return nil, "", fmt.Errorf("cursor value is out of range for field %q", field.Tags.DBName)
+			}
+			i = int64(n)
+		default:
+			return nil, "", fmt.Errorf("cursor value type does not match field %q", field.Tags.DBName)
+		}
+		if reflect.New(fieldType).Elem().OverflowInt(i) {
 			return nil, "", fmt.Errorf("cursor value is out of range for field %q", field.Tags.DBName)
 		}
+		value = i
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
-		i, ok := value.(int64)
-		if !ok || i < 0 || reflect.New(fieldType).Elem().OverflowUint(uint64(i)) {
+		var u uint64
+		switch n := value.(type) {
+		case int64:
+			if n < 0 {
+				return nil, "", fmt.Errorf("cursor value is out of range for field %q", field.Tags.DBName)
+			}
+			u = uint64(n)
+		case uint64:
+			u = n
+		default:
+			return nil, "", fmt.Errorf("cursor value type does not match field %q", field.Tags.DBName)
+		}
+		// database/sql only accepts unsigned integers through MaxInt64; values
+		// above it fail driver conversion even when the Go field is uint64.
+		if u > math.MaxInt64 || reflect.New(fieldType).Elem().OverflowUint(u) {
 			return nil, "", fmt.Errorf("cursor value is out of range for field %q", field.Tags.DBName)
 		}
+		value = u
 	case reflect.Float32, reflect.Float64:
 		switch n := value.(type) {
 		case int64:
 			value = float64(n)
+		case uint64:
+			value = float64(n)
 		case float64:
-			if reflect.New(fieldType).Elem().OverflowFloat(n) {
-				return nil, "", fmt.Errorf("cursor value is out of range for field %q", field.Tags.DBName)
-			}
 		default:
 			return nil, "", fmt.Errorf("cursor value type does not match field %q", field.Tags.DBName)
 		}
+		if n := value.(float64); math.IsInf(n, 0) || math.IsNaN(n) ||
+			reflect.New(fieldType).Elem().OverflowFloat(n) {
+			return nil, "", fmt.Errorf("cursor value is out of range for field %q", field.Tags.DBName)
+		}
+	default:
+		return nil, "", fmt.Errorf("cursor field %q has unsupported type %s",
+			field.Tags.DBName, fieldType)
 	}
 	return value, t.ID, nil
 }
@@ -410,8 +489,29 @@ func (m *ModelMeta) collectCursorField() error {
 				"across pages. Use a non-pointer field, or pick another cursor field",
 			m.Name, raw, f.Type)
 	}
+	if !isSupportedCursorFieldType(f.Type) {
+		return fmt.Errorf(
+			"maniflex: model %q cursor_field %q has unsupported type %s; "+
+				"use a string, boolean, integer, float, or time.Time field",
+			m.Name, raw, f.Type)
+	}
 	m.CursorField = f.Tags.DBName
 	return nil
+}
+
+func isSupportedCursorFieldType(t reflect.Type) bool {
+	if t == reflect.TypeOf(time.Time{}) {
+		return true
+	}
+	switch t.Kind() {
+	case reflect.String, reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	default:
+		return false
+	}
 }
 
 // collectSearchFields resolves every mfx:"searchable" field into m.SearchFields

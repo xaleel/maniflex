@@ -5,6 +5,7 @@ package e2e
 //	go test ./tests/e2e/... -run TestCursorPagination
 
 import (
+	"encoding/base64"
 	"net/http"
 	"testing"
 	"time"
@@ -263,6 +264,34 @@ func TestCursorPagination(t *testing.T) {
 		srv := cursorServer(t)
 		seedEvents(t, srv, 1)
 		srv.GET("/cursor_events?cursor=%21%21%21not-base64%21%21%21").AssertStatus(http.StatusBadRequest)
+	})
+
+	t.Run("invalid_cursor_payloads_return_400_before_database", func(t *testing.T) {
+		t.Parallel()
+		srv := cursorServer(t)
+		seedEvents(t, srv, 1)
+
+		payloads := map[string]string{
+			"missing id":       `{"v":1}`,
+			"empty id":         `{"v":1,"id":""}`,
+			"null value":       `{"v":null,"id":"row-1"}`,
+			"object value":     `{"v":{"nested":true},"id":"row-1"}`,
+			"array value":      `{"v":[1,2],"id":"row-1"}`,
+			"trailing value":   `{"v":1,"id":"row-1"} true`,
+			"wrong field type": `{"version":1,"type":"string","v":"1","id":"row-1"}`,
+			"fractional int":   `{"version":1,"type":"integer","v":1.5,"id":"row-1"}`,
+			"unbindable uint":  `{"version":1,"type":"integer","v":18446744073709551615,"id":"row-1"}`,
+		}
+		for name, payload := range payloads {
+			t.Run(name, func(t *testing.T) {
+				token := base64.RawURLEncoding.EncodeToString([]byte(payload))
+				resp := srv.GET("/cursor_events?cursor=" + token)
+				resp.AssertStatus(http.StatusBadRequest)
+				if code := resp.ErrorCode(); code != "INVALID_QUERY" {
+					t.Errorf("error code = %q, want INVALID_QUERY", code)
+				}
+			})
+		}
 	})
 
 	t.Run("cursor_on_model_without_cursor_field_returns_400", func(t *testing.T) {

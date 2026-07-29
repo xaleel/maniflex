@@ -2,6 +2,7 @@
 
 ## v0.4.1 (unreleased)
 
+- **Bugfix:** cursor tokens now require a non-empty row ID and one scalar value compatible with the configured cursor field, returning `400 INVALID_QUERY` for malformed, trailing, out-of-range, or database-unbindable values before query execution.
 - **Bugfix:** `MigrateOnly` now validates and seals the complete registry, routes, and middleware before calling any adapter, preventing invalid applications from partially altering schema.
 - **Bugfix:** embedded `Handler` deployments can now use `StartServices` plus `Shutdown` to supervise services and hooks, while Handler-only shutdown cancels and drains `Server.Go` and request background work without owning the caller's HTTP listener.
 - **Bugfix:** model, middleware, and other route/spec registration now closes atomically when `Handler` or `Start` seals the server; late `Register` calls return `ErrRegistrationClosed` without mutating the registry.

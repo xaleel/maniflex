@@ -55,12 +55,13 @@ type Event struct {
 Equivalently, set `ModelConfig.CursorField: "created_at"` at registration, or
 put `mfx:"...,cursor_field:<name>"` on any of the model's own fields.
 
-The cursor column must be `mfx:"sortable"` and **not nullable** — a pointer field
-(`*time.Time`) is rejected at registration. Keyset pagination needs a total order,
-and NULL has no place in one: the boundary comparison is never true for it, and
-Postgres and SQLite don't even agree where NULLs sort. A nullable cursor column
-would drop or repeat rows across pages, so the model fails to register rather than
-paginating wrongly.
+The cursor column must be `mfx:"sortable"`, **not nullable**, and a supported
+scalar type (`string`, `bool`, an integer, a float, or `time.Time`). Pointer,
+collection, and structured fields are rejected at registration. Keyset pagination
+needs a total order, and NULL has no place in one: the boundary comparison is never
+true for it, and Postgres and SQLite don't even agree where NULLs sort. A nullable
+cursor column would drop or repeat rows across pages, so the model fails to
+register rather than paginating wrongly.
 
 The presence of `?cursor=` switches the request into keyset mode (it supersedes
 `?page`). Send an empty value for the first page, then the `meta.next_cursor`
@@ -92,9 +93,12 @@ Cursor responses carry a different `meta` shape — no `total`/`page`/`pages`
 `has_more` is `false` and `next_cursor` is omitted on the last page. The token is
 opaque — treat it as a string and pass it back verbatim. Tokens carry the cursor
 value's type and are checked against the model field; a token for a different
-field type is rejected with `400`. Timestamp cursors use a fixed-width UTC
-representation so ordering is identical on SQLite and Postgres. Unversioned
-tokens issued by earlier Maniflex releases remain accepted during upgrades.
+field type is rejected with `400 INVALID_QUERY`. Missing IDs, null or non-scalar
+values, trailing JSON, and values outside the field or database driver's supported
+range are rejected the same way before query execution. Timestamp cursors use a
+fixed-width UTC representation so ordering is identical on SQLite and Postgres.
+Valid scalar unversioned tokens issued by earlier Maniflex releases remain
+accepted during upgrades.
 
 ## `filter`
 

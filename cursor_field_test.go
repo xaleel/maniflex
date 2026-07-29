@@ -26,6 +26,11 @@ type cursorNotSortableDoc struct {
 	Seq int `json:"seq" db:"seq" mfx:"cursor_field:seq"`
 }
 
+type cursorUnsupportedDoc struct {
+	BaseModel
+	Labels []string `json:"labels" db:"labels" mfx:"sortable,cursor_field:labels"`
+}
+
 func TestCollectCursorField_NullableFieldRejected(t *testing.T) {
 	srv := New(Config{})
 	err := srv.Register(cursorNullableDoc{})
@@ -61,5 +66,16 @@ func TestCollectCursorField_NonSortableFieldRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "sortable") {
 		t.Errorf("error should mention sortable, got: %v", err)
+	}
+}
+
+func TestCollectCursorField_UnsupportedTypeRejected(t *testing.T) {
+	srv := New(Config{})
+	err := srv.Register(cursorUnsupportedDoc{})
+	if err == nil {
+		t.Fatal("registering a slice cursor_field must fail")
+	}
+	if !strings.Contains(err.Error(), "unsupported type") {
+		t.Errorf("error should explain the cursor type restriction, got: %v", err)
 	}
 }

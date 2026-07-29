@@ -174,6 +174,35 @@ func TestCaller_ZeroValueFieldsApplySafeDefaults(t *testing.T) {
 	}
 }
 
+func TestNewCallerMatchesDocumentedDefaults(t *testing.T) {
+	t.Parallel()
+
+	const baseURL = "https://api.example.test"
+	constructed := NewCaller(baseURL)
+	if constructed == nil {
+		t.Fatal("NewCaller returned nil")
+	}
+	if constructed.BaseURL != baseURL {
+		t.Errorf("BaseURL = %q, want %q", constructed.BaseURL, baseURL)
+	}
+	if constructed.Timeout != DefaultCallerTimeout {
+		t.Errorf("Timeout = %v, want %v", constructed.Timeout, DefaultCallerTimeout)
+	}
+	if constructed.MaxRetry != DefaultCallerMaxRetry {
+		t.Errorf("MaxRetry = %d, want %d", constructed.MaxRetry, DefaultCallerMaxRetry)
+	}
+	if constructed.MaxResponseBytes != DefaultCallerMaxResponseBytes {
+		t.Errorf("MaxResponseBytes = %d, want %d",
+			constructed.MaxResponseBytes, DefaultCallerMaxResponseBytes)
+	}
+
+	direct := &Caller{BaseURL: baseURL}
+	if got := direct.httpClient().Timeout; got != constructed.httpClient().Timeout {
+		t.Errorf("direct literal timeout = %v, constructor timeout = %v",
+			got, constructed.httpClient().Timeout)
+	}
+}
+
 func TestCaller_NegativeMaxRetryDisablesRetries(t *testing.T) {
 	srv, calls := jsonEcho(t, http.StatusServiceUnavailable, ``)
 	c := &Caller{BaseURL: srv.URL, MaxRetry: -1}

@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -283,6 +284,13 @@ func TestAggregateEndpoint_DefaultAndMaximumRows(t *testing.T) {
 		t.Fatalf("default row limit: got %d rows, want 2", got)
 	}
 
+	base["limit"] = 0
+	resp = aggGET(srv, base)
+	resp.AssertStatus(http.StatusOK)
+	if got := len(resp.DataList()); got != 2 {
+		t.Fatalf("explicit zero row limit: got %d rows, want default 2", got)
+	}
+
 	base["limit"] = 999
 	resp = aggGET(srv, base)
 	resp.AssertStatus(http.StatusOK)
@@ -359,6 +367,8 @@ func TestAggregateEndpoint_OperationalErrorsAreNot400(t *testing.T) {
 	}{
 		{"database failure", errors.New("secret database topology"), http.StatusInternalServerError, "AGGREGATE_ERROR"},
 		{"timeout", context.DeadlineExceeded, http.StatusGatewayTimeout, "TIMEOUT"},
+		{"wrapped timeout", fmt.Errorf("driver wait: %w", context.DeadlineExceeded), http.StatusGatewayTimeout, "TIMEOUT"},
+		{"server cancellation", context.Canceled, http.StatusGatewayTimeout, "TIMEOUT"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -382,8 +392,8 @@ func TestAggregateEndpoint_OperationalErrorsAreNot400(t *testing.T) {
 			if got := resp.ErrorCode(); got != tc.code {
 				t.Errorf("error code: got %q, want %q", got, tc.code)
 			}
-			if strings.Contains(string(resp.Body), "secret database topology") {
-				t.Errorf("database error leaked to client: %s", resp.Body)
+			if strings.Contains(string(resp.Body), tc.err.Error()) {
+				t.Errorf("operational error leaked to client: %s", resp.Body)
 			}
 		})
 	}

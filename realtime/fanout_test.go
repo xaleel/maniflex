@@ -74,7 +74,7 @@ func TestHub_SlowClientDoesNotDelayOthers(t *testing.T) {
 		SendTimeout:  3 * time.Second, // ignored now; this was the stall length
 		PingInterval: time.Minute,     // keep the heartbeat out of the measurement
 	})
-	ts := newHubTestServer(t, hub)
+	ts := newHubTestServerSmallSendBuffer(t, hub)
 
 	// The slow client matches everything and never reads again after
 	// subscribing. The fast client matches only the probes, so the flood never
@@ -124,7 +124,7 @@ func TestHub_SlowSSEClientDoesNotDelayWebSockets(t *testing.T) {
 		SendTimeout:  3 * time.Second,
 		PingInterval: time.Minute,
 	})
-	ts := newHubTestServer(t, hub)
+	ts := newHubTestServerSmallSendBuffer(t, hub)
 
 	// An SSE client that never reads its body: the same stall, on the other
 	// transport, blocking the same shared goroutine.

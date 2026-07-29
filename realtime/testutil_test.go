@@ -528,3 +528,51 @@ func newHubTestServer(t *testing.T, h interface {
 	t.Cleanup(ts.Close)
 	return ts
 }
+
+// sndBufListener pins SO_SNDBUF on every connection it accepts.
+//
+// Saturating a client that has stopped reading depends on the server's write
+// blocking, and how much a kernel absorbs for such a peer before that happens
+// varies by an order of magnitude across platforms. Measured on loopback with
+// a peer that never reads: Windows blocks after ~180 KiB, while Linux
+// auto-tunes the send buffer up to net.ipv4.tcp_wmem's maximum and swallows
+// ~4 MiB. A flood sized to saturate the first sails straight through the
+// second — which is how the fan-out tests came to pass locally and fail in CI.
+// Pinning the send buffer puts saturation under the test's control instead of
+// the runner's sysctls; 4 KiB caps absorption at ~180 KiB on both.
+type sndBufListener struct {
+	net.Listener
+	t    *testing.T
+	size int
+}
+
+func (l *sndBufListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := c.(*net.TCPConn); ok {
+		if err := tc.SetWriteBuffer(l.size); err != nil {
+			l.t.Errorf("sndBufListener: SetWriteBuffer(%d): %v", l.size, err)
+		}
+	}
+	return c, nil
+}
+
+// newHubTestServerSmallSendBuffer is newHubTestServer for tests that need a
+// non-reading client to actually back up the server's writer. See
+// sndBufListener for why the send buffer has to be pinned.
+func newHubTestServerSmallSendBuffer(t *testing.T, h interface {
+	Handler() http.HandlerFunc
+	SSEHandler() http.HandlerFunc
+}) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", h.Handler())
+	mux.HandleFunc("/sse", h.SSEHandler())
+	ts := httptest.NewUnstartedServer(mux)
+	ts.Listener = &sndBufListener{Listener: ts.Listener, t: t, size: 4096}
+	ts.Start()
+	t.Cleanup(ts.Close)
+	return ts
+}

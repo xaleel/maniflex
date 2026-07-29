@@ -33,6 +33,10 @@ var ErrAlreadyStarted = errors.New("maniflex: server already started")
 // restartable; construct a new one.
 var ErrStopped = errors.New("maniflex: server has stopped")
 
+// ErrRegistrationClosed is returned when a route or specification contributor
+// is registered after Start or Handler has sealed the server.
+var ErrRegistrationClosed = errors.New("maniflex: registration is closed")
+
 type serverState uint8
 
 const (
@@ -134,6 +138,11 @@ func (c *Server) Register(args ...any) error {
 	if err != nil {
 		return err
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sealedLocked() {
+		return fmt.Errorf("%w: Register must be called before Start() or Handler()", ErrRegistrationClosed)
+	}
 	for i, v := range models {
 		cfg := ModelConfig{}
 		if i < len(configs) {
@@ -194,30 +203,18 @@ func (c *Server) MustRegister(args ...any) {
 //	server.AddService(pool)                          // a custom Service
 //	server.AddService(maniflex.ServiceFunc(startFn)) // adapter for a bare func
 func (c *Server) AddService(s Service) {
-	if c.hasStarted() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.state != serverNew {
 		panic("maniflex: AddService must be called before Start()")
 	}
 	c.lifecycle.add(s)
 }
 
-// hasStarted reports whether StartWithContext has been entered. It is the honest
-// version of the "too late to register" guard: the sentinel it replaces was
-// `httpSrv != nil`, a field set only once migration and every service had already
-// come up, so a call landing anywhere inside the boot window sailed past the guard
-// and was then quietly ignored — a service added there is never started (DX-4).
-func (c *Server) hasStarted() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.state != serverNew
-}
-
-// sealed reports whether the routing table is fixed — the router has been built,
-// or a boot that will build it is under way. Registration calls that mount a route
-// (Action, RealtimeDoc, EnableGlobalSearch) panic once it is true, since anything
-// they add past this point would silently never be served.
-func (c *Server) sealed() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// sealedLocked reports whether the routing table is fixed or a boot that will
+// fix it is under way. The caller must hold c.mu so checking the window and
+// mutating a route/spec contributor are one atomic operation.
+func (c *Server) sealedLocked() bool {
 	return c.state != serverNew || c.router != nil
 }
 
@@ -906,6 +903,11 @@ func (c *Server) DB() DBAdapter {
 //	fs, _ := storage.NewLocalStorage("./uploads")
 //	server.SetStorage(fs)
 func (c *Server) SetStorage(fs FileStorage) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sealedLocked() {
+		panic("maniflex: SetStorage must be called before Start() or Handler()")
+	}
 	c.cfg.FilesConfig.Storage = fs
 	c.steps.storage = fs
 }
@@ -948,7 +950,9 @@ func (c *Server) SetDB(db DBAdapter) {
 // Must be called before Start() or Handler(). Panics if the server has
 // already started or if the method+path conflicts with a registered model route.
 func (c *Server) Action(cfg ActionConfig) {
-	if c.sealed() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sealedLocked() {
 		panic("maniflex: Action() must be called before Start() or Handler()")
 	}
 	// Fail loudly at registration rather than deferring a nil-handler panic to
@@ -975,12 +979,14 @@ func (c *Server) Action(cfg ActionConfig) {
 //	    maniflex.ForOperation(maniflex.OpCreate),
 //	)
 func (c *Server) AllowPublic(opts ...MiddlewareOption) {
-	if c.sealed() {
-		panic("maniflex: AllowPublic() must be called before Start() or Handler()")
-	}
 	cfg := MiddlewareConfig{Name: "AllowPublic", Position: Before}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sealedLocked() {
+		panic("maniflex: AllowPublic() must be called before Start() or Handler()")
 	}
 	c.publicAccess = append(c.publicAccess, cfg)
 }
@@ -994,7 +1000,9 @@ func (c *Server) AllowPublic(opts ...MiddlewareOption) {
 //
 // Must be called before Start() or Handler().
 func (c *Server) RealtimeDoc(cfg AsyncAPIConfig) {
-	if c.sealed() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sealedLocked() {
 		panic("maniflex: RealtimeDoc() must be called before Start() or Handler()")
 	}
 	c.asyncCfg = &cfg
@@ -1032,9 +1040,6 @@ type GlobalSearchConfig struct {
 // Must be called before Start() or Handler(). Apps that never call it gain no
 // new endpoint.
 func (c *Server) EnableGlobalSearch(cfg ...GlobalSearchConfig) {
-	if c.sealed() {
-		panic("maniflex: EnableGlobalSearch() must be called before Start() or Handler()")
-	}
 	resolved := GlobalSearchConfig{}
 	if len(cfg) > 0 {
 		resolved = cfg[0]
@@ -1050,6 +1055,11 @@ func (c *Server) EnableGlobalSearch(cfg ...GlobalSearchConfig) {
 	}
 	if resolved.MaxLimit == 0 {
 		resolved.MaxLimit = 100
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.sealedLocked() {
+		panic("maniflex: EnableGlobalSearch() must be called before Start() or Handler()")
 	}
 	c.globalSearch = &resolved
 	c.oasSteps.globalSearch = &resolved

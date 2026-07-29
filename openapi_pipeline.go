@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"sync"
+	"sync/atomic"
 
 	chiMiddleware "github.com/go-chi/chi/v5/middleware"
 )
@@ -103,9 +105,11 @@ type oasEntry struct {
 // Unlike StepRegistry it has no ForModel/ForOperation filtering because the
 // OpenAPI endpoint is a single, model-agnostic route.
 type OpenAPIStepRegistry struct {
-	name      string
-	defaultFn OpenAPIMiddlewareFunc
-	entries   []oasEntry
+	name           string
+	defaultFn      OpenAPIMiddlewareFunc
+	entries        []oasEntry
+	registrationMu sync.Mutex
+	frozen         atomic.Bool
 }
 
 func newOASStepRegistry(name string, fn OpenAPIMiddlewareFunc) *OpenAPIStepRegistry {
@@ -130,7 +134,16 @@ func newOASStepRegistry(name string, fn OpenAPIMiddlewareFunc) *OpenAPIStepRegis
 //
 //	// Serve the spec from a static file instead of generating it
 //	pipeline.OpenAPI.Generate.Register(serveFromFile, maniflex.Replace)
+//
+// Must be called before Start() or Handler(); it panics after the pipeline is
+// frozen so a live specification cannot observe a partially changed chain.
 func (s *OpenAPIStepRegistry) Register(fn OpenAPIMiddlewareFunc, pos ...Position) {
+	s.registrationMu.Lock()
+	defer s.registrationMu.Unlock()
+	if s.frozen.Load() {
+		panic("maniflex: Pipeline." + s.name +
+			".Register must be called before Start() or Handler()")
+	}
 	p := Before
 	if len(pos) > 0 {
 		p = pos[0]
@@ -140,6 +153,13 @@ func (s *OpenAPIStepRegistry) Register(fn OpenAPIMiddlewareFunc, pos ...Position
 
 func (s *OpenAPIStepRegistry) configured() bool {
 	return len(s.entries) > 0
+}
+
+// freeze makes entries immutable before the router starts reading them.
+func (s *OpenAPIStepRegistry) freeze() {
+	s.registrationMu.Lock()
+	defer s.registrationMu.Unlock()
+	s.frozen.Store(true)
 }
 
 // build composes the chain for this step:
@@ -227,6 +247,12 @@ func newOpenAPIPipeline(steps *oasDefaultSteps) *OpenAPIPipeline {
 		Response: newOASStepRegistry("openapi.response", steps.response),
 		logger:   logger,
 	}
+}
+
+func (p *OpenAPIPipeline) freeze() {
+	p.Auth.freeze()
+	p.Generate.freeze()
+	p.Response.freeze()
 }
 
 // execute runs the three-step pipeline for one OpenAPI request.

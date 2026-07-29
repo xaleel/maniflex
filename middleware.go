@@ -218,11 +218,12 @@ func operationCovers(registered, actual Operation) bool {
 // StepRegistry holds all middlewares registered for one pipeline step.
 // Obtain one from the Pipeline struct and call Register() on it.
 type StepRegistry struct {
-	name          string         // internal lowercase key, e.g. "auth", "db"
-	displayName   string         // display name for trace logs, e.g. "Auth", "DB"
-	defaultFn     MiddlewareFunc // built-in handler for this step
-	defaultFnName string         // trace name for the built-in handler, e.g. "default"
-	middlewares   []registeredMiddleware
+	name           string         // internal lowercase key, e.g. "auth", "db"
+	displayName    string         // display name for trace logs, e.g. "Auth", "DB"
+	defaultFn      MiddlewareFunc // built-in handler for this step
+	defaultFnName  string         // trace name for the built-in handler, e.g. "default"
+	middlewares    []registeredMiddleware
+	registrationMu sync.Mutex
 
 	// frozen is set when the router is built. It closes the registration window:
 	// after it, middlewares is immutable, which is what lets the composed chains
@@ -282,14 +283,16 @@ func newStepRegistry(name, defaultFnName string, defaultFn MiddlewareFunc) *Step
 // the router is built, so a middleware registered afterwards could not be applied
 // consistently — Register panics rather than take effect for some requests only.
 func (s *StepRegistry) Register(fn MiddlewareFunc, opts ...MiddlewareOption) {
+	cfg := MiddlewareConfig{Position: Before, Name: "[unnamed]"}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	s.registrationMu.Lock()
+	defer s.registrationMu.Unlock()
 	if s.frozen.Load() {
 		panic(fmt.Sprintf(
 			"maniflex: Pipeline.%s.Register must be called before Start() or Handler() "+
 				"(the pipeline is composed and cached when the router is built)", s.displayName))
-	}
-	cfg := MiddlewareConfig{Position: Before, Name: "[unnamed]"}
-	for _, o := range opts {
-		o(&cfg)
 	}
 	s.middlewares = append(s.middlewares, registeredMiddleware{fn: fn, cfg: cfg})
 }
@@ -297,7 +300,11 @@ func (s *StepRegistry) Register(fn MiddlewareFunc, opts ...MiddlewareOption) {
 // freeze closes the registration window and is called once, when the router is
 // built. Every later Register panics, so middlewares stops changing and the chains
 // cache is safe to fill and read without a lock.
-func (s *StepRegistry) freeze() { s.frozen.Store(true) }
+func (s *StepRegistry) freeze() {
+	s.registrationMu.Lock()
+	defer s.registrationMu.Unlock()
+	s.frozen.Store(true)
+}
 
 // build returns the composed MiddlewareFunc for the given model+operation pair,
 // from cache once the registry is frozen. It used to compose on every call — six

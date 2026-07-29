@@ -10,9 +10,9 @@ import (
 // asyncAPIHandler serves the AsyncAPI 2.6 document at {PathPrefix}/asyncapi.json.
 // It is mounted only when Server.RealtimeDoc was called, so apps that don't use
 // the realtime hub gain no new endpoint. The document is regenerated per request
-// (cheap, and keeps it in sync if models are registered late). Cross-origin
-// access is controlled by the application's HTTP middleware rather than a
-// hard-coded wildcard policy.
+// (cheap, and reflects the registry sealed when the router was built).
+// Cross-origin access is controlled by the application's HTTP middleware rather
+// than a hard-coded wildcard policy.
 func asyncAPIHandler(reg RegistryAccessor, cfg *Config, asyncCfg AsyncAPIConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if reqID := chiMiddleware.GetReqID(r.Context()); reqID != "" {

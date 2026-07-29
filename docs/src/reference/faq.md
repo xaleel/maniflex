@@ -312,10 +312,10 @@ line in your metrics.
 
 ### "`/openapi.json` is empty."
 
-You didn't register any models, or you call `server.Pipeline.OpenAPI.*`
-before `MustRegister`. The generator reads the registry at request time,
-not registration time — but if the registry is empty when a client hits
-it, the spec is empty too.
+You didn't register any models before calling `Handler` or `Start`. The
+generator reads the registry at request time, but that registry is sealed when
+the router is built; late model registration is rejected so the specification
+and mounted routes cannot disagree.
 
 ### "I customised the spec but my changes don't appear."
 

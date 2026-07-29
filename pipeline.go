@@ -61,6 +61,7 @@ func (p *Pipeline) freeze() {
 	for _, s := range p.steps() {
 		s.freeze()
 	}
+	p.OpenAPI.freeze()
 	p.frozen.Store(true)
 }
 

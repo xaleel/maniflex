@@ -29,6 +29,13 @@ server.MustRegister(Article{})
 for use in `main` or package initialisation. A struct is rejected at
 registration if it is not a struct type or does not embed `BaseModel`.
 
+Register every model before the first call to `Handler` or `Start`. That call
+atomically seals the server's routes, specifications, and middleware pipeline.
+A later `Register` returns `maniflex.ErrRegistrationClosed` without changing
+the registry; `MustRegister` panics on the same error. Actions, rollups,
+computed fields, realtime documentation, global search, storage, and pipeline
+middleware share the same setup window.
+
 Two embedding rules are enforced there as well:
 
 - **Embed by value, never by pointer.** `*maniflex.BaseModel` — or any other

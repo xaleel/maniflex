@@ -77,8 +77,10 @@ var rollupOps = map[AggregateOp]bool{
 // Returns an error rather than panicking so the configuration can be validated
 // in a test; MustRegisterRollup is the panic-on-error variant for main().
 func (s *Server) RegisterRollup(r Rollup) error {
-	if s.sealed() {
-		return fmt.Errorf("maniflex: RegisterRollup must be called before Start() or Handler()")
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sealedLocked() {
+		return fmt.Errorf("%w: RegisterRollup must be called before Start() or Handler()", ErrRegistrationClosed)
 	}
 	cr, err := s.compileRollup(r)
 	if err != nil {

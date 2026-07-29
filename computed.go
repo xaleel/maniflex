@@ -121,6 +121,8 @@ func ComputedSchema(s *OASSchema) ComputedOption {
 //
 // For anything that queries a database, prefer AddBatchComputedField — this
 // callback runs once per row.
+//
+// Must be called before Start() or Handler().
 func (s *Server) AddComputedField(modelName, name string, fn ComputedFunc, opts ...ComputedOption) error {
 	if fn == nil {
 		return fmt.Errorf("maniflex: AddComputedField requires a non-nil function")
@@ -137,6 +139,8 @@ func (s *Server) AddComputedField(modelName, name string, fn ComputedFunc, opts 
 //
 // A single read and the create/update echo call it with a one-row slice; an
 // export calls it once per chunk of rows.
+//
+// Must be called before Start() or Handler().
 func (s *Server) AddBatchComputedField(modelName, name string, fn BatchComputedFunc, opts ...ComputedOption) error {
 	if fn == nil {
 		return fmt.Errorf("maniflex: AddBatchComputedField requires a non-nil function")
@@ -145,7 +149,7 @@ func (s *Server) AddBatchComputedField(modelName, name string, fn BatchComputedF
 }
 
 // MustAddComputedField is the panic-on-error variant, intended for use in
-// `main` or package initialisation.
+// `main` or package initialisation. It must be called before Start() or Handler().
 func (s *Server) MustAddComputedField(modelName, name string, fn ComputedFunc, opts ...ComputedOption) {
 	if err := s.AddComputedField(modelName, name, fn, opts...); err != nil {
 		panic(err)
@@ -153,7 +157,7 @@ func (s *Server) MustAddComputedField(modelName, name string, fn ComputedFunc, o
 }
 
 // MustAddBatchComputedField is the panic-on-error variant of
-// AddBatchComputedField.
+// AddBatchComputedField. It must be called before Start() or Handler().
 func (s *Server) MustAddBatchComputedField(modelName, name string, fn BatchComputedFunc, opts ...ComputedOption) {
 	if err := s.AddBatchComputedField(modelName, name, fn, opts...); err != nil {
 		panic(err)
@@ -167,6 +171,12 @@ func (s *Server) registerComputed(modelName string, cf ComputedField, opts []Com
 	}
 	for _, o := range opts {
 		o(&cf)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sealedLocked() {
+		return fmt.Errorf("%w: AddComputedField must be called before Start() or Handler()",
+			ErrRegistrationClosed)
 	}
 	meta, ok := s.registry.Get(modelName)
 	if !ok {
@@ -200,6 +210,8 @@ func (s *Server) registerComputed(modelName string, cf ComputedField, opts []Com
 //	    func(ctx *maniflex.ServerContext, p *Product) (any, error) {
 //	        return stockService.CurrentLevel(ctx.Ctx, p.ID)
 //	    })
+//
+// Must be called before Start() or Handler().
 func AddComputedField[T any](s *Server, modelName, name string, fn func(ctx *ServerContext, record *T) (any, error), opts ...ComputedOption) error {
 	if fn == nil {
 		return fmt.Errorf("maniflex: AddComputedField requires a non-nil function")
@@ -219,6 +231,8 @@ func AddComputedField[T any](s *Server, modelName, name string, fn func(ctx *Ser
 //	        counts, err := itemCountsBySite(ctx, ids(sites)) // ONE query
 //	        ...
 //	    })
+//
+// Must be called before Start() or Handler().
 func AddBatchComputedField[T any](s *Server, modelName, name string, fn func(ctx *ServerContext, records []*T) ([]any, error), opts ...ComputedOption) error {
 	if fn == nil {
 		return fmt.Errorf("maniflex: AddBatchComputedField requires a non-nil function")

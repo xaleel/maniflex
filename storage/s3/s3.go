@@ -77,9 +77,10 @@ type S3Storage struct {
 	client   s3API
 	uploader uploaderAPI
 	// presign generates a pre-signed GET URL for the given full (prefixed) S3
-	// key and TTL. Nil when the backend was constructed without presigning
-	// support (test seam via newWithClient without a presigner).
-	presign func(ctx context.Context, fullKey string, ttl time.Duration) (string, error)
+	// key under the supplied options. Nil when the backend was constructed
+	// without presigning support (test seam via newWithClient without a
+	// presigner).
+	presign func(ctx context.Context, fullKey string, opts maniflex.PresignURLOptions) (string, error)
 	// presignPost mints an S3 POST-policy upload for the given full key. Nil on
 	// the same test seam as presign; PresignUpload reports that rather than
 	// minting something unsigned.
@@ -143,16 +144,13 @@ func New(ctx context.Context, cfg Config) (*S3Storage, error) {
 	presignClient := awss3.NewPresignClient(client)
 
 	s := newWithClient(cfg, client, uploader, nil)
-	s.presign = func(ctx context.Context, fullKey string, ttl time.Duration) (string, error) {
-		in := &awss3.GetObjectInput{
-			Bucket: awsv2.String(cfg.Bucket),
-			Key:    awsv2.String(fullKey),
+	s.presign = func(ctx context.Context, fullKey string, opts maniflex.PresignURLOptions) (string, error) {
+		in := newGetObjectInput(cfg.Bucket, fullKey, opts)
+		var popts []func(*awss3.PresignOptions)
+		if opts.TTL > 0 {
+			popts = append(popts, awss3.WithPresignExpires(opts.TTL))
 		}
-		var opts []func(*awss3.PresignOptions)
-		if ttl > 0 {
-			opts = append(opts, awss3.WithPresignExpires(ttl))
-		}
-		req, err := presignClient.PresignGetObject(ctx, in, opts...)
+		req, err := presignClient.PresignGetObject(ctx, in, popts...)
 		if err != nil {
 			return "", fmt.Errorf("s3: presign %q: %w", fullKey, err)
 		}
@@ -191,7 +189,7 @@ func New(ctx context.Context, cfg Config) (*S3Storage, error) {
 // newWithClient is the test seam: lets callers inject a fake s3API and
 // uploader without going through New (which requires real AWS credentials).
 // presign may be nil — URL() will return an error in that case.
-func newWithClient(cfg Config, client s3API, uploader uploaderAPI, presign func(context.Context, string, time.Duration) (string, error)) *S3Storage {
+func newWithClient(cfg Config, client s3API, uploader uploaderAPI, presign func(context.Context, string, maniflex.PresignURLOptions) (string, error)) *S3Storage {
 	cfg.KeyPrefix = normalisePrefix(cfg.KeyPrefix)
 	return &S3Storage{cfg: cfg, client: client, uploader: uploader, presign: presign}
 }
@@ -379,17 +377,57 @@ func (s *S3Storage) PresignUpload(ctx context.Context, key string,
 	}, nil
 }
 
+// newGetObjectInput builds the presign request for one URL, applying only the
+// options that carry a value so an empty PresignURLOptions produces exactly the
+// request the old ttl-only signature produced.
+//
+// It is a package-level function rather than inline in the presign closure so
+// the mapping can be unit-tested: the closure needs an SDK presign client, and
+// the MinIO integration test that exercises it end to end does not run on every
+// change.
+func newGetObjectInput(bucket, fullKey string, opts maniflex.PresignURLOptions) *awss3.GetObjectInput {
+	in := &awss3.GetObjectInput{
+		Bucket: awsv2.String(bucket),
+		Key:    awsv2.String(fullKey),
+	}
+	if v := opts.ResponseCacheControl; v != "" {
+		in.ResponseCacheControl = awsv2.String(v)
+	}
+	// Via the method, not the field: Download/Filename must encode the same way
+	// here as they do for a proxied download.
+	if v := opts.ContentDisposition(); v != "" {
+		in.ResponseContentDisposition = awsv2.String(v)
+	}
+	if v := opts.ResponseContentEncoding; v != "" {
+		in.ResponseContentEncoding = awsv2.String(v)
+	}
+	if v := opts.ResponseContentLanguage; v != "" {
+		in.ResponseContentLanguage = awsv2.String(v)
+	}
+	if v := opts.ResponseContentType; v != "" {
+		in.ResponseContentType = awsv2.String(v)
+	}
+	if !opts.ResponseExpires.IsZero() {
+		in.ResponseExpires = awsv2.Time(opts.ResponseExpires)
+	}
+	if v := opts.VersionID; v != "" {
+		in.VersionId = awsv2.String(v)
+	}
+	return in
+}
+
 // defaultPresignTTL mirrors the AWS SDK's own default for a POST policy, so the
 // ExpiresAt we report matches the policy we actually minted rather than guessing.
 const defaultPresignTTL = 15 * time.Minute
 
-// URL implements maniflex.FileStorage. Returns a presigned GET URL for the given key
-// valid for ttl. When ttl is 0 (FileACLPublic), a long-lived presigned URL is
-// returned (AWS limits presigned URLs to 7 days; use bucket/object public-read
-// ACL for truly permanent URLs).
+// URL implements maniflex.FileStorage. Returns a presigned GET URL for the given
+// key, valid for opts.TTL and carrying whichever response-* overrides opts sets.
+// When opts.TTL is 0 (FileACLPublic), a long-lived presigned URL is returned
+// (AWS limits presigned URLs to 7 days; use bucket/object public-read ACL for
+// truly permanent URLs).
 // Returns an error if the backend was constructed via newWithClient without a
 // presigner (test-only path).
-func (s *S3Storage) URL(ctx context.Context, key string, ttl time.Duration) (string, error) {
+func (s *S3Storage) URL(ctx context.Context, key string, opts maniflex.PresignURLOptions) (string, error) {
 	if s.presign == nil {
 		return "", fmt.Errorf("s3: presigning not configured")
 	}
@@ -397,10 +435,11 @@ func (s *S3Storage) URL(ctx context.Context, key string, ttl time.Duration) (str
 	if err != nil {
 		return "", err
 	}
-	if ttl == 0 {
-		ttl = 7 * 24 * time.Hour // AWS max presign duration
+	// opts is a value copy, so raising TTL here cannot be observed by the caller.
+	if opts.TTL == 0 {
+		opts.TTL = 7 * 24 * time.Hour // AWS max presign duration
 	}
-	return s.presign(ctx, full, ttl)
+	return s.presign(ctx, full, opts)
 }
 
 // fullKey applies KeyPrefix and rejects keys that would escape the bucket

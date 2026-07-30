@@ -21,8 +21,11 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"mime"
+	"net/http"
 	"os"
 	"testing"
+	"time"
 
 	awsv2 "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
@@ -151,5 +154,62 @@ func TestS3Integration_DeleteIsIdempotent(t *testing.T) {
 	store := newIntegrationStore(t)
 	if err := store.Delete(context.Background(), "never-stored.bin"); err != nil {
 		t.Errorf("delete on missing key returned error: %v", err)
+	}
+}
+
+func TestS3Integration_URLResponseOverrides(t *testing.T) {
+	store := newIntegrationStore(t)
+	ctx := context.Background()
+	key := "url-overrides.bin"
+	content := []byte("override me")
+
+	t.Cleanup(func() { _ = store.Delete(ctx, key) })
+
+	// Stored as octet-stream under one name, served as PDF under another: if
+	// the overrides are dropped anywhere between here and S3, the response
+	// headers below come back describing what was stored instead.
+	if err := store.Store(ctx, key, bytes.NewReader(content), maniflex.FileMeta{
+		ContentType: "application/octet-stream",
+		Size:        int64(len(content)),
+		Filename:    "stored-name.bin",
+	}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	u, err := store.URL(ctx, key, maniflex.PresignURLOptions{
+		TTL:                  5 * time.Minute,
+		Download:             true,
+		Filename:             "résumé.pdf",
+		ResponseContentType:  "application/pdf",
+		ResponseCacheControl: "no-store",
+	})
+	if err != nil {
+		t.Fatalf("URL: %v", err)
+	}
+
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("GET presigned URL: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("GET presigned URL: status %d: %s", resp.StatusCode, body)
+	}
+
+	wantDisposition := mime.FormatMediaType("attachment", map[string]string{"filename": "résumé.pdf"})
+	for _, tc := range []struct{ header, want string }{
+		{"Content-Type", "application/pdf"},
+		{"Cache-Control", "no-store"},
+		{"Content-Disposition", wantDisposition},
+	} {
+		if got := resp.Header.Get(tc.header); got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.header, got, tc.want)
+		}
+	}
+
+	got, _ := io.ReadAll(resp.Body)
+	if !bytes.Equal(got, content) {
+		t.Errorf("body = %q, want %q", got, content)
 	}
 }

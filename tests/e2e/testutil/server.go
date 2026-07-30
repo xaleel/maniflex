@@ -659,8 +659,8 @@ func (m *MemoryStorage) PresignUpload(_ context.Context, key string,
 }
 
 // URL implements maniflex.FileStorage. Returns a server-relative /files/<key> path
-// regardless of ttl — MemoryStorage has no presigning capability.
-func (m *MemoryStorage) URL(_ context.Context, key string, _ time.Duration) (string, error) {
+// regardless of opts — MemoryStorage has no presigning capability.
+func (m *MemoryStorage) URL(_ context.Context, key string, _ maniflex.PresignURLOptions) (string, error) {
 	if key == "" {
 		return "", fmt.Errorf("storage: key must not be empty")
 	}

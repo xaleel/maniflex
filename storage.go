@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"mime"
 	"mime/multipart"
 	"time"
 )
@@ -272,14 +273,24 @@ type FileStorage interface {
 	// stored before it can be caught, so pin it where you can.
 	PresignUpload(ctx context.Context, key string, opts PresignUploadOptions) (*PresignedUpload, error)
 
-	// URL returns a URL suitable for the given access mode.
-	// For FileACLSigned, ttl is how long the URL remains valid; the backend
-	// must return an error if it cannot produce time-limited URLs.
-	// For FileACLPublic, ttl is 0 and a permanent (or very long-lived) URL
-	// is returned.
-	// LocalStorage returns a server-relative /files/<key> path for both modes.
-	// S3Storage returns a presigned GET URL using the AWS SDK presigner.
-	URL(ctx context.Context, key string, ttl time.Duration) (string, error)
+	// URL returns a URL for the object at key, honouring whatever of opts the
+	// backend can.
+	//
+	// opts.TTL is how long the URL stays valid; a backend that cannot produce
+	// time-limited URLs must return an error rather than a URL that only looks
+	// time-limited. A zero TTL is the FileACLPublic case and asks for a
+	// permanent — or the longest available — URL.
+	//
+	// The response-header overrides are best-effort by design: pin the ones your
+	// backend can put inside the signature and ignore the rest. Call
+	// opts.ContentDisposition() rather than reading Download, Filename and
+	// ResponseContentDisposition yourself, so every backend encodes a filename
+	// the same way.
+	//
+	// LocalStorage returns a server-relative /files/<key> path and ignores every
+	// option. S3Storage returns a presigned GET URL carrying the response-*
+	// query parameters.
+	URL(ctx context.Context, key string, opts PresignURLOptions) (string, error)
 }
 
 // RangeRetriever is an optional extension a FileStorage backend may implement
@@ -322,7 +333,7 @@ var ErrFileNotFound = errors.New("file not found")
 // Returning this is the correct, safe answer — the wrong one is an unsigned URL,
 // which would be an unauthenticated write endpoint wearing a presigned URL's
 // clothes. LocalStorage.URL already sets that precedent on the read side (it
-// returns /files/<key> whatever the ttl), and a read served openly is a leak
+// returns /files/<key> whatever the options), and a read served openly is a leak
 // where a write served openly is an upload endpoint for the internet.
 var ErrPresignUnsupported = errors.New("storage backend cannot presign uploads")
 
@@ -377,6 +388,97 @@ type PresignedUpload struct {
 	// MaxSize echoes the cap the signature pins, so a client can fail a too-large
 	// file before spending the upload rather than after.
 	MaxSize int64 `json:"max_size,omitempty"`
+}
+
+// PresignURLOptions describes the URL FileStorage.URL should mint. It replaces
+// the bare ttl parameter so a caller can pin the headers the object is served
+// with, not merely how long the URL stays valid.
+//
+// Every field beyond TTL is a hint the backend honours where it can. A backend
+// that cannot honour one ignores it rather than failing: LocalStorage has no
+// signature to put them in and returns the same /files/<key> path whatever is
+// set, exactly as it already ignores TTL.
+type PresignURLOptions struct {
+	// TTL is how long the URL stays valid.
+	//
+	// Zero keeps the meaning the ttl parameter had: the public / permanent mode,
+	// in which a backend returns the longest-lived URL it can (S3 caps presigned
+	// URLs at 7 days). A zero-valued PresignURLOptions therefore asks for a
+	// long-lived URL — set TTL explicitly whenever you want a short one.
+	TTL time.Duration
+
+	// ResponseCacheControl overrides the Cache-Control header the backend serves
+	// this object with, for this URL only (S3's response-cache-control).
+	ResponseCacheControl string
+
+	// ResponseContentDisposition overrides Content-Disposition. Prefer Download
+	// and Filename below, which encode the header correctly for you; set this
+	// when you need a form they cannot express. It always wins over them.
+	ResponseContentDisposition string
+
+	// ResponseContentEncoding overrides Content-Encoding.
+	ResponseContentEncoding string
+
+	// ResponseContentLanguage overrides Content-Language.
+	ResponseContentLanguage string
+
+	// ResponseContentType overrides Content-Type — useful to serve an object
+	// stored as application/octet-stream as its real media type without
+	// rewriting the stored metadata.
+	ResponseContentType string
+
+	// ResponseExpires overrides the Expires header. The zero time means unset.
+	ResponseExpires time.Time
+
+	// Download asks for Content-Disposition: attachment, so a browser saves the
+	// object rather than rendering it. Ignored when ResponseContentDisposition
+	// is set.
+	Download bool
+
+	// Filename is the name a browser should save the object as. Ignored when
+	// ResponseContentDisposition is set. Encoded per RFC 5987 when it cannot be
+	// written as a plain filename= parameter, so non-ASCII names survive.
+	Filename string
+
+	// VersionID selects one version of the object on a backend that keeps them
+	// (an S3 versioned bucket). Empty means the current version; backends
+	// without object versioning ignore it.
+	VersionID string
+}
+
+// ContentDisposition returns the Content-Disposition this URL should serve
+// with, or "" when the caller asked for none.
+//
+// An explicit ResponseContentDisposition always wins. Otherwise Download and
+// Filename compose one through mime.FormatMediaType — the same encoder
+// setFileHeaders uses for a proxied download — so a presigned URL and a
+// download through GET /files/* name the same object identically, filename*
+// form included.
+//
+// Backends must call this rather than reading the three fields themselves, or
+// they will each encode filenames slightly differently.
+func (o PresignURLOptions) ContentDisposition() string {
+	if o.ResponseContentDisposition != "" {
+		return o.ResponseContentDisposition
+	}
+	if !o.Download && o.Filename == "" {
+		return ""
+	}
+	disposition := "inline"
+	if o.Download {
+		disposition = "attachment"
+	}
+	if o.Filename == "" {
+		return disposition
+	}
+	// Defensive: FormatMediaType returns "" for input it cannot encode. Fall
+	// back to the bare disposition rather than dropping the header entirely.
+	if formatted := mime.FormatMediaType(disposition, map[string]string{
+		"filename": o.Filename,
+	}); formatted != "" {
+		return formatted
+	}
+	return disposition
 }
 
 // UploadedFile holds a parsed file from a multipart request, ready for

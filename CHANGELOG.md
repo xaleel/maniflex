@@ -1,7 +1,8 @@
 # Changelog
 
-## v0.4.2 (unreleased)
+## v0.4.2 (2026-07-30)
 
+- **Feature (breaking):** `FileStorage.URL` now takes a `maniflex.PresignURLOptions` struct in place of its `ttl time.Duration` parameter, so a signed URL can pin the headers the object is served with. It carries S3's six `response-*` overrides (`ResponseCacheControl`, `ResponseContentDisposition`, `ResponseContentEncoding`, `ResponseContentLanguage`, `ResponseContentType`, `ResponseExpires`), a `Download`/`Filename` pair that encodes a correct `Content-Disposition` including the RFC 5987 `filename*` form, and a `VersionID` for versioned buckets. `S3Storage` pins all of them into the signature; `LocalStorage` ignores them and still returns `/files/<key>`, since unsigned overrides on the application's own origin would be a stored-XSS vector. `opts.TTL` keeps every meaning `ttl` had, zero included. Migrate call sites and third-party backends with `ttl` → `maniflex.PresignURLOptions{TTL: ttl}`; `mfx:"file_acl:signed"` responses are unchanged.
 - **Maintenance:** cleared the Staticcheck baseline by replacing deprecated Chi `RealIP` and AWS S3 uploader usage and resolving the remaining test findings.
 - **Feature:** `BaseModel.CreatedAt` is now filterable through the generated list endpoints, in addition to being sortable.
 - **Developer experience (breaking):** `response.Logging` and `response.Metrics` now register through `Server.ObserveRequests`, measuring router entry through response writing and recording Auth rejections while retaining model, operation, status, actor, resource, and request labels.

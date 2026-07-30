@@ -293,7 +293,7 @@ func TestNormalisePrefix(t *testing.T) {
 }
 
 // newStoreWithPresign returns a store wired with a fake presigner that records
-// the calls and returns a deterministic URL — enough to test the URL() ttl
+// the calls and returns a deterministic URL — enough to test URL()'s option
 // handling without invoking the AWS SDK.
 func newStoreWithPresign(cfg Config) (*S3Storage, *fakeS3, *[]presignCall) {
 	if cfg.Bucket == "" {
@@ -304,23 +304,23 @@ func newStoreWithPresign(cfg Config) (*S3Storage, *fakeS3, *[]presignCall) {
 	}
 	f := newFake()
 	calls := &[]presignCall{}
-	presign := func(_ context.Context, fullKey string, ttl time.Duration) (string, error) {
-		*calls = append(*calls, presignCall{key: fullKey, ttl: ttl})
-		return fmt.Sprintf("https://example.com/%s?ttl=%d", fullKey, int64(ttl.Seconds())), nil
+	presign := func(_ context.Context, fullKey string, opts maniflex.PresignURLOptions) (string, error) {
+		*calls = append(*calls, presignCall{key: fullKey, opts: opts})
+		return fmt.Sprintf("https://example.com/%s?ttl=%d", fullKey, int64(opts.TTL.Seconds())), nil
 	}
 	return newWithClient(cfg, f, f, presign), f, calls
 }
 
 type presignCall struct {
-	key string
-	ttl time.Duration
+	key  string
+	opts maniflex.PresignURLOptions
 }
 
 func TestURL_ErrorsWhenPresignNotConfigured(t *testing.T) {
 	// newStore() (via newWithClient with nil presign) is the test-only path.
 	// Calling URL() in that mode must error rather than panic.
 	store, _ := newStore(Config{})
-	_, err := store.URL(context.Background(), "key", time.Hour)
+	_, err := store.URL(context.Background(), "key", maniflex.PresignURLOptions{TTL: time.Hour})
 	if err == nil {
 		t.Fatal("expected error when presign is nil, got nil")
 	}
@@ -331,7 +331,7 @@ func TestURL_ErrorsWhenPresignNotConfigured(t *testing.T) {
 
 func TestURL_AppliesKeyPrefixAndForwardsTTL(t *testing.T) {
 	store, _, calls := newStoreWithPresign(Config{KeyPrefix: "envs/prod"})
-	got, err := store.URL(context.Background(), "uploads/file.pdf", 15*time.Minute)
+	got, err := store.URL(context.Background(), "uploads/file.pdf", maniflex.PresignURLOptions{TTL: 15 * time.Minute})
 	if err != nil {
 		t.Fatalf("URL: %v", err)
 	}
@@ -342,8 +342,8 @@ func TestURL_AppliesKeyPrefixAndForwardsTTL(t *testing.T) {
 		t.Errorf("presigner saw key %q, want %q (KeyPrefix must be applied)",
 			(*calls)[0].key, "envs/prod/uploads/file.pdf")
 	}
-	if (*calls)[0].ttl != 15*time.Minute {
-		t.Errorf("ttl forwarded as %v, want 15m", (*calls)[0].ttl)
+	if (*calls)[0].opts.TTL != 15*time.Minute {
+		t.Errorf("ttl forwarded as %v, want 15m", (*calls)[0].opts.TTL)
 	}
 	if !strings.HasPrefix(got, "https://example.com/envs/prod/uploads/file.pdf") {
 		t.Errorf("returned URL %q does not contain prefixed key", got)
@@ -354,26 +354,103 @@ func TestURL_TTLZeroUsesAWSMaximum(t *testing.T) {
 	// ttl=0 represents FileACLPublic — the adapter substitutes the AWS-cap of
 	// 7 days so the URL is as long-lived as the SDK allows.
 	store, _, calls := newStoreWithPresign(Config{})
-	if _, err := store.URL(context.Background(), "k", 0); err != nil {
+	if _, err := store.URL(context.Background(), "k", maniflex.PresignURLOptions{}); err != nil {
 		t.Fatalf("URL: %v", err)
 	}
 	want := 7 * 24 * time.Hour
-	if (*calls)[0].ttl != want {
-		t.Errorf("ttl=0 produced presign ttl %v, want %v (AWS 7-day cap)", (*calls)[0].ttl, want)
+	if (*calls)[0].opts.TTL != want {
+		t.Errorf("ttl=0 produced presign ttl %v, want %v (AWS 7-day cap)", (*calls)[0].opts.TTL, want)
 	}
 }
 
 func TestURL_RejectsEmptyKey(t *testing.T) {
 	store, _, _ := newStoreWithPresign(Config{})
-	if _, err := store.URL(context.Background(), "", time.Hour); err == nil {
+	if _, err := store.URL(context.Background(), "", maniflex.PresignURLOptions{TTL: time.Hour}); err == nil {
 		t.Error("expected error for empty key")
 	}
 }
 
 func TestURL_RejectsLeadingSlash(t *testing.T) {
 	store, _, _ := newStoreWithPresign(Config{})
-	if _, err := store.URL(context.Background(), "/leading", time.Hour); err == nil {
+	if _, err := store.URL(context.Background(), "/leading", maniflex.PresignURLOptions{TTL: time.Hour}); err == nil {
 		t.Error("expected error for leading-slash key")
+	}
+}
+
+func TestNewGetObjectInput_EmptyOptionsSetNothing(t *testing.T) {
+	// The compatibility guarantee: an empty PresignURLOptions must produce the
+	// same request the ttl-only signature produced, or every existing signed
+	// URL changes shape on upgrade.
+	in := newGetObjectInput("bkt", "envs/prod/file.pdf", maniflex.PresignURLOptions{})
+
+	if got := awsv2.ToString(in.Bucket); got != "bkt" {
+		t.Errorf("Bucket = %q, want bkt", got)
+	}
+	if got := awsv2.ToString(in.Key); got != "envs/prod/file.pdf" {
+		t.Errorf("Key = %q, want envs/prod/file.pdf", got)
+	}
+	for name, ptr := range map[string]*string{
+		"ResponseCacheControl":       in.ResponseCacheControl,
+		"ResponseContentDisposition": in.ResponseContentDisposition,
+		"ResponseContentEncoding":    in.ResponseContentEncoding,
+		"ResponseContentLanguage":    in.ResponseContentLanguage,
+		"ResponseContentType":        in.ResponseContentType,
+		"VersionId":                  in.VersionId,
+	} {
+		if ptr != nil {
+			t.Errorf("%s = %q, want unset", name, *ptr)
+		}
+	}
+	if in.ResponseExpires != nil {
+		t.Errorf("ResponseExpires = %v, want unset", *in.ResponseExpires)
+	}
+}
+
+func TestNewGetObjectInput_MapsEveryOption(t *testing.T) {
+	expires := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	in := newGetObjectInput("bkt", "k", maniflex.PresignURLOptions{
+		TTL:                     time.Hour,
+		ResponseCacheControl:    "no-store",
+		ResponseContentEncoding: "gzip",
+		ResponseContentLanguage: "en-GB",
+		ResponseContentType:     "application/pdf",
+		ResponseExpires:         expires,
+		Download:                true,
+		Filename:                "résumé.pdf",
+		VersionID:               "v2",
+	})
+
+	for _, tc := range []struct{ name, got, want string }{
+		{"ResponseCacheControl", awsv2.ToString(in.ResponseCacheControl), "no-store"},
+		{"ResponseContentEncoding", awsv2.ToString(in.ResponseContentEncoding), "gzip"},
+		{"ResponseContentLanguage", awsv2.ToString(in.ResponseContentLanguage), "en-GB"},
+		{"ResponseContentType", awsv2.ToString(in.ResponseContentType), "application/pdf"},
+		{"VersionId", awsv2.ToString(in.VersionId), "v2"},
+		{
+			// Composed through PresignURLOptions.ContentDisposition, so the
+			// non-ASCII name arrives RFC 5987-encoded rather than raw.
+			"ResponseContentDisposition",
+			awsv2.ToString(in.ResponseContentDisposition),
+			"attachment; filename*=utf-8''r%C3%A9sum%C3%A9.pdf",
+		},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, tc.got, tc.want)
+		}
+	}
+	if in.ResponseExpires == nil || !in.ResponseExpires.Equal(expires) {
+		t.Errorf("ResponseExpires = %v, want %v", in.ResponseExpires, expires)
+	}
+}
+
+func TestNewGetObjectInput_ExplicitDispositionWins(t *testing.T) {
+	in := newGetObjectInput("bkt", "k", maniflex.PresignURLOptions{
+		ResponseContentDisposition: `inline; filename="chosen.pdf"`,
+		Download:                   true,
+		Filename:                   "ignored.pdf",
+	})
+	if got := awsv2.ToString(in.ResponseContentDisposition); got != `inline; filename="chosen.pdf"` {
+		t.Errorf("ResponseContentDisposition = %q, want the explicit value", got)
 	}
 }
 

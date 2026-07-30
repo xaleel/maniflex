@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/xaleel/maniflex"
 )
@@ -199,11 +198,18 @@ func (s *LocalStorage) Exists(_ context.Context, key string) (bool, error) {
 
 // URL implements maniflex.FileStorage. LocalStorage does not support pre-signed
 // URLs — it returns a server-relative /files/<key> path for both signed and
-// public modes. The caller is responsible for serving that path (the framework
-// mounts GET /files/* when FileStorage is configured). For time-limited access,
-// integrate an HMAC-signed token at the application layer or switch to an
-// S3-compatible backend.
-func (s *LocalStorage) URL(_ context.Context, key string, _ time.Duration) (string, error) {
+// public modes, and ignores every field of opts. The caller is responsible for
+// serving that path (the framework mounts GET /files/* when FileStorage is
+// configured). For time-limited access, integrate an HMAC-signed token at the
+// application layer or switch to an S3-compatible backend.
+//
+// The response-header overrides are ignored rather than reflected into the
+// returned path on purpose. LocalStorage is served from the application's own
+// origin and the parameters would be unsigned, so honouring a caller-chosen
+// ResponseContentType over stored bytes would hand any caller a stored-XSS
+// vector on the API origin — the thing setFileHeaders' nosniff and inline
+// allowlist exist to prevent.
+func (s *LocalStorage) URL(_ context.Context, key string, _ maniflex.PresignURLOptions) (string, error) {
 	if key == "" {
 		return "", fmt.Errorf("storage: key must not be empty")
 	}

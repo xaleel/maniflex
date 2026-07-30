@@ -736,7 +736,7 @@ type FileStorage interface {
     Exists(ctx context.Context, key string) (bool, error)
     Stat(ctx context.Context, key string) (FileMeta, error)
     PresignUpload(ctx context.Context, key string, opts PresignUploadOptions) (*PresignedUpload, error)
-    URL(ctx context.Context, key string, ttl time.Duration) (string, error)
+    URL(ctx context.Context, key string, opts PresignURLOptions) (string, error)
 }
 ```
 
@@ -758,6 +758,16 @@ type FileStorage interface {
 > `content-length-range`; a presigned PUT cannot), since the framework's own check
 > can only run once the bytes are already stored and paid for.
 
+> **`URL`'s signature changed in v0.4.2** and breaks every third-party backend
+> until updated. The `ttl time.Duration` parameter became a `PresignURLOptions`
+> struct so callers can pin the response headers a URL serves with, not only how
+> long it lives.
+>
+> The mechanical migration is `ttl` → `maniflex.PresignURLOptions{TTL: ttl}`;
+> `opts.TTL` keeps every meaning `ttl` had, zero still being the permanent /
+> public mode. A backend that cannot honour the response overrides needs nothing
+> further — ignoring them is supported, and `LocalStorage` does exactly that.
+
 `Retrieve` returns `maniflex.ErrFileNotFound` when the key does not exist.
 `Delete` *should* also return `maniflex.ErrFileNotFound` for missing keys so
 the standalone `DELETE /files/*` handler can surface a 404 without an extra
@@ -766,6 +776,43 @@ the standalone `DELETE /files/*` handler can surface a 404 without an extra
 treated as "delete succeeded". `Store` is given a framework-generated key of
 the form `uploads/<uuid>/<sanitised-filename>`; create any intermediate
 directories or object prefixes as needed.
+
+### Signed URL options
+
+`URL` takes a `PresignURLOptions`. Beyond `TTL`, every field asks the backend to
+pin a response header into the URL, so one signed link can serve an object
+differently from how it is stored:
+
+```go
+url, err := store.URL(ctx, key, maniflex.PresignURLOptions{
+    TTL:      15 * time.Minute,
+    Download: true,
+    Filename: "invoice-2026.pdf",
+})
+```
+
+`Download` and `Filename` are the common case, and are encoded for you —
+non-ASCII names come out in the RFC 5987 `filename*` form rather than as a raw
+UTF-8 `filename=` that standards-compliant browsers discard. Backends must call
+`opts.ContentDisposition()` rather than reading the fields directly, so every
+backend encodes a name the same way. Set `ResponseContentDisposition` yourself
+only for a form those two cannot express; it always wins over them.
+
+The remaining fields — `ResponseCacheControl`, `ResponseContentEncoding`,
+`ResponseContentLanguage`, `ResponseContentType`, `ResponseExpires` — map to
+S3's `response-*` query parameters, and `VersionID` selects one version of an
+object in a versioned bucket.
+
+They are best-effort: a backend honours what it can and ignores the rest.
+`LocalStorage` ignores all of them and returns `/files/<key>` as before. That is
+deliberate rather than unfinished — it serves from your application's own
+origin, where the parameters would be unsigned, so honouring a caller-chosen
+`ResponseContentType` over stored bytes would be a stored-XSS vector. S3's are
+safe because they sit inside the signature.
+
+Options set on a signed URL are not reachable from `mfx:"file_acl:signed"`,
+which still mints a URL with the configured TTL and nothing else. Call
+`FileStorage.URL` yourself where you need the overrides.
 
 ### Optional: `RangeRetriever`
 

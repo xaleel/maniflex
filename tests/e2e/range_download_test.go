@@ -6,7 +6,6 @@ import (
 	"io"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/xaleel/maniflex"
 	"github.com/xaleel/maniflex/tests/e2e/testutil"
@@ -57,8 +56,8 @@ func (s noRangeStorage) PresignUpload(ctx context.Context, key string,
 ) (*maniflex.PresignedUpload, error) {
 	return s.inner.PresignUpload(ctx, key, o)
 }
-func (s noRangeStorage) URL(ctx context.Context, key string, ttl time.Duration) (string, error) {
-	return s.inner.URL(ctx, key, ttl)
+func (s noRangeStorage) URL(ctx context.Context, key string, o maniflex.PresignURLOptions) (string, error) {
+	return s.inner.URL(ctx, key, o)
 }
 
 // readCloserOnly strips every method but Read and Close.

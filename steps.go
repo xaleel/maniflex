@@ -2975,7 +2975,7 @@ func (s *defaultSteps) rewriteFileACL(goCtx context.Context, model *ModelMeta, r
 		if key == "" {
 			continue
 		}
-		u, err := s.storage.URL(goCtx, key, ttl)
+		u, err := s.storage.URL(goCtx, key, PresignURLOptions{TTL: ttl})
 		if err != nil {
 			// Log and leave the raw key — URL rewrite is best-effort.
 			continue
@@ -3000,7 +3000,7 @@ func (s *defaultSteps) rewriteFileACLList(goCtx context.Context, f FieldMeta, ro
 		if key == "" {
 			continue
 		}
-		if u, err := s.storage.URL(goCtx, key, ttl); err == nil {
+		if u, err := s.storage.URL(goCtx, key, PresignURLOptions{TTL: ttl}); err == nil {
 			out[i] = u
 		}
 	}

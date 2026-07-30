@@ -335,7 +335,7 @@ func TestURLReturnsFilesRoute(t *testing.T) {
 
 	// LocalStorage URL is independent of TTL — it always returns a
 	// server-relative /files/<key> path that the file handler serves.
-	got, err := s.URL(ctx, "uploads/abc/report.txt", time.Hour)
+	got, err := s.URL(ctx, "uploads/abc/report.txt", maniflex.PresignURLOptions{TTL: time.Hour})
 	if err != nil {
 		t.Fatalf("URL: %v", err)
 	}
@@ -346,18 +346,37 @@ func TestURLReturnsFilesRoute(t *testing.T) {
 
 	// ttl=0 (FileACLPublic) also returns the same path — LocalStorage has
 	// no real "signed" mode, so signed and public collapse to the same URL.
-	got, err = s.URL(ctx, "uploads/abc/report.txt", 0)
+	got, err = s.URL(ctx, "uploads/abc/report.txt", maniflex.PresignURLOptions{})
 	if err != nil {
 		t.Fatalf("URL ttl=0: %v", err)
 	}
 	if got != want {
 		t.Errorf("URL ttl=0 = %q, want %q", got, want)
 	}
+
+	// Every response override is ignored rather than reflected into the path:
+	// LocalStorage serves from the app's own origin and these would be
+	// unsigned, so honouring a caller-chosen content type over stored bytes
+	// would be a stored-XSS lever.
+	got, err = s.URL(ctx, "uploads/abc/report.txt", maniflex.PresignURLOptions{
+		TTL:                  time.Hour,
+		Download:             true,
+		Filename:             "renamed.txt",
+		ResponseContentType:  "text/html",
+		ResponseCacheControl: "no-store",
+		VersionID:            "v2",
+	})
+	if err != nil {
+		t.Fatalf("URL with options: %v", err)
+	}
+	if got != want {
+		t.Errorf("URL with options = %q, want %q (options must be ignored, not reflected)", got, want)
+	}
 }
 
 func TestURLRejectsEmptyKey(t *testing.T) {
 	s := tempStorage(t)
-	if _, err := s.URL(context.Background(), "", time.Hour); err == nil {
+	if _, err := s.URL(context.Background(), "", maniflex.PresignURLOptions{TTL: time.Hour}); err == nil {
 		t.Error("URL with empty key should error")
 	}
 }

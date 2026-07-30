@@ -102,18 +102,52 @@ func newInternalHub(t *testing.T) (*Hub, *httptest.Server) {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/sse", hub.SSEHandler())
-	ts := httptest.NewServer(mux)
+	ts := httptest.NewUnstartedServer(mux)
+	ts.Listener = &sndBufListener{Listener: ts.Listener, t: t, size: 4096}
+	ts.Start()
 	t.Cleanup(ts.Close)
 	return hub, ts
+}
+
+// sndBufListener pins SO_SNDBUF on every connection it accepts, so a client
+// that stops reading actually blocks the server's write.
+//
+// How much a kernel absorbs for such a peer varies by an order of magnitude:
+// measured on loopback, Windows blocks after ~180 KiB while Linux auto-tunes
+// the send buffer up to net.ipv4.tcp_wmem's maximum and swallows ~4 MiB. That
+// is the same 4 MiB floodBlocking writes, so on Linux the write could sail
+// through and the deadline never fire — the test then reports a handler that
+// "never exited" when nothing had blocked it in the first place. 4 KiB caps
+// absorption at ~180 KiB on both.
+//
+// The external test package has its own copy of this (testutil_test.go); the
+// two cannot be shared because this file is in package realtime.
+type sndBufListener struct {
+	net.Listener
+	t    *testing.T
+	size int
+}
+
+func (l *sndBufListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := c.(*net.TCPConn); ok {
+		if err := tc.SetWriteBuffer(l.size); err != nil {
+			l.t.Errorf("sndBufListener: SetWriteBuffer(%d): %v", l.size, err)
+		}
+	}
+	return c, nil
 }
 
 // TestSSE_WriteDeadlineUnblocksStuckHandler covers the leak: a non-reading
 // client's handler must exit on its own once a write exceeds the deadline,
 // rather than blocking on w.Write for the life of the process.
 func TestSSE_WriteDeadlineUnblocksStuckHandler(t *testing.T) {
-	old := sseWriteTimeout
-	sseWriteTimeout = 150 * time.Millisecond
-	defer func() { sseWriteTimeout = old }()
+	old := sseWriteTimeoutNanos.Load()
+	sseWriteTimeoutNanos.Store(int64(150 * time.Millisecond))
+	defer sseWriteTimeoutNanos.Store(old)
 
 	hub, ts := newInternalHub(t)
 	base := countRunning(sseRunFrame)
@@ -136,9 +170,9 @@ func TestSSE_WriteDeadlineUnblocksStuckHandler(t *testing.T) {
 // for the SSE handler goroutine (not only the WS pumps), and the write deadline
 // is what keeps that wait bounded when the client has stopped reading.
 func TestSSE_ShutdownDrainsStuckHandler(t *testing.T) {
-	old := sseWriteTimeout
-	sseWriteTimeout = time.Second // long enough that a non-waiting Shutdown returns first
-	defer func() { sseWriteTimeout = old }()
+	old := sseWriteTimeoutNanos.Load()
+	sseWriteTimeoutNanos.Store(int64(time.Second)) // long enough that a non-waiting Shutdown returns first
+	defer sseWriteTimeoutNanos.Store(old)
 
 	hub, ts := newInternalHub(t)
 	base := countRunning(sseRunFrame)

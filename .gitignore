@@ -1,5 +1,6 @@
 /bruno
 *.exe
+!/docs/mdbook.exe
 /docs/book
 llms-full.txt
 /todo

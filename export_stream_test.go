@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func streamFields(names ...string) []FieldMeta {
@@ -61,8 +62,8 @@ func generatedRows(fields []FieldMeta, n int, counter *int) iter.Seq[map[string]
 }
 
 // peakHeapDuring samples the heap while f runs and returns the highest reading.
-// Sampling in a spin loop is crude, but the property under test is a 10x
-// difference in growth, not a precise figure.
+// Sampling on a timer is crude, but the property under test is a 10x difference
+// in growth, not a precise figure.
 func peakHeapDuring(f func()) uint64 {
 	runtime.GC()
 	var peak uint64
@@ -76,6 +77,12 @@ func peakHeapDuring(f func()) uint64 {
 				return
 			default:
 			}
+			// Throttle. ReadMemStats stops the world, so sampling it in a tight
+			// loop starves the very work being measured: on two cores under
+			// -race that turned this test from ~100s into a >13min timeout,
+			// which is how it took the whole root suite down in CI. 1ms still
+			// yields ~1000 samples/sec, far finer than a 10x signal needs.
+			time.Sleep(time.Millisecond)
 			runtime.ReadMemStats(&m)
 			if m.HeapAlloc > peak {
 				peak = m.HeapAlloc

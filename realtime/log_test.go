@@ -87,7 +87,7 @@ func TestHubLog_SlowConsumerKick(t *testing.T) {
 	hub := mustHub(t, realtime.HubConfig{
 		Bus: bus, Logger: logger, SendBuffer: 1, PingInterval: time.Minute,
 	})
-	ts := newHubTestServer(t, hub)
+	ts := newHubTestServerSmallSendBuffer(t, hub)
 
 	c := dialWS(t, ts, "/ws")
 	c.subscribe("*")

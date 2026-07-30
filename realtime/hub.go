@@ -1057,8 +1057,20 @@ type sseClient struct {
 // writeRaw deadline. Without it a client that stops reading pins the handler
 // goroutine on w.Write forever — the replay backlog and every live event write
 // alike — and, because Shutdown waits on that goroutine, holds shutdown open too.
-// A var, not a const, only so tests can shorten it; production never sets it.
-var sseWriteTimeout = 10 * time.Second
+//
+// Atomic, not a plain var, because it is written only by tests but read by live
+// handler goroutines. A test that shortens it and restores the old value on the
+// way out races the handler it is testing: t.Cleanup (which closes the server)
+// runs after the test's own defers, so the handler is still reading this when
+// the restore lands. Storing nanoseconds keeps that seam race-free without
+// promoting the knob to a HubConfig field; production never sets it.
+var sseWriteTimeoutNanos atomic.Int64
+
+func init() { sseWriteTimeoutNanos.Store(int64(10 * time.Second)) }
+
+func sseWriteTimeout() time.Duration {
+	return time.Duration(sseWriteTimeoutNanos.Load())
+}
 
 func (sc *sseClient) shutdown() {
 	sc.shutOnce.Do(func() { close(sc.shutdownCh) })
@@ -1071,7 +1083,7 @@ func (sc *sseClient) shutdown() {
 // failing the write.
 func (sc *sseClient) write(b []byte) error {
 	if sc.rc != nil {
-		sc.rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout)) //nolint:errcheck
+		sc.rc.SetWriteDeadline(time.Now().Add(sseWriteTimeout())) //nolint:errcheck
 	}
 	if _, err := sc.w.Write(b); err != nil {
 		return err

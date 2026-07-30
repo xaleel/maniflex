@@ -166,7 +166,7 @@ func TestHub_SendTimeoutIsIgnored(t *testing.T) {
 		SendTimeout:  30 * time.Second,
 		PingInterval: time.Minute,
 	})
-	ts := newHubTestServer(t, hub)
+	ts := newHubTestServerSmallSendBuffer(t, hub)
 
 	c := dialWS(t, ts, "/ws")
 	c.subscribe("*")
@@ -196,7 +196,7 @@ func TestHub_SlowClientIsCountedOnce(t *testing.T) {
 	t.Parallel()
 	bus := inproc.New()
 	hub := mustHub(t, realtime.HubConfig{Bus: bus, SendBuffer: 1, PingInterval: time.Minute})
-	ts := newHubTestServer(t, hub)
+	ts := newHubTestServerSmallSendBuffer(t, hub)
 
 	c := dialWS(t, ts, "/ws")
 	c.subscribe("*") // and never reads again

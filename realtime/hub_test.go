@@ -512,7 +512,7 @@ func TestHub_SlowConsumerIsKicked(t *testing.T) {
 		SendBuffer:  1,                  // minimal outbound channel
 		SendTimeout: 100 * time.Millisecond,
 	})
-	ts := newHubTestServer(t, hub)
+	ts := newHubTestServerSmallSendBuffer(t, hub)
 
 	c := dialWS(t, ts, "/ws")
 	c.subscribe("*")
@@ -591,7 +591,7 @@ func TestHub_StatsTracksKickedCount(t *testing.T) {
 		SendBuffer:  1,
 		SendTimeout: 100 * time.Millisecond,
 	})
-	ts := newHubTestServer(t, hub)
+	ts := newHubTestServerSmallSendBuffer(t, hub)
 
 	c := dialWS(t, ts, "/ws")
 	c.subscribe("*")

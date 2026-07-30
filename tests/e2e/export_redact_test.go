@@ -103,9 +103,17 @@ func TestExportRedact_JSONPathStillRedacts(t *testing.T) {
 	}
 
 	// Single reads take the same path.
-	id := srv.MustID(srv.POST("/xp_employees", map[string]any{"name": "bob", "salary": 999}))
+	//
+	// The sentinel is long and arbitrary on purpose. Asserting the value is
+	// absent from the whole body is the strong form of this check — it catches a
+	// leak under some other key — but it only works if the value cannot occur by
+	// chance. A short one does: this read used to seed 999 and check for "999",
+	// which matched the fractional seconds of created_at often enough to fail CI
+	// (a Postgres run served .209992, a SQLite run .9998988).
+	const bobSalary = 987654321
+	id := srv.MustID(srv.POST("/xp_employees", map[string]any{"name": "bob", "salary": bobSalary}))
 	one := string(srv.GET("/xp_employees/"+id, xpStaff).Body)
-	if strings.Contains(one, "999") || strings.Contains(one, "salary") {
+	if strings.Contains(one, "987654321") || strings.Contains(one, "salary") {
 		t.Errorf("single read leaked the redacted field: %s", one)
 	}
 }

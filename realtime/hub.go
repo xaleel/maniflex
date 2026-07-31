@@ -106,10 +106,39 @@ type Hub struct {
 	capRejectN atomic.Int64 // connections refused at MaxConnections (for throttled logging)
 	originRejN atomic.Int64 // connections refused on Origin (for throttled logging)
 	cancel     events.Cancel
-	closed  atomic.Bool
-	wg      sync.WaitGroup // WS read+write pumps and each SSE handler goroutine
-	resume  ResumeStore    // nil when resume is disabled
+	closed     atomic.Bool
+	// regMu makes "is the hub still open?" and "register this client" one step,
+	// against Shutdown. Both handlers check closed early, but only reach
+	// wg.Add several hundred microseconds later — after the hijack and the
+	// handshake write — and a Shutdown landing inside that window would both
+	// call wg.Add concurrently with wg.Wait (a WaitGroup misuse the race
+	// detector flags) and miss the connection in its clients.Range, leaving it
+	// open and undrained.
+	regMu  sync.Mutex
+	wg     sync.WaitGroup // WS read+write pumps and each SSE handler goroutine
+	resume ResumeStore    // nil when resume is disabled
 }
+
+// register publishes a client to the hub and counts its goroutines under regMu,
+// refusing once Shutdown has begun. delta is how many goroutines the caller is
+// about to start (2 for a WS client's pumps, 1 for an SSE handler). Shutdown
+// holds the same lock while it walks the client set, so a client either lands
+// before that walk or is refused.
+//
+// A false return means the hub shut down while this connection was coming up:
+// the caller must release its admit() slot and close the connection itself,
+// because nothing else knows the connection exists.
+func (h *Hub) register(c any, delta int) bool {
+	h.regMu.Lock()
+	defer h.regMu.Unlock()
+	if h.closed.Load() {
+		return false
+	}
+	h.clients.Store(c, struct{}{})
+	h.wg.Add(delta)
+	return true
+}
+
 
 // logThrottled emits msg at WARN on the first occurrence and every 128th after,
 // carrying the running count. Connection-refusal reasons (a full hub, a hostile
@@ -223,7 +252,12 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 	}
 	h.cancel()
 
-	// Signal all clients to close.
+	// Signal all clients to close, under the same lock that gates registration.
+	// Ordering matters: closed was set above, so a registration still in flight
+	// either finished before this lock (and is therefore in the map below and
+	// counted in wg) or will refuse once it acquires the lock. Past this point
+	// the client set is final and no further wg.Add can race the wg.Wait below.
+	h.regMu.Lock()
 	h.clients.Range(func(k, _ any) bool {
 		switch c := k.(type) {
 		case *hubClient:
@@ -233,6 +267,7 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 		}
 		return true
 	})
+	h.regMu.Unlock()
 
 	done := make(chan struct{})
 	go func() { h.wg.Wait(); close(done) }()
@@ -328,10 +363,14 @@ func (h *Hub) Handler() http.HandlerFunc {
 			kickCh:    make(chan uint16, 1),
 			subs:      make(map[string][]string),
 		}
-		h.clients.Store(c, struct{}{})
 		// connN was already incremented by admit(); remove() balances it.
-
-		h.wg.Add(2)
+		if !h.register(c, 2) {
+			// Shutdown began while this connection was being upgraded. It is not
+			// in h.clients, so nothing else will close it.
+			h.release()
+			conn.Close()
+			return
+		}
 		go c.readLoop()
 		go c.writeLoop()
 	}
@@ -406,11 +445,16 @@ func (h *Hub) SSEHandler() http.HandlerFunc {
 			out:        make(chan []byte, h.cfg.SendBuffer),
 			shutdownCh: make(chan struct{}),
 		}
-		h.clients.Store(sc, struct{}{})
 		// Track this handler goroutine so Shutdown drains it, not only the WS
 		// pumps. The bounded write deadline in sc.write is what keeps that drain
 		// from stalling on a client that has stopped reading.
-		h.wg.Add(1)
+		if !h.register(sc, 1) {
+			// Shutdown began while this request was being set up; nothing else
+			// knows this client exists, so undo admit() here.
+			h.release()
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
 		// connN was already incremented by admit(); the defer below balances it.
 		// Defer the cleanup so a panic inside sc.run doesn't leak the entry
 		// in h.clients or leave h.connN over-counted (which would block

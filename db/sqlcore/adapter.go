@@ -2148,11 +2148,34 @@ func collectNestedRows(rows []map[string]any, key string) []map[string]any {
 	return out
 }
 
+// fkValue renders a foreign-key cell as the string its target's primary key
+// compares as. Rows scanned straight from SQL hold plain values, but a typed
+// read reaches here through recordToMap, which stores each struct field as-is —
+// so an optional FK arrives as a pointer (the migrator declares exactly the
+// pointer fields NULL, so *string is the only way to model one), and fmt.Sprint
+// on that renders the ADDRESS, not the id.
+//
+// Pointers are followed. A nil cell or a nil pointer yields "" — "this row has
+// no FK" — which both loops below already treat as skip.
+func fkValue(v any) string {
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() { // nil cell: the column was NULL, or absent under ?fields=
+		return ""
+	}
+	for rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return ""
+		}
+		rv = rv.Elem()
+	}
+	return fmt.Sprint(rv.Interface())
+}
+
 func populateBelongsTo(ctx context.Context, runner queryRunner, driver maniflex.DriverType, relMeta *maniflex.ModelMeta, rel *maniflex.RelationMeta, rows []map[string]any, scope []*maniflex.FilterExpr) error {
 	fkSet := map[string]bool{}
 	for _, row := range rows {
-		if v := row[rel.FKColumn]; v != nil {
-			fkSet[fmt.Sprint(v)] = true
+		if v := fkValue(row[rel.FKColumn]); v != "" {
+			fkSet[v] = true
 		}
 	}
 	if len(fkSet) == 0 {
@@ -2169,7 +2192,7 @@ func populateBelongsTo(ctx context.Context, runner queryRunner, driver maniflex.
 		}
 	}
 	for _, row := range rows {
-		if fk := fmt.Sprint(row[rel.FKColumn]); fk != "" {
+		if fk := fkValue(row[rel.FKColumn]); fk != "" {
 			if related, ok := byID[fk]; ok {
 				row[rel.RelationKey] = related
 			}

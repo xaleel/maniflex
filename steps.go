@@ -1625,6 +1625,13 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 			ctx.Abort(http.StatusInternalServerError, "INVALID_FILTER", err.Error())
 			return nil
 		}
+		// Same reasoning for the field: a Go-built filter naming a column the
+		// model does not have fails closed at the adapter, which is safe and
+		// silent. Say why here, where there is still a request to answer.
+		if err := validateFilterFields(ctx.Model, ctx.Query.Filters); err != nil {
+			ctx.Abort(http.StatusInternalServerError, "INVALID_FILTER", err.Error())
+			return nil
+		}
 	}
 
 	// Route through the active transaction when one is set, so all DB

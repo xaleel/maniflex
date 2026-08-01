@@ -139,6 +139,35 @@ Filters reference a field by its `json` name. Only fields tagged
 `mfx:"filterable"` may be used; unknown or non-filterable references abort the
 request with `400 INVALID_QUERY`.
 
+### Values are read against the column's type
+
+A filter value arrives as text — a URL has no types — and is coerced to the form
+its column compares against, so the same filter means the same thing on every
+driver.
+
+A **boolean** column accepts `true`/`false` and `1`/`0`, in any case:
+
+```
+?filter=resolved:eq:false
+?filter=resolved:eq:0        # identical
+?filter=resolved:in:true,false
+```
+
+This matters more than it looks. A caller interpolating a boolean into a URL
+(`` `resolved:eq:${showResolved}` ``) sends the word, and a bound string is not
+the same thing as a SQL literal: on SQLite, where booleans are stored in an
+`INTEGER` column, the word `false` stays TEXT and can never compare equal, so
+the filter used to return **zero rows with no error** while the identical
+request against Postgres worked. Both drivers now agree.
+
+A **timestamp** column takes any full RFC3339 value, with or without a fraction
+and in any zone; it is normalised to UTC in a fixed-width form so that string
+comparison on SQLite orders the same way instants do. A date-only bound
+(`2026-01-01`) is left exactly as written and keeps its meaning.
+
+A value that is not a recognised spelling for its column is passed through
+untouched rather than guessed at.
+
 `BaseModel`'s `id`, `created_at` and `updated_at` are **not** filterable by
 default — the columns are `readonly` and nothing more. A model opts them in at
 registration, since `BaseModel` lives in the framework and its struct tags

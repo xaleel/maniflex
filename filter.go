@@ -78,6 +78,44 @@ func validateFilterOperators(fs []*FilterExpr) error {
 	return nil
 }
 
+// validateFilterFields rejects a filter naming a field the model does not have.
+//
+// It is the field half of the same problem validateFilterOperators covers for
+// operators: a filter parsed from a URL had its field resolved and rewritten by
+// resolveFlatFilter, so it always names a real column, while one built in Go
+// carries whatever was typed. That used to reach the adapter verbatim and fail
+// as an unknown-column SQL error — a 500 whose message named a column the
+// author never wrote, since the json spelling they did write is not what the
+// table calls it.
+//
+// The adapters fail such a filter closed (a false predicate, so a misspelt
+// forced filter narrows to nothing rather than widening to everything). That is
+// the safe answer but a silent one: an empty list looks exactly like no matching
+// data. This is the layer that can say why instead.
+//
+// Nested and locale filters are skipped: their Field names a column on a joined
+// relation or a key inside a JSON document, neither of which is a field on this
+// model.
+func validateFilterFields(model *ModelMeta, fs []*FilterExpr) error {
+	if model == nil {
+		return nil
+	}
+	for _, f := range fs {
+		if f == nil || f.IsNested || f.IsLocale {
+			continue
+		}
+		if model.ResolveFilterField(f.Field) != nil {
+			continue
+		}
+		return fmt.Errorf(
+			"maniflex: filter names %q, which is not a field on model %s — a FilterExpr built "+
+				"in Go is not parsed, so the field is whatever was typed; use the column's DB "+
+				"name or its json name",
+			f.Field, model.Name)
+	}
+	return nil
+}
+
 // LikeEscapeChar is the escape character in the patterns LikePattern builds. Every
 // LIKE/ILIKE that consumes such a pattern must spell out ESCAPE '\': SQLite has no
 // escape character by default and Postgres has a backslash, so saying it out loud

@@ -1885,23 +1885,58 @@ func filterConds(model *maniflex.ModelMeta, filters []*maniflex.FilterExpr, driv
 		return q(model.TableName) + "." + q(f.Field)
 	}
 
+	// cond renders one filter as a predicate.
+	//
+	// A plain filter — not nested, not locale — is resolved against the model
+	// first, which does two things a filter parsed from a URL already had done
+	// for it in resolveFlatFilter and a filter built in Go never did.
+	//
+	// It settles the column: ResolveFilterField accepts the json spelling as well
+	// as the DB one, so a caller who wrote the name the model publishes gets the
+	// column rather than an identifier no table has.
+	//
+	// And it settles the value: NormalizeFilterValue puts it in the form that
+	// column binds against, which is what makes a Go-built filter and a URL one
+	// mean the same thing. A time.Time has to reach SQLite in the same
+	// fixed-width form the write path stored, and a bool column has to receive a
+	// real bool rather than the word "false", which binds as TEXT against an
+	// INTEGER column and can never compare equal.
+	//
+	// A field the model does not have fails closed, for the reason buildCond
+	// gives at length for an operator no adapter implements: a predicate that
+	// cannot be built must match nothing rather than everything, because
+	// matching everything deletes the filter — and a deleted forced filter is a
+	// tenant scope that has silently stopped scoping.
+	cond := func(f *maniflex.FilterExpr) string {
+		if f.IsLocale || f.IsNested {
+			return buildCond(buildCol(f), f.Operator, f.Value, driver, p)
+		}
+		fm := model.ResolveFilterField(f.Field)
+		if fm == nil {
+			return "1=0"
+		}
+		col := q(model.TableName) + "." + q(fm.Tags.DBName)
+		return buildCond(col, f.Operator,
+			maniflex.NormalizeFilterValue(fm, f.Operator, f.Value), driver, p)
+	}
+
 	var parts []string
 
 	// Ungrouped filters — each is its own AND clause.
 	for _, f := range ungrouped {
-		parts = append(parts, buildCond(buildCol(f), f.Operator, f.Value, driver, p))
+		parts = append(parts, cond(f))
 	}
 
 	// Grouped filters — OR within a group, AND between groups.
 	for _, gid := range groupOrder {
 		exprs := grouped[gid]
 		if len(exprs) == 1 {
-			parts = append(parts, buildCond(buildCol(exprs[0]), exprs[0].Operator, exprs[0].Value, driver, p))
+			parts = append(parts, cond(exprs[0]))
 			continue
 		}
 		orParts := make([]string, len(exprs))
 		for i, f := range exprs {
-			orParts[i] = buildCond(buildCol(f), f.Operator, f.Value, driver, p)
+			orParts[i] = cond(f)
 		}
 		parts = append(parts, "("+strings.Join(orParts, " OR ")+")")
 	}

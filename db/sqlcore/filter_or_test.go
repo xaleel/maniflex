@@ -1,8 +1,10 @@
 package sqlcore
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xaleel/maniflex"
 )
@@ -15,10 +17,37 @@ func filterCondsSQL(driver maniflex.DriverType, model *maniflex.ModelMeta, filte
 	return sql, p.args
 }
 
+// postModel carries the fields the filter tests name. filterConds resolves each
+// filter against them (accepting either spelling) and fails closed on a field
+// the model does not have, so a fixture without Fields would make every filter
+// in this package compile to 1=0.
+//
+// author_id/authorId differ deliberately, so a test can tell which spelling a
+// lookup resolved by. archived is a real bool and created_at a real time.Time,
+// which is what the value normalisation keys off.
 func postModel() *maniflex.ModelMeta {
+	str := reflect.TypeOf("")
+	col := func(name string) maniflex.FieldMeta {
+		return maniflex.FieldMeta{
+			Name: name,
+			Type: str,
+			Tags: maniflex.FieldTags{DBName: name, JSONName: name},
+		}
+	}
 	return &maniflex.ModelMeta{
 		Name:      "Post",
 		TableName: "posts",
+		Fields: []maniflex.FieldMeta{
+			col("status"), col("user_id"), col("title"), col("org_id"), col("name"),
+			{Name: "Views", Type: reflect.TypeOf(0),
+				Tags: maniflex.FieldTags{DBName: "views", JSONName: "views"}},
+			{Name: "Archived", Type: reflect.TypeOf(false),
+				Tags: maniflex.FieldTags{DBName: "archived", JSONName: "archived"}},
+			{Name: "AuthorID", Type: str,
+				Tags: maniflex.FieldTags{DBName: "author_id", JSONName: "authorId"}},
+			{Name: "CreatedAt", Type: reflect.TypeOf(time.Time{}),
+				Tags: maniflex.FieldTags{DBName: "created_at", JSONName: "createdAt"}},
+		},
 	}
 }
 

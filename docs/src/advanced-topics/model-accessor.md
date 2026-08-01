@@ -46,6 +46,32 @@ admins, err := ctx.GetModel("User").List(&maniflex.QueryParams{
     Page:  1,
     Limit: 100,
 })
+```
+
+A `FilterExpr` you build in Go is not parsed the way a `?filter=` is, but it is
+resolved and normalised the same way once it reaches the query builder:
+
+- **`Field`** may be either the column's DB name or its `json` name. A field the
+  model does not have is a programming error, not client input, and aborts the
+  request with `500 INVALID_FILTER` naming the field. (The adapters also degrade
+  such a filter to a false predicate, so a misspelt *forced* filter narrows to
+  nothing rather than silently widening to everything.)
+- **`Value`** is coerced against the column like a URL value is: a real
+  `time.Time` or `*time.Time` is written in the canonical form the write path
+  stores, and a boolean column accepts the `true`/`false` and `1`/`0` spellings.
+  You do not need to pre-format either.
+- **`Operator`** is a bare string type, so a typo compiles. Use the `Op*`
+  constants; an operator no adapter implements is refused rather than dropped.
+
+```go
+filters := []*maniflex.FilterExpr{
+    // Both of these are correct, and both find the same rows.
+    {Field: "owner_id", Operator: maniflex.OpEq, Value: ownerID},
+    {Field: "ownerId", Operator: maniflex.OpEq, Value: ownerID},
+
+    // A time value needs no formatting.
+    {Field: "created_at", Operator: maniflex.OpLte, Value: time.Now()},
+}
 
 // Create - returns the stored representation, id and defaults populated.
 created, err := ctx.GetModel("User").Create(map[string]any{

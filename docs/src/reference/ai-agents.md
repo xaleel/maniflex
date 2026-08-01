@@ -301,6 +301,8 @@ func cancelOrder(ctx *maniflex.ServerContext) error {
 
 Action handler owns body parsing, validation, transactions. Validate/Service/DB pipeline steps do NOT run for actions.
 
+OpenAPI for an action comes from `ActionConfig.OpenAPI` (`ActionOpenAPI`): `RequestSchema`/`ResponseSchema` reflect Go structs into JSON schemas, `Description`, `Security`, and `QueryParams []OASParameter`. Path parameters are extracted from the route; query parameters are not discoverable and must be declared. A `QueryParams` entry's `In` defaults to `"query"`; set it explicitly only for `"header"`/`"cookie"`. Every other field is emitted as written. Declarations are documentation only: nothing validates or binds them at runtime, so the handler still checks `ctx.QueryParam` itself.
+
 ## File uploads
 
 Tag a string field `mfx:"file,max_size:2MB,accept:image/*"`. Configure `maniflex.Config.FilesConfig.Storage`.

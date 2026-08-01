@@ -75,7 +75,7 @@ type ActionConfig struct {
 //	        ResponseSchema: Appointment{},
 //	        ResponseStatus: 200,
 //	        QueryParams: []maniflex.OASParameter{{
-//	            Name: "notify", In: "query",
+//	            Name:   "notify",
 //	            Schema: &maniflex.OASSchema{Type: "boolean"},
 //	        }},
 //	        Security: []map[string][]string{{"bearerAuth": {}}},
@@ -103,6 +103,12 @@ type ActionOpenAPI struct {
 
 	// QueryParams declares query-string parameters in addition to the path
 	// parameters extracted automatically from the route.
+	//
+	// Each entry's In defaults to "query"; set it to "header" or "cookie" to
+	// document one of those on the same action. Every other field is emitted as
+	// written. These declarations document the endpoint — nothing validates or
+	// binds them at runtime, so a Required parameter is still the handler's to
+	// check.
 	QueryParams []OASParameter
 
 	// Security lists security requirement objects for the operation, e.g.

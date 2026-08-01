@@ -973,7 +973,7 @@ func buildActionPaths(spec *OpenAPISpec, actions []ActionConfig) {
 		// Path params are always auto-extracted; query params from the
 		// optional OpenAPI block are appended after them.
 		params := extractPathParams(a.Path)
-		params = append(params, a.OpenAPI.QueryParams...)
+		params = append(params, actionQueryParams(a.OpenAPI.QueryParams)...)
 
 		// Request body: the inline RequestBody wins; otherwise reflect the
 		// OpenAPI.RequestSchema struct into an application/json body.
@@ -1123,6 +1123,32 @@ func specHasTag(spec *OpenAPISpec, name string) bool {
 		}
 	}
 	return false
+}
+
+// actionQueryParams returns an action's declared parameters with In defaulted
+// to "query" where it was left empty.
+//
+// OpenAPI requires `in`, and ActionOpenAPI.QueryParams is named for the answer
+// it expects, so writing the field out was easy to read as sufficient. Emitting
+// the empty string then produced a document validators reject and generators
+// mishandle — a whole spec broken by one omitted field, with nothing to warn the
+// author. An explicit "header" or "cookie" is left alone.
+//
+// The entries are copied rather than defaulted in place: the generator runs per
+// request against a shared ActionConfig, so writing back into the caller's slice
+// would race concurrent document requests.
+func actionQueryParams(declared []OASParameter) []OASParameter {
+	if len(declared) == 0 {
+		return nil
+	}
+	out := make([]OASParameter, 0, len(declared))
+	for _, p := range declared {
+		if p.In == "" {
+			p.In = "query"
+		}
+		out = append(out, p)
+	}
+	return out
 }
 
 // extractPathParams returns OASParameter entries for every {param} segment

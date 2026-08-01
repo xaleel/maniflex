@@ -256,7 +256,7 @@ server.Action(maniflex.ActionConfig{
         ResponseSchema: RescheduleResp{},
         ResponseStatus: http.StatusOK, // status the response schema documents; defaults to 200
         QueryParams: []maniflex.OASParameter{{
-            Name: "notify", In: "query",
+            Name:   "notify",
             Schema: &maniflex.OASSchema{Type: "boolean"},
         }},
         Security: []map[string][]string{{"bearerAuth": {}}},
@@ -275,6 +275,65 @@ pointer, or a `reflect.Type`.
 If you'd rather build the OpenAPI types by hand, set `RequestBody` and
 `Responses` directly on the `ActionConfig` — those take precedence over the
 inferred schemas when both are present.
+
+### Query parameters
+
+An action's path parameters are extracted from the route automatically, so
+`/reports/{id}/export` documents `id` without being told. Query parameters have
+no such source — an action reads them with `ctx.QueryParam`, which the generator
+cannot see — so declare each one you want in the contract:
+
+```go
+server.Action(maniflex.ActionConfig{
+    Method:  "GET",
+    Path:    "/reports/{id}/export",
+    Summary: "Export a report",
+    Handler: exportReport,
+    OpenAPI: maniflex.ActionOpenAPI{
+        QueryParams: []maniflex.OASParameter{
+            {
+                Name:        "format",
+                Required:    true,
+                Description: "Output format.",
+                Schema: &maniflex.OASSchema{
+                    Type: "string",
+                    Enum: []any{"csv", "xlsx"},
+                },
+            },
+            {
+                Name:   "since",
+                Schema: &maniflex.OASSchema{Type: "string", Format: "date-time"},
+            },
+        },
+    },
+})
+```
+
+The operation then carries `id` first, followed by the declared parameters in
+the order you wrote them:
+
+```json
+"parameters": [
+  {"name": "id",     "in": "path",  "required": true, "schema": {"type": "string"}},
+  {"name": "format", "in": "query", "required": true, "description": "Output format.",
+   "schema": {"type": "string", "enum": ["csv", "xlsx"]}},
+  {"name": "since",  "in": "query", "schema": {"type": "string", "format": "date-time"}}
+]
+```
+
+`In` defaults to `"query"`, so the common case is just a name and a schema. Set
+it explicitly to `"header"` or `"cookie"` to document one of those on the same
+action; an explicit value is never overwritten. Leave path parameters to the
+route — declaring one here duplicates the extracted entry rather than replacing
+it.
+
+Every other field is emitted as written, `Name` included, so a typo reaches the
+document unchallenged.
+
+**These declarations document; they do not enforce.** Nothing parses, validates,
+coerces, or rejects a request based on them. `Required: true` tells consumers the
+parameter is mandatory; your handler still has to check that `ctx.QueryParam`
+returned something and `ctx.Abort` if it did not.
 
 ## Serving a model's own path from an action
 

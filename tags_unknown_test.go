@@ -252,9 +252,17 @@ type diffOnlyEmbedModel struct {
 	BaseModel `mfx:"versioned:diff_only"`
 	Name      string `json:"name"`
 }
+// cursor_field names created_at, which is not sortable by default — the model
+// has to opt in through BaseModelTags. The pairing is deliberate: a model's
+// query surface is exactly what its config says, so cursor_field does not
+// implicitly widen it.
 type cursorEmbedModel struct {
 	BaseModel `mfx:"cursor_field:created_at"`
 	Name      string `json:"name"`
+}
+
+var cursorEmbedConfig = ModelConfig{
+	BaseModelTags: map[string]string{"created_at": "sortable"},
 }
 
 func TestScanModel_BaseModelEmbedTagsSurvive(t *testing.T) {
@@ -275,7 +283,7 @@ func TestScanModel_BaseModelEmbedTagsSurvive(t *testing.T) {
 		t.Error(`mfx:"versioned:diff_only" did not enable diff-only versioning`)
 	}
 
-	m3, err := ScanModel(cursorEmbedModel{}, ModelConfig{})
+	m3, err := ScanModel(cursorEmbedModel{}, cursorEmbedConfig)
 	if err != nil {
 		t.Fatalf(`mfx:"cursor_field:" on the embed must still register: %v`, err)
 	}

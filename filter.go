@@ -327,7 +327,8 @@ func resolveFlatFilter(expr *FilterExpr, fieldPath string, model *ModelMeta) (*F
 		return nil, fmt.Errorf("filtering on encrypted field %q is not supported (ENCRYPTED_FIELD_NOT_FILTERABLE)", fieldPath)
 	}
 	if !f.Tags.Filterable {
-		return nil, fmt.Errorf("field %q on model %s is not filterable (add mfx:\"filterable\" to the struct tag)", fieldPath, model.Name)
+		return nil, fmt.Errorf("field %q on model %s is not filterable (%s)",
+			fieldPath, model.Name, howToAllow(f.Tags.DBName, "filterable"))
 	}
 	expr.Field = f.Tags.DBName
 	// On a time-typed column the value is compared as TEXT on SQLite, so a raw
@@ -348,7 +349,8 @@ func resolveNestedFilter(expr *FilterExpr, fieldPath string, model *ModelMeta, r
 	// Check if the left side is a locale field before looking for a relation.
 	if f := model.FieldByJSONName(relKey); f != nil && f.Tags.Locale {
 		if !f.Tags.Filterable {
-			return nil, fmt.Errorf("field %q on model %s is not filterable (add mfx:\"filterable\" to the struct tag)", relKey, model.Name)
+			return nil, fmt.Errorf("field %q on model %s is not filterable (%s)",
+				relKey, model.Name, howToAllow(f.Tags.DBName, "filterable"))
 		}
 		// The locale sub-key is targeted into a JSON-path expression by the query
 		// builder, so it is held to a strict allowlist and rejected here rather
@@ -383,7 +385,8 @@ func resolveNestedFilter(expr *FilterExpr, fieldPath string, model *ModelMeta, r
 		return nil, fmt.Errorf("field %q not found on related model %s", nestedField, relMeta.Name)
 	}
 	if !nf.Tags.Filterable {
-		return nil, fmt.Errorf("field %q on related model %s is not filterable", nestedField, relMeta.Name)
+		return nil, fmt.Errorf("field %q on related model %s is not filterable (%s)",
+			nestedField, relMeta.Name, howToAllow(nf.Tags.DBName, "filterable"))
 	}
 
 	expr.Field = fieldPath
@@ -430,7 +433,8 @@ func resolveNestedSort(fieldPath string, dir SortDir, model *ModelMeta, reg Regi
 		return SortExpr{}, fmt.Errorf("field %q not found on related model %s", nestedField, relMeta.Name)
 	}
 	if !nf.Tags.Sortable {
-		return SortExpr{}, fmt.Errorf("field %q on related model %s is not sortable", nestedField, relMeta.Name)
+		return SortExpr{}, fmt.Errorf("field %q on related model %s is not sortable (%s)",
+			nestedField, relMeta.Name, howToAllow(nf.Tags.DBName, "sortable"))
 	}
 
 	return SortExpr{

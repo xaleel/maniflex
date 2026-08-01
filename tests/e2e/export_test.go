@@ -23,7 +23,12 @@ func exportServer(t *testing.T, maxRows int) *testutil.Server {
 	return testutil.NewServer(t, testutil.Options{
 		Models: []any{
 			testutil.ExportableRow{},
-			maniflex.ModelConfig{ExportEnabled: true, MaxExportRows: maxRows},
+			maniflex.ModelConfig{
+				ExportEnabled: true,
+				MaxExportRows: maxRows,
+				// TestExport_FilterAndSortApplied sorts by created_at.
+				BaseModelTags: map[string]string{"created_at": "sortable"},
+			},
 		},
 	})
 }

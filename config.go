@@ -265,6 +265,34 @@ type ModelConfig struct {
 	// id is always appended as the tiebreaker so the keyset boundary is total.
 	CursorField string
 
+	// BaseModelTags widens the mfx options on the three columns BaseModel
+	// contributes. Keys are DB column names ("id", "created_at",
+	// "updated_at"); values use the same comma-separated syntax as an mfx
+	// struct tag.
+	//
+	// BaseModel is framework-owned, so its struct tags are the one place a
+	// model author cannot reach. Each column defaults to mfx:"readonly" and
+	// nothing more — filterable and sortable widen a model's public query
+	// surface, and that is a decision each model should make rather than
+	// inherit. This is where it makes it:
+	//
+	//	server.MustRegister(Post{}, maniflex.ModelConfig{
+	//	    BaseModelTags: map[string]string{
+	//	        "id":         "filterable,sortable",
+	//	        "created_at": "filterable,sortable,index",
+	//	    },
+	//	})
+	//
+	// Options are unioned onto the defaults, so this can widen a BaseModel
+	// column and can never strip a protective default. Each column accepts
+	// only the options meaningful for it; anything else is a registration
+	// error:
+	//
+	//	id          filterable, sortable
+	//	created_at  filterable, sortable, index, hidden
+	//	updated_at  filterable, sortable, index, hidden
+	BaseModelTags map[string]string
+
 	// AggregateEnabled mounts GET /:model/aggregate when true. The route takes the
 	// aggregation (select/group_by/where/having/order_by/limit) as URL-encoded
 	// JSON in the ?aggregate= query parameter, validates every referenced field

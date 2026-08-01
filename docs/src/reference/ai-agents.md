@@ -48,6 +48,8 @@ Every model embeds `maniflex.BaseModel`:
 ```go
 type Post struct {
     maniflex.BaseModel             // adds id (UUID), created_at, updated_at
+                                   // all three are mfx:"readonly" and nothing
+                                   // more — not filterable, not sortable
     maniflex.WithDeletedAt         // optional — adds deleted_at (timestamp soft delete)
     // maniflex.WithIsDeleted      // alternative — adds is_deleted (bool)
 
@@ -265,7 +267,7 @@ Operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `contains`, `
 ?filter=tag:in:go,rust,zig
 ?filter=title:contains:intro                       # literal, case-insensitive
 ?filter=author.name:ilike:%ursula%                 # relation dot notation
-?sort=created_at:desc&sort=title:asc
+?sort=created_at:desc&sort=title:asc                # created_at needs BaseModelTags
 ?include=user,comments,tags
 ?page=2&limit=20                                   # default 20, max 200
 ```

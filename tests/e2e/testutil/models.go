@@ -162,7 +162,14 @@ type Dispense struct {
 // Post↔User many-to-many nothing asked for — audit MS-L9, in the framework's own
 // fixtures.
 func DefaultModels() []any {
-	return []any{User{}, Post{}, Comment{}, Tag{}}
+	return []any{
+		// filter_test.go filters users on created_at, which is not filterable by
+		// default — BaseModel columns are readonly-only and opt in per model.
+		User{}, maniflex.ModelConfig{
+			BaseModelTags: map[string]string{"created_at": "filterable,sortable"},
+		},
+		Post{}, Comment{}, Tag{},
+	}
 }
 
 // FileModels returns models used in file upload tests.

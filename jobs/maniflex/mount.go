@@ -145,6 +145,9 @@ func Mount(server *maniflex.Server, q jobs.Queue, opts ...MountOptions) (jobs.St
 	}
 	if err := server.Register(StatusModel{}, maniflex.ModelConfig{
 		TableName: opt.TableName,
+		// A job-status list is read newest-first, so created_at stays part of
+		// the query surface. BaseModel columns are readonly-only by default.
+		BaseModelTags: map[string]string{"created_at": "filterable,sortable,index"},
 		Middleware: &maniflex.ModelMiddleware{
 			Validate: []maniflex.MiddlewareFunc{writeBlocker},
 			Auth:     []maniflex.MiddlewareFunc{makeForceFilter(opt.AdminRole)},

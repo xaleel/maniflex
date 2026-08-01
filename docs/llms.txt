@@ -7,6 +7,7 @@ Key facts for working with maniflex:
 - Requires Go 1.25.12 or newer. Install with `go get github.com/xaleel/maniflex` plus a database adapter such as `go get github.com/xaleel/maniflex/db/sqlite`.
 - Multi-module monorepo: the core depends only on `chi` and `uuid`; heavy integrations live in opt-in satellite modules (`db/postgres`, `db/sqlite`, `events/{kafka,nats,rabbitmq,redis}`, `jobs/redis`, `middleware/service/bcrypt`, `storage/s3`, `pkg/otel`).
 - Models embed `maniflex.BaseModel` and use `mfx:"..."` struct tags (e.g. `required`, `filterable`, `sortable`, `enum:a|b|c`) to declare behaviour.
+- `BaseModel`'s `id`, `created_at` and `updated_at` are `mfx:"readonly"` and nothing more — not filterable, not sortable. A model opts them into the query surface with `ModelConfig.BaseModelTags` at registration, since `BaseModel`'s own struct tags cannot be edited.
 - Register models before opening the DB — the adapter needs the registry to run migrations and resolve relations.
 - Requests flow through a six-step pipeline (Auth, Deserialize, Validate, Service, DB, Response), extensible with `Before` / `After` / `Replace` middleware.
 

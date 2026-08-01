@@ -55,7 +55,13 @@ func main() {
     })
 
     // 2. Register both models — populates the registry.
-    server.MustRegister(Post{}, Subscriber{})
+    // Opt created_at into the query surface to sort by it.
+    server.MustRegister(
+        Post{}, maniflex.ModelConfig{
+            BaseModelTags: map[string]string{"created_at": "filterable,sortable"},
+        },
+        Subscriber{},
+    )
 
     // 3. Open SQLite with the populated registry, then inject it.
     db, err := sqlite.Open("./blog.db", server.Registry())

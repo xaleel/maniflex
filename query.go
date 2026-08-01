@@ -258,7 +258,8 @@ func parseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor, l
 				return nil, fmt.Errorf("sort field %q not found on model %s", name, model.Name)
 			}
 			if !f.Tags.Sortable {
-				return nil, fmt.Errorf("field %q is not sortable", name)
+				return nil, fmt.Errorf("field %q is not sortable (%s)",
+					name, howToAllow(f.Tags.DBName, "sortable"))
 			}
 			q.Sorts = append(q.Sorts, SortExpr{DBName: f.Tags.DBName, Direction: dir})
 		}

@@ -48,6 +48,10 @@ filters, up to `MaxExportRows`.
 GET /invoices/export?filter=status:eq:posted&sort=created_at:desc
 ```
 
+Sorting on `created_at` requires the model to have opted that column in via
+[`ModelConfig.BaseModelTags`](../defining-your-api/models.md#querying-the-basemodel-columns) —
+`BaseModel`'s columns are `readonly` and nothing more by default.
+
 ## Column selection
 
 Each model field appears as one column, named by its `json` tag (the same

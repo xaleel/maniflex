@@ -64,6 +64,24 @@ true for it, and Postgres and SQLite don't even agree where NULLs sort. A nullab
 cursor column would drop or repeat rows across pages, so the model fails to
 register rather than paginating wrongly.
 
+When the cursor column is one of `BaseModel`'s — `created_at` is the usual
+choice — `sortable` is not a default and `cursor_field` does not grant it
+implicitly. Declare both:
+
+```go
+type Event struct {
+    maniflex.BaseModel `mfx:"cursor_field:created_at"`
+    Name               string `json:"name" mfx:"required"`
+}
+
+server.MustRegister(Event{}, maniflex.ModelConfig{
+    BaseModelTags: map[string]string{"created_at": "sortable,index"},
+})
+```
+
+Writing one half without the other fails registration with an error naming the
+missing piece.
+
 The presence of `?cursor=` switches the request into keyset mode (it supersedes
 `?page`). Send an empty value for the first page, then the `meta.next_cursor`
 from each response to fetch the next:
@@ -120,6 +138,20 @@ Multiple filters combine with AND:
 Filters reference a field by its `json` name. Only fields tagged
 `mfx:"filterable"` may be used; unknown or non-filterable references abort the
 request with `400 INVALID_QUERY`.
+
+`BaseModel`'s `id`, `created_at` and `updated_at` are **not** filterable by
+default — the columns are `readonly` and nothing more. A model opts them in at
+registration, since `BaseModel` lives in the framework and its struct tags
+cannot be edited:
+
+```go
+server.MustRegister(Post{}, maniflex.ModelConfig{
+    BaseModelTags: map[string]string{"created_at": "filterable,sortable"},
+})
+```
+
+See [BaseModel](../defining-your-api/models.md#querying-the-basemodel-columns)
+for the per-column allowlist.
 
 ### Operators
 
@@ -235,8 +267,11 @@ Multiple sorts compose left-to-right (primary, secondary, …):
 ?sort=status:asc&sort=created_at:desc
 ```
 
-Only fields tagged `mfx:"sortable"` may be used. `BaseModel`'s `created_at` and
-`updated_at` are sortable by default.
+Only fields tagged `mfx:"sortable"` may be used. `BaseModel`'s `id`,
+`created_at` and `updated_at` are **not** sortable by default — opt in with
+`ModelConfig.BaseModelTags` as shown under [`filter`](#filter) above. A sort on
+a column that has not opted in returns `400`, and the error names
+`BaseModelTags` as the fix.
 
 ### Sorting on a relation field
 

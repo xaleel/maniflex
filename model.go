@@ -18,10 +18,18 @@ const TABLE_NAME_PREFIX = ""
 // Embed it in every model struct you register, else registering model fails
 // `CreatedAt` and `UpdatedAt` are auto-injected.
 // If edited here, make sure the names are edited in the `injectTimestamp` function
+//
+// All three columns default to mfx:"readonly" and nothing more. filterable and
+// sortable widen a model's public query surface, so a model opts into them
+// explicitly via ModelConfig.BaseModelTags rather than inheriting them:
+//
+//	server.MustRegister(Post{}, maniflex.ModelConfig{
+//	    BaseModelTags: map[string]string{"created_at": "filterable,sortable"},
+//	})
 type BaseModel struct {
-	ID        string    `json:"id"         db:"id"`
-	CreatedAt time.Time `json:"created_at" db:"created_at" mfx:"readonly,filterable,sortable"`
-	UpdatedAt time.Time `json:"updated_at" db:"updated_at" mfx:"readonly,sortable"`
+	ID        string    `json:"id"         db:"id"         mfx:"readonly"`
+	CreatedAt time.Time `json:"created_at" db:"created_at" mfx:"readonly"`
+	UpdatedAt time.Time `json:"updated_at" db:"updated_at" mfx:"readonly"`
 
 	// ── framework-internal carriers (typed-models migration, Phase 1) ──
 	// Unexported, so they are never DB columns (collectFields skips them) and
@@ -776,6 +784,14 @@ func ScanModel(v any, cfg ModelConfig) (*ModelMeta, error) {
 	if meta.FieldByDBName("id") == nil {
 		return nil, fmt.Errorf(
 			"maniflex: model %q has no field with db column \"id\" (embed maniflex.BaseModel)", meta.Name)
+	}
+
+	// Widen the BaseModel columns per ModelConfig.BaseModelTags before anything
+	// reads the flags it sets. The position is load-bearing: the reject*
+	// validators (Hidden, Readonly), collectCursorField (Sortable) and
+	// buildIndices (Index) all run below.
+	if err := meta.applyBaseModelTags(); err != nil {
+		return nil, err
 	}
 
 	// Singleton models auto-provision their single row from column defaults, so

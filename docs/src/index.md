@@ -20,7 +20,7 @@ type Post struct {
 ```
 
 Register that struct and you get `GET/POST /posts`, `GET/PATCH/DELETE /posts/{id}`,
-`?filter=status:eq:published`, `?sort=created_at:desc`, `?page=2&limit=20`,
+`?filter=status:eq:published`, `?sort=title:asc`, `?page=2&limit=20`,
 `?include=user`, soft-delete semantics, and an entry in `/openapi.json`.
 
 ## Why maniflex

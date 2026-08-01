@@ -36,7 +36,17 @@ type PlainDoc struct {
 
 func ftsServer(t *testing.T) *testutil.Server {
 	t.Helper()
-	return testutil.NewServer(t, testutil.Options{Models: []any{SearchDoc{}, PlainDoc{}}})
+	return testutil.NewServer(t, testutil.Options{
+		Models: []any{
+			// created_at is the cursor field, which collectCursorField requires
+			// to be sortable — not a default since BaseModel columns are
+			// readonly-only.
+			SearchDoc{}, maniflex.ModelConfig{
+				BaseModelTags: map[string]string{"created_at": "sortable,index"},
+			},
+			PlainDoc{},
+		},
+	})
 }
 
 func seedArticle(t *testing.T, srv *testutil.Server, title, body, tag string) string {

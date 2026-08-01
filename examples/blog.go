@@ -91,7 +91,15 @@ func main() {
 	})
 
 	// Step 2: register models — this populates the registry
-	server.MustRegister(User{}, Post{}, Comment{})
+	// BaseModel's columns are mfx:"readonly" and nothing more, so Post opts
+	// created_at into the query surface — the usage line below sorts by it.
+	server.MustRegister(
+		User{},
+		Post{}, maniflex.ModelConfig{
+			BaseModelTags: map[string]string{"created_at": "filterable,sortable"},
+		},
+		Comment{},
+	)
 
 	// Step 3: open SQLite with the populated registry so the adapter can
 	// resolve related models during include-population and migration

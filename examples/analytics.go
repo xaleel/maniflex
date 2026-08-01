@@ -183,7 +183,14 @@ func main() {
 	server := maniflex.New(cfg)
 
 	// Step 2: register models — populates the registry sqlite.Open needs
-	server.MustRegister(Site{}, Event{})
+	// BaseModel's columns are mfx:"readonly" and nothing more, so Event opts
+	// created_at into the query surface — the usage line below sorts by it.
+	server.MustRegister(
+		Site{},
+		Event{}, maniflex.ModelConfig{
+			BaseModelTags: map[string]string{"created_at": "filterable,sortable"},
+		},
+	)
 
 	// Step 3: open SQLite with the populated registry
 	sqliteDB, err := sqlite.Open("./analytics.db", server.Registry())

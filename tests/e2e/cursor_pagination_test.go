@@ -24,10 +24,18 @@ type CursorEvent struct {
 }
 
 // CursorByTime opts in via a cursor_field tag on the embedded BaseModel, the
-// canonical created_at case.
+// canonical created_at case. created_at is not sortable by default, so the
+// model also opts in through BaseModelTags — cursor_field does not widen the
+// query surface on its own.
 type CursorByTime struct {
 	maniflex.BaseModel `mfx:"cursor_field:created_at"`
 	Name               string `json:"name" db:"name" mfx:"required"`
+}
+
+// cursorByTimeConfig grants created_at the sortable that collectCursorField
+// requires, plus the index keyset pagination wants anyway.
+var cursorByTimeConfig = maniflex.ModelConfig{
+	BaseModelTags: map[string]string{"created_at": "sortable,index"},
 }
 
 // CursorAtTime exposes a caller-supplied timestamp so the regression can pin
@@ -43,7 +51,12 @@ func cursorServer(t *testing.T) *testutil.Server {
 	t.Helper()
 	// Register a plain model too so the "not enabled" path can be probed.
 	return testutil.NewServer(t, testutil.Options{
-		Models: []any{CursorEvent{}, CursorByTime{}, CursorAtTime{}, testutil.User{}},
+		Models: []any{
+			CursorEvent{},
+			CursorByTime{}, cursorByTimeConfig,
+			CursorAtTime{},
+			testutil.User{},
+		},
 	})
 }
 

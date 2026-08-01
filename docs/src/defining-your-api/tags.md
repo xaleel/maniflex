@@ -121,7 +121,10 @@ These govern whether a field can be set by a client, and when.
 | `readonly`  | stripped from all write operations; values sent by a client are ignored |
 | `immutable` | accepted on create, rejected on update                                  |
 
-`BaseModel`'s `created_at` and `updated_at` are `readonly`. Use `immutable` for
+`BaseModel`'s `id`, `created_at` and `updated_at` are all `readonly`, and that is
+their only default — none of them is filterable or sortable until the model opts
+in with [`ModelConfig.BaseModelTags`](models.md#querying-the-basemodel-columns).
+Use `immutable` for
 values that are set once and must not change afterwards, such as an owner ID.
 
 Both mean "not from a client". A value the *server* stamps via `ctx.SetField` —

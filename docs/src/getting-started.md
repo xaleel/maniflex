@@ -71,7 +71,11 @@ func main() {
     })
 
     // 2. Register models — this populates the registry.
-    server.MustRegister(Post{})
+    // BaseModel's columns are readonly and nothing more, so opt created_at
+    // into the query surface to sort by it.
+    server.MustRegister(Post{}, maniflex.ModelConfig{
+        BaseModelTags: map[string]string{"created_at": "filterable,sortable"},
+    })
 
     // 3. Open SQLite with the populated registry.
     db, err := sqlite.Open("./blog.db", server.Registry())
@@ -130,7 +134,10 @@ curl 'localhost:8080/api/posts?sort=created_at:desc&page=1&limit=10'
 ```
 
 Filtering and sorting only work on fields tagged `filterable` / `sortable` —
-that's why `Title` and `Status` carry those tags above. The full filter grammar
+that's why `Title` and `Status` carry those tags above. `BaseModel`'s `id`,
+`created_at` and `updated_at` are `readonly` and nothing more, so they opt in
+through `ModelConfig.BaseModelTags` at registration instead of a struct tag —
+that's the config passed to `MustRegister` above. The full filter grammar
 is in [Querying](using-the-api/querying.md).
 
 ## What you get for free

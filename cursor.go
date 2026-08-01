@@ -472,8 +472,9 @@ func (m *ModelMeta) collectCursorField() error {
 	}
 	if !f.Tags.Sortable {
 		return fmt.Errorf(
-			"maniflex: model %q cursor_field %q must be mfx:\"sortable\" (keyset pagination orders by it)",
-			m.Name, raw)
+			"maniflex: model %q cursor_field %q must be sortable (keyset pagination "+
+				"orders by it) — %s",
+			m.Name, raw, howToAllow(f.Tags.DBName, "sortable"))
 	}
 	// A nullable column has no total order, and the two drivers don't even agree
 	// where NULLs belong (Postgres sorts them last on ASC, SQLite first). The

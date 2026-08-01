@@ -57,7 +57,9 @@ func main() {
 
 	// Register models before opening the DB - the adapter needs the registry
 	// to run migrations and resolve relations.
-	server.MustRegister(Post{})
+	server.MustRegister(Post{}, maniflex.ModelConfig{
+		BaseModelTags: map[string]string{"created_at": "filterable,sortable"},
+	})
 
 	db, err := sqlite.Open("./blog.db", server.Registry())
 	if err != nil {

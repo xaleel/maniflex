@@ -53,9 +53,9 @@ all tables:
 
 ```go
 type BaseModel struct {
-    ID        string    `json:"id"         db:"id"`
-    CreatedAt time.Time `json:"created_at" db:"created_at" mfx:"readonly,filterable,sortable"`
-    UpdatedAt time.Time `json:"updated_at" db:"updated_at" mfx:"readonly,sortable"`
+    ID        string    `json:"id"         db:"id"         mfx:"readonly"`
+    CreatedAt time.Time `json:"created_at" db:"created_at" mfx:"readonly"`
+    UpdatedAt time.Time `json:"updated_at" db:"updated_at" mfx:"readonly"`
 }
 ```
 
@@ -63,13 +63,57 @@ type BaseModel struct {
 - **`CreatedAt`** — set once, when the row is created.
 - **`UpdatedAt`** — refreshed on every update.
 
-All three are managed by the framework. `CreatedAt` and `UpdatedAt` are
-`readonly`: values supplied for them in a request body are ignored rather than
-stored. Because they are part of `BaseModel`, they are never declared on
-individual models.
+All three are managed by the framework and all three are `readonly`: values
+supplied for them in a request body are ignored rather than stored — including
+`id`, so a client cannot choose the primary key. Because they are part of
+`BaseModel`, they are never declared on individual models.
 
 A struct that does not embed `BaseModel` — or otherwise lacks an `id` column —
 fails registration.
+
+### Querying the BaseModel columns
+
+`readonly` is the *only* default. None of the three columns is filterable or
+sortable unless the model says so — `filterable` and `sortable` widen a model's
+public query surface, and that is a decision each model makes rather than
+inherits.
+
+`BaseModel` lives in the framework, so its struct tags are the one place you
+cannot edit. `ModelConfig.BaseModelTags` is the knob instead:
+
+```go
+server.MustRegister(Post{}, maniflex.ModelConfig{
+    BaseModelTags: map[string]string{
+        "id":         "filterable,sortable",
+        "created_at": "filterable,sortable,index",
+    },
+})
+```
+
+Keys are DB column names; values use the same comma-separated syntax as an `mfx`
+struct tag. Each column accepts only the options meaningful for it:
+
+| Column       | Accepts                                     |
+| ------------ | ------------------------------------------- |
+| `id`         | `filterable`, `sortable`                     |
+| `created_at` | `filterable`, `sortable`, `index`, `hidden` |
+| `updated_at` | `filterable`, `sortable`, `index`, `hidden` |
+
+Anything else is a registration error. `index` is not offered on `id` because
+`id` is the primary key and already indexed, so the option would only add a
+redundant duplicate.
+
+Options are **unioned onto** `readonly`, never replacing it. There is no way to
+make `created_at` client-writable through this — a form that let `readonly` fall
+off by omission would turn a typo into a silently writable timestamp.
+
+Without the opt-in, `?sort=created_at:desc` and `?filter=created_at:gte:...`
+return `400`, and the error names `BaseModelTags` as the fix.
+
+> **Keyset pagination.** `cursor_field:created_at` requires `created_at` to be
+> sortable, and does not grant it implicitly — so a model using it needs the
+> matching `BaseModelTags` entry too. Registration fails with an explanatory
+> error if you write one half without the other.
 
 ## Field mapping
 

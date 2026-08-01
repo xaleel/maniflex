@@ -14,6 +14,7 @@
 # Defining Your API
 
 - [Models & BaseModel](defining-your-api/models.md)
+- [Record Identity](defining-your-api/identity.md)
 - [Field Tags Reference](defining-your-api/tags.md)
 - [Relations](defining-your-api/relations.md)
 - [Soft Delete](defining-your-api/soft-delete.md)

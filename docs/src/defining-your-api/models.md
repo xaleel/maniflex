@@ -59,7 +59,9 @@ type BaseModel struct {
 }
 ```
 
-- **`ID`** — the primary key, a UUID assigned by the framework on create.
+- **`ID`** — the primary key, a UUIDv4 string assigned by the framework on
+  create. What that guarantees, and what it rules out, is the
+  [Record Identity](identity.md) contract.
 - **`CreatedAt`** — set once, when the row is created.
 - **`UpdatedAt`** — refreshed on every update.
 

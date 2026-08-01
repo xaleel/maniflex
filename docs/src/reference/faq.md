@@ -38,6 +38,16 @@ No. The framework hard-codes `id` as the primary-key column name across
 the adapter, the relation resolver, and the OpenAPI generator. Pick a
 table prefix or rename the table instead.
 
+### "Can my records use integer ids, or ids the client supplies?"
+
+No to both. Identity is one string column holding a framework-generated
+UUIDv4, and no route accepts an id from a request — an `"id"` in a write
+body is ignored rather than rejected. Server-side code writing through
+`ctx.GetModel(...).Create` *may* assign its own id, and then owns
+uniqueness and URL-safety. Composite keys are not representable at all.
+The full contract, including what a natural key should look like instead,
+is [Record Identity](../defining-your-api/identity.md).
+
 ## Pipeline & middleware
 
 ### "My middleware doesn't fire — I scoped it to `OpAction`."

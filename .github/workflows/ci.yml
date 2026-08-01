@@ -145,18 +145,15 @@ jobs:
           go-version: stable
           cache-dependency-path: |
             **/go.sum
-      - name: Generate coverage profile
-        run: go test -covermode=atomic -coverprofile=coverage.out ./...
-      - name: Enforce 30% aggregate floor
-        shell: bash
-        run: |
-          total="$(go tool cover -func=coverage.out | awk '/^total:/ {gsub("%", "", $3); print $3}')"
-          echo "Aggregate coverage: ${total}%"
-          awk -v total="$total" 'BEGIN { if (total + 0 < 30.0) exit 1 }'
+      - name: Merge unit and end-to-end profiles, then enforce floors
+        run: bash scripts/coverage.sh
       - uses: actions/upload-artifact@v7
         with:
           name: core-coverage
-          path: coverage.out
+          path: |
+            coverage.out
+            coverage-unit.out
+            coverage-e2e.out
           if-no-files-found: error
 
   release-dry-run:

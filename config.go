@@ -698,9 +698,21 @@ type Config struct {
 	//   - On success: HTTP 200  {"status":"ok",      "db":"ok"}
 	//   - On failure: HTTP 503  {"status":"degraded","db":"error","error":"..."}
 	//
-	// Enable this for Kubernetes readiness probes so the pod is only marked
-	// ready once it can actually reach the database.
+	// This flag governs /health alone. Prefer the split probes — GET
+	// {prefix}/live for liveness and GET {prefix}/ready for readiness — which
+	// have fixed meanings and do not read this field. One endpoint whose
+	// meaning changes with configuration is what the split exists to end: point
+	// a liveness probe at it with the flag on, and an unreachable database
+	// restarts a perfectly healthy process.
 	HealthCheckDB bool
+
+	// ReadinessChecks are the application's own dependency probes, reported by
+	// GET {prefix}/ready alongside the framework's database check. They run
+	// concurrently on every readiness request under one HealthTimeout budget.
+	//
+	// Leave it empty when the database is the only dependency that decides
+	// whether this process can serve traffic. See ReadinessCheck.
+	ReadinessChecks []ReadinessCheck
 
 	// DBWriteURL is the DSN/connection-string for the primary (write) database.
 	// Not used by the framework directly — set Config.DB with the adapter you
@@ -722,16 +734,16 @@ type Config struct {
 	// pkg/encryption.VaultKeyProvider for HashiCorp Vault Transit.
 	KeyProvider KeyProvider
 
-	// HealthTimeout is the maximum time the health handler waits for the
-	// database ping to complete. Only used when HealthCheckDB is true.
-	// Default: 3s.
+	// HealthTimeout is the budget the dependency checks share: the database ping
+	// on GET {prefix}/ready and on /health when HealthCheckDB is true, plus
+	// every ReadinessChecks entry. Default: 3s.
 	//
 	// Choose a value smaller than your probe's timeoutSeconds so the handler
 	// can return a clean 503 before the probe itself times out:
 	//
 	//   readinessProbe:
 	//     httpGet:
-	//       path: /api/health
+	//       path: /api/ready
 	//     timeoutSeconds: 5        # probe timeout
 	//   # → set HealthTimeout to 3s so 503 arrives before 5s probe timeout
 	HealthTimeout time.Duration
@@ -842,7 +854,10 @@ func (c *Config) ApplyDefaults() {
 		c.Trace.Timings = true
 		c.Trace.Aborts = true
 	}
-	if c.HealthCheckDB && c.HealthTimeout == 0 {
+	// Unconditional: /ready always checks its dependencies, so this budget is
+	// always in use. It used to default only alongside HealthCheckDB, which
+	// would leave readiness pinging an unreachable database unbounded.
+	if c.HealthTimeout == 0 {
 		c.HealthTimeout = 3 * time.Second
 	}
 	// An export holds its whole result set in memory, so concurrency multiplies

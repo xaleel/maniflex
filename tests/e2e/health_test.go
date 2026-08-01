@@ -195,16 +195,17 @@ func TestHealthCheck(t *testing.T) {
 		testutil.AssertEqual(t, "default HealthTimeout", cfg.HealthTimeout, 3*time.Second)
 	})
 
-	t.Run("health_timeout_zero_when_check_disabled", func(t *testing.T) {
+	t.Run("health_timeout_default_applies_when_check_disabled", func(t *testing.T) {
 		t.Parallel()
 		cfg := &maniflex.Config{
 			PathPrefix:    "/api",
-			HealthCheckDB: false, // disabled
+			HealthCheckDB: false, // /health does not ping…
 			HealthTimeout: 0,
 		}
 		cfg.ApplyDefaults()
-		// HealthTimeout stays 0 when HealthCheckDB is false — no default applied.
-		testutil.AssertEqual(t, "HealthTimeout stays 0", cfg.HealthTimeout, time.Duration(0))
+		// …but /ready always does, so the budget defaults regardless (GAP-01).
+		// It used to stay 0 here, which left readiness pinging unbounded.
+		testutil.AssertEqual(t, "default HealthTimeout", cfg.HealthTimeout, 3*time.Second)
 	})
 
 	// ── Adapter without Pinger degrades gracefully ─────────────────────────────

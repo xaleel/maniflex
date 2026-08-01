@@ -111,8 +111,10 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
 - **Use a JSON-emitting `slog` handler** in production so logs are structured
   and ingestable by your aggregator.
 - **Set `Config.ServiceName`** — every log line and audit record carries it.
-- **Enable `Config.HealthCheckDB`** for Kubernetes readiness probes; tune
-  `Config.HealthTimeout` shorter than the probe timeout.
+- **Point `readinessProbe` at `{prefix}/ready` and `livenessProbe` at
+  `{prefix}/live`**; tune `Config.HealthTimeout` shorter than the probe timeout.
+  A liveness probe aimed at a database-backed endpoint turns a dependency
+  outage into a restart loop across every replica.
 - **Use `Config.PanicLogger`** to route panics to a different sink than the
   rest of the framework logs, so they are easier to alert on.
 

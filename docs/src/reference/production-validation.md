@@ -79,5 +79,6 @@ This flag is an assertion and does not install authentication.
 
 Generated documentation is already explicit: its zero value mounts nothing,
 `Documentation.Middleware` protects it, and `Documentation.Public` deliberately
-publishes it. Health is intentionally public, while static serving requires an
-explicit non-empty `StaticDir`.
+publishes it. The probe endpoints — `/live`, `/ready`, and `/health` — are
+intentionally public, while static serving requires an explicit non-empty
+`StaticDir`.

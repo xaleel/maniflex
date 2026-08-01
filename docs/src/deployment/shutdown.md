@@ -224,9 +224,18 @@ escalates to `SIGKILL`.
 `AddService`, `OnStart`, and `server.Go` are inert for apps that register
 nothing — there is no behavioural change unless you opt in.
 
-## Health probes during shutdown
+## Probes during shutdown
 
-Once shutdown begins, `/health` continues to respond for a brief window
-because in-flight requests are honoured. Configure your readiness probe to
-stop directing traffic to the pod as soon as termination begins (Kubernetes
-does this automatically when it sends `SIGTERM`).
+The two probes deliberately diverge the moment shutdown begins:
+
+| Endpoint | During the drain |
+|---|---|
+| `GET {prefix}/ready` | `503 {"status":"stopping"}` immediately, without waiting on any dependency check — this is what deregisters the pod from its load balancer |
+| `GET {prefix}/live` | still `200`, for as long as the process can answer |
+
+Liveness must stay green here. A liveness probe that fails during the drain
+earns the process a `SIGKILL` in the middle of the requests the drain exists to
+finish — the exact outcome graceful shutdown is meant to prevent.
+
+Requests already in flight are honoured throughout, so the endpoints keep
+answering until the listener closes.

@@ -107,9 +107,9 @@ Run it:
 go run .
 ```
 
-The server starts on `:8080`. Nothing is registered yet, so the only endpoint
-that responds is `/health` — but `GET /api/openapi.json` already serves a
-valid (empty) OpenAPI document.
+The server starts on `:8080`. Nothing is registered yet, so the only endpoints
+that respond are the probes — `/api/live`, `/api/ready`, `/api/health` — but
+`GET /api/openapi.json` already serves a valid (empty) OpenAPI document.
 
 ## Why the four-step shape
 

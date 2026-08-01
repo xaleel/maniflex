@@ -95,26 +95,37 @@ lets you stage them deliberately.
 
 ## Health probes
 
-`HealthCheckDB: true` enables a real probe — `GET /health` calls
-`db.Ping()` with a `HealthTimeout` budget. Kubernetes:
+Two endpoints, two questions. `GET /api/live` asks whether the process is
+alive and touches nothing to answer. `GET /api/ready` asks whether it should
+receive traffic: it pings the database, runs any `Config.ReadinessChecks`, and
+answers `503` while the server is still starting or already draining.
 
 ```yaml
 livenessProbe:
     httpGet:
-        path: /health
+        path: /api/live
         port: 8080
     periodSeconds: 10
     timeoutSeconds: 5
 readinessProbe:
     httpGet:
-        path: /health
+        path: /api/ready
         port: 8080
     periodSeconds: 5
     timeoutSeconds: 5
 ```
 
+Do not point `livenessProbe` at `/api/ready`. A database outage would then
+restart every replica — none of which can fix the database by dying — and the
+restarts arrive precisely when the dependency is least able to take a
+reconnection storm.
+
 Set `HealthTimeout` (default 3s) shorter than the probe's `timeoutSeconds`
 so the handler can return a clean `503` before the probe gives up.
+
+`GET /api/health` still exists and still follows `HealthCheckDB`. It is a
+compatibility alias for deployments written before the split; new ones should
+use `/api/live` and `/api/ready`.
 
 `terminationGracePeriodSeconds` on the pod should be **longer** than
 `Config.ShutdownTimeout`, otherwise Kubernetes will `SIGKILL` the process
@@ -183,7 +194,7 @@ publishes nothing).
 | `Config.ServiceName`                | the service name                                              |
 | `Config.QueryTimeout`               | bounded (e.g. `30s`)                                          |
 | `Config.ShutdownTimeout`            | matches the slowest legitimate request                        |
-| `Config.HealthCheckDB`              | `true`                                                        |
+| Probes                              | `livenessProbe` → `/api/live`, `readinessProbe` → `/api/ready` |
 | K8s `terminationGracePeriodSeconds` | larger than `ShutdownTimeout`                                 |
 | TLS                                 | terminated at the load balancer                               |
 | Auth                                | `auth.JWTAuth` with an asymmetric key from your IdP           |

@@ -492,10 +492,19 @@ type Config struct {
     Trace           PipelineTrace  // {Enabled, Steps, Timings, Aborts, Bodies, Skips}
     FileStorage     FileStorage
     KeyProvider     KeyProvider
-    HealthCheckDB   bool           // GET /health pings DB
-    HealthTimeout   time.Duration  // default 3s
+    HealthCheckDB   bool           // legacy GET {prefix}/health pings DB
+    ReadinessChecks []ReadinessCheck // {Name, Check} app dependencies on {prefix}/ready
+    HealthTimeout   time.Duration  // default 3s; budget shared by all dependency checks
 }
 ```
+
+Probes are mounted under `PathPrefix`: `GET {prefix}/live` is liveness (always
+`200`, no I/O, stays `200` during the drain), `GET {prefix}/ready` is readiness
+(`503` while starting or stopping, then `{"status":…,"checks":{"db":"ok",…}}`
+from the DB ping plus every `ReadinessChecks` entry), and `GET {prefix}/health`
+is the legacy alias whose meaning follows `HealthCheckDB`. Never point a
+liveness probe at a database-backed endpoint. Check errors are logged, never
+echoed; a check name that is empty, duplicated, or `db` panics at router build.
 
 After registration and before `Start`/`Handler`, call
 `server.ValidateProduction()`. Generated operations need matching Auth

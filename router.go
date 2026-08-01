@@ -14,8 +14,10 @@ import (
 // buildRouter constructs the chi.Router with all auto-generated model routes
 // mounted under cfg.PathPrefix. Generated documentation is mounted only when
 // explicitly public or protected by an access policy.
-func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.Logger, actions []ActionConfig, asyncCfg *AsyncAPIConfig) chi.Router {
+func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.Logger, actions []ActionConfig, asyncCfg *AsyncAPIConfig, phase func() readinessPhase) chi.Router {
 	r := chi.NewRouter()
+
+	validateReadinessChecks(cfg.ReadinessChecks)
 
 	// PanicRecoverer replaces chi's built-in Recoverer. It catches panics,
 	// logs them as structured JSON via cfg.PanicLogger (or slog.Default()),
@@ -62,7 +64,10 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 	}
 
 	r.Route(cfg.PathPrefix, func(r chi.Router) {
-		// Health-check
+		// Probes. /live and /ready have fixed meanings; /health is the legacy
+		// endpoint whose meaning follows Config.HealthCheckDB.
+		r.Get("/live", liveHandler())
+		r.Get("/ready", readyHandler(cfg, reg, phase))
 		r.Get("/health", healthHandler(cfg, reg))
 
 		// Generated documentation is private-by-default. A shared router-level

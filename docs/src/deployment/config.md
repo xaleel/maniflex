@@ -23,9 +23,11 @@ server := maniflex.New(maniflex.Config{
 | `StaticDisabled` | `false` | turn static file serving off even when `StaticDir` is set |
 | `HTTPAccessControlled` | `false` | assert that non-empty `HTTPMiddlewares` protects every route for `ValidateProduction`; does not install auth |
 
-`PathPrefix` does **not** affect `/static`, `/files`, or `/health`. Those are
-mounted at the router root. See [Static Files](../defining-your-api/static-files.md) for the static
-serving options.
+`PathPrefix` does **not** affect `/static` or `/files`; those are mounted at the
+router root. The probe endpoints — `/live`, `/ready`, and `/health` — do sit
+under it, so the default prefix serves them at `/api/live`, `/api/ready`, and
+`/api/health`. See [Static Files](../defining-your-api/static-files.md) for the
+static serving options.
 
 ## HTTP timeouts
 
@@ -166,15 +168,75 @@ Leave `Bodies` off in production.
 
 See [Graceful Shutdown](shutdown.md).
 
-## Health probe
+## Probes
+
+Three endpoints are mounted under `PathPrefix`. The first two have fixed
+meanings and need no configuration:
+
+| Endpoint | Answers | Behaviour |
+|---|---|---|
+| `GET {prefix}/live` | is this process alive? | always `200 {"status":"ok"}`. No I/O, no dependency, no lifecycle coupling — including throughout the drain |
+| `GET {prefix}/ready` | should this process receive traffic? | `503` while starting or stopping, otherwise the result of every dependency check |
+| `GET {prefix}/health` | *(legacy)* | meaning follows `HealthCheckDB`; kept as a compatibility alias |
+
+Point `livenessProbe` at `/live` and `readinessProbe` at `/ready`. Pointing both
+at `/health` is what the split exists to end: with `HealthCheckDB` on, an
+unreachable database answers `503` to *both*, so Kubernetes restarts a process
+whose only problem is a dependency it cannot fix by dying.
+
+`/ready` reports the lifecycle first, without touching a dependency:
+
+```json
+503 {"status":"starting"}
+503 {"status":"stopping"}
+```
+
+`stopping` appears the moment shutdown begins, which is what deregisters the pod
+from its load balancer while in-flight requests drain. Otherwise every
+dependency is checked concurrently:
+
+```json
+200 {"status":"ok",        "checks":{"db":"ok","broker":"ok"}}
+503 {"status":"not_ready", "checks":{"db":"ok","broker":"error"}}
+```
+
+A check reads `unknown` — which is not a failure — when the framework has no way
+to test it: an adapter that does not implement `Ping`, or no adapter configured
+at all.
 
 | Field | Default | Purpose |
 |---|---|---|
-| `HealthCheckDB` | `false` | when true, `GET /health` pings every distinct registered adapter (Config.DB plus any per-model overrides) and returns `503` on failure. Driver error messages are logged, not echoed in the response body, so DSN fragments can't leak. |
-| `HealthTimeout` | `3s` | maximum time the health handler waits for the DB ping |
+| `ReadinessChecks` | none | the application's own dependency probes, reported by `/ready` beside the built-in `db` check |
+| `HealthTimeout` | `3s` | budget shared by all dependency checks on `/ready`, and by `/health` when `HealthCheckDB` is on |
+| `HealthCheckDB` | `false` | when true, `GET /health` pings every distinct registered adapter (Config.DB plus any per-model overrides) and returns `503` on failure. Governs `/health` alone — `/ready` always checks the database |
 
 Set `HealthTimeout` shorter than your probe's `timeoutSeconds` so the handler
 can return `503` cleanly before the probe times out.
+
+Add a dependency of your own with `ReadinessChecks`:
+
+```go
+cfg := maniflex.Config{
+    ReadinessChecks: []maniflex.ReadinessCheck{{
+        Name:  "broker",
+        Check: func(ctx context.Context) error { return broker.Ping(ctx) },
+    }},
+}
+```
+
+Checks run on every readiness request, so keep them to a pool or connection
+probe rather than a full round-trip, and honour the `ctx`. A check that returns
+an error — or panics, which is recovered — makes `/ready` answer `503`. The
+error text is logged through `Config.Logger` and never written to the response:
+a probe body is the one place an unauthenticated client reads straight from a
+dependency, and connection strings live in those messages.
+
+Names must be non-empty, unique, and not `db`, which the framework reserves;
+anything else panics when the router is built rather than on a probe request.
+
+`live`, `ready`, and `health` are reserved path segments under `PathPrefix` — a
+custom action or route registered at one of them collides with the probe
+already mounted there.
 
 ## Reading from environment
 

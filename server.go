@@ -609,6 +609,26 @@ func (c *Server) finishStart(err error) {
 	}
 }
 
+// readinessPhase collapses the start-state machine into the three answers the
+// readiness endpoint gives before it looks at any dependency.
+//
+// serverNew is deliberately "serving": it is the state a Handler-only embedding
+// stays in for its whole life, since the caller owns the listener and never
+// tells the framework that serving has begun. Reporting it as starting would
+// leave every embedded deployment permanently not-ready.
+func (c *Server) readinessPhase() readinessPhase {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch c.state {
+	case serverStarting, serverServicesStarting:
+		return phaseStarting
+	case serverStopping, serverStopped, serverFailed:
+		return phaseStopping
+	default: // serverNew, serverRunning, serverServicesRunning
+		return phaseServing
+	}
+}
+
 // markExited releases a Shutdown waiting for StartWithContext or StartServices
 // to finish bringing work up or tearing it back down.
 func (c *Server) markExited() {
@@ -897,7 +917,7 @@ func (c *Server) handler() (http.Handler, error) {
 		c.Pipeline.freeze()
 		h := newHandlers(c.Pipeline, c.steps, &c.cfg)
 		h.globalSearch = c.globalSearch
-		c.router = buildRouter(&c.cfg, c.registry, h, c.Pipeline, c.cfg.logger(), c.actions, c.asyncCfg)
+		c.router = buildRouter(&c.cfg, c.registry, h, c.Pipeline, c.cfg.logger(), c.actions, c.asyncCfg, c.readinessPhase)
 	}
 	return c.router, nil
 }

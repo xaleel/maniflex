@@ -342,14 +342,28 @@ then `SIGKILL`'d the process. `Config.ShutdownTimeout` defaults to 30s;
 set the pod's grace period larger (60s is comfortable) so the graceful
 path has time to complete. See [Graceful Shutdown](../deployment/shutdown.md).
 
-### "Health probe returns 503 intermittently."
+### "Readiness returns 503 intermittently."
 
-If `Config.HealthCheckDB` is true, the probe pings the database. Tune:
+`/ready` pings the database and runs every `Config.ReadinessChecks` entry, so
+`503` means a dependency did not answer in time. Tune:
 
 - `Config.HealthTimeout` — should be shorter than the probe's
   `timeoutSeconds`.
 - The database — if the pool is exhausted, `db.Ping()` waits for a
   connection.
+- Your own checks — they run on every probe request, so a full round-trip
+  through a dependency will eventually time one out.
+
+The same applies to `/health` when `Config.HealthCheckDB` is true.
+
+### "Kubernetes restarts my pods whenever the database blips."
+
+The liveness probe is pointed at a database-backed endpoint — `/api/ready`, or
+`/api/health` with `HealthCheckDB` on. Point it at `/api/live`, which answers
+`200` for as long as the process is alive and never touches a dependency.
+Restarting a replica cannot fix a database, and doing it to every replica at
+once is how an outage gets worse. See
+[Configuration](../deployment/config.md#probes).
 
 ### "Logs are noisy with debug records."
 

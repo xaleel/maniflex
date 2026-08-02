@@ -310,13 +310,48 @@ structural: a second replica does not see a logout performed by the first, and a
 restart loses every entry — which un-revokes every still-unexpired token. It
 suits single-replica deployments, development, and tests.
 
-Behind more than one replica, use the Redis backend:
+Behind more than one replica, use a shared store. Two ship.
+
+**Redis** — server-side key expiry, so nothing ever has to be swept:
 
 ```go
 import authredis "github.com/xaleel/maniflex/middleware/auth/redis"
 
 rev := authredis.NewRevoker(redisClient, "myapp:revoked")
 ```
+
+**SQL** — the database you already run, with no second piece of infrastructure
+and no extra dependency (the package imports nothing but `database/sql`):
+
+```go
+import authsql "github.com/xaleel/maniflex/middleware/auth/sql"
+
+if err := authsql.Migrate(ctx, db, "postgres"); err != nil {   // or "sqlite"
+    log.Fatal(err)
+}
+rev := authsql.NewRevoker(db)
+```
+
+`Migrate` creates `revoked_token` and `revoked_user` and is safe to run on every
+boot and from every replica — every statement is `IF NOT EXISTS`, and none
+rewrites an existing column. Use `WithTablePrefix("auth_")` if those names are
+taken; pass the same option to both calls.
+
+SQL has no TTL, so expired rows are swept rather than expiring themselves. This
+never affects correctness — both reads filter on the deadline, so a row the sweep
+has not reached yet stops being honoured at exactly the right moment — it only
+bounds the table. The `Revoker` sweeps every 128 writes on its own; call
+`Prune(ctx)` to do it on a schedule and see the error, or `WithPruneEvery(0)` to
+turn the automatic sweep off and take over entirely:
+
+```go
+tokens, users, err := rev.Prune(ctx)
+```
+
+One behavioural note when comparing the two: `RevokeUser` moves a cutoff forward
+in the `INSERT … ON CONFLICT` itself, so concurrent revocations cannot resurrect
+tokens by landing out of order. The Redis backend reads then writes and documents
+that race as benign.
 
 Or implement `auth.Revoker` yourself over any store — four methods, and the
 interface is in terms of `context.Context` and `time.Time` only.

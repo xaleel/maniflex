@@ -51,7 +51,7 @@ const txLockImmediate = "_txlock=immediate"
 //	db, err := sqlite.Open(":memory:", reg)
 func Open(path string, reg maniflex.RegistryAccessor) (maniflex.DBAdapter, error) {
 	if path == ":memory:" {
-		path = fmt.Sprintf("file:memdb%s?mode=memory&cache=shared", maniflex.RandomString(6, maniflex.DIGITS))
+		path = fmt.Sprintf("file:memdb%s?mode=memory&cache=shared", maniflex.RandomString(12, maniflex.ALPHANUM))
 	}
 	readDSN := withPragmas(path)
 	writeDSN := withTxLockImmediate(readDSN)

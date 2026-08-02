@@ -259,10 +259,26 @@ server.Pipeline.Auth.Register(
 )
 ```
 
-The same inclusion-only rule applies to public reads: `auth.AllowPublicRead`
-is a passthrough that must run *before* an aborting authenticator, but a
-global `JWTAuth` aborts first — so prefer scoping `JWTAuth` away from the
-operations you want public rather than relying on a later passthrough.
+Scoping the authenticator this way is safe only while the model list is. Because
+the filters are inclusion-only, a model registered later is named in no
+registration and so is covered by no auth at all — silently. Prefer
+`auth.AllowAnonymous` for anything but the smallest API: it leaves `JWTAuth`
+registered globally and makes the *exemption* the thing you enumerate, so an
+unlisted route refuses rather than opens.
+
+```go
+server.Pipeline.Auth.Register(auth.AllowAnonymous(),
+    maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpCreate),
+)
+server.Pipeline.Auth.Register(auth.JWTAuth(secret))
+```
+
+It is also the only way to have a route that authenticates a token when one is
+sent and still serves a caller who sends none — a `JWTAuth` scoped away from the
+route does not run there, so even a valid token leaves `ctx.Auth` nil.
+`auth.AllowPublicRead` is a passthrough, not an exemption: an aborting
+authenticator answers 401 before it is reached, so it needs `AllowAnonymous` in
+front of the authenticator to do anything at all.
 
 ### "JWT keeps returning 401 — the token validates manually."
 

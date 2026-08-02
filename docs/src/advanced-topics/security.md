@@ -19,17 +19,26 @@ layers. This page collects the practical checklist.
 - **Set `JWTOptions.TenantClaim`** for multi-tenant APIs — the verified value
   ends up on `ctx.Auth.TenantID` and feeds `db.Tenancy`.
 - **Never accept anonymous writes by default.** Register `auth.JWTAuth` (or
-  `auth.APIKeyAuth`) on the Auth step scoped to `OpCreate`, `OpUpdate`,
-  `OpDelete`. Use `auth.AllowPublicRead` when reads are truly public.
+  `auth.APIKeyAuth`) on the Auth step *unscoped*, and open the genuinely public
+  routes with `auth.AllowAnonymous`. Scoping the authenticator onto a list of
+  operations or models instead leaves everything it does not name covered by no
+  auth registration at all — and `ForModel`/`ForOperation` are inclusion-only, so
+  the next model added is on the wrong side of that line with nothing to say so.
 
 ```go
-server.Pipeline.Auth.Register(auth.AllowPublicRead())
+server.Pipeline.Auth.Register(auth.AllowAnonymous(),
+    maniflex.ForOperation(maniflex.OpList, maniflex.OpRead))
 server.Pipeline.Auth.Register(auth.JWTAuth(secret, auth.JWTOptions{
     Issuer:      "https://accounts.example.com",
     Audience:    "https://api.example.com",
     TenantClaim: "org_id",
-}), maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete))
+}))
 ```
+
+`AllowAnonymous` forgives an **absent** credential only. One that was presented
+and failed — expired, wrongly signed, revoked, malformed — is still `401` on an
+exempt route, so a caller cannot shed a restrictive role by corrupting a byte of
+their own token.
 
 Verifying tokens from an issuer that rotates its signing keys via JWKS:
 

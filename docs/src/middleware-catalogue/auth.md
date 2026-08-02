@@ -164,18 +164,65 @@ reflect the pre-filter count. When the rule can be expressed as a `WHERE` clause
 prefer [`db.ForceFilter`](db.md) — it scopes in SQL, keeps totals accurate, and
 never fetches rows the caller can't see.
 
-## `AllowPublicRead`
+## `AllowAnonymous`
 
-A passthrough that exempts read operations from upstream auth requirements.
-Register it *before* `JWTAuth` / `APIKeyAuth` to let unauthenticated callers
-hit `GET` routes while keeping writes locked down.
+Marks the routes it is registered for as tolerating a request that carries **no
+credential at all**. Register it *before* the authenticator and scope it with the
+usual filters; `JWTAuth` and `JWKSAuth` honour it.
 
 ```go
-server.Pipeline.Auth.Register(auth.AllowPublicRead())
-server.Pipeline.Auth.Register(auth.JWTAuth("..."),
-    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete),
+server.Pipeline.Auth.Register(auth.AllowAnonymous(),
+    maniflex.ForModel("Post"),
+    maniflex.ForOperation(maniflex.OpList, maniflex.OpRead),
 )
+server.Pipeline.Auth.Register(auth.JWTAuth(secret))   // everything else, unchanged
 ```
+
+Exactly one thing changes: a request with no token is served with `ctx.Auth` left
+`nil` instead of answering `401`. A credential that was **presented and failed** —
+expired, wrongly signed, revoked, malformed, or missing its `Bearer` scheme — is
+still `401` here, as it is everywhere else. Degrading a bad token to anonymous
+would turn an expired session into a silent change of permissions.
+
+Two consequences worth planning around:
+
+- **The exemption is what you enumerate, not the coverage.** The authenticator
+  stays registered globally, so a model added next month is protected by default.
+  Forgetting an entry in the exemption list produces a `401` on the first request
+  rather than an endpoint that quietly opens.
+- **A token that *is* presented still authenticates.** This is what scoping
+  `JWTAuth` away from a route cannot do — there the middleware never runs, so even
+  a valid token leaves `ctx.Auth` nil. Use `AllowAnonymous` when a route shows
+  more to a signed-in visitor than to a stranger (published posts to everyone,
+  drafts to their author).
+
+`ctx.Auth` stays `nil` for the anonymous caller rather than being filled with a
+blank principal, so every `ctx.Auth == nil` test keeps meaning what it means.
+Ordering is by registration within a step: an `AllowAnonymous` registered *after*
+the authenticator sets its marker too late to be read, which fails closed.
+
+## `AllowPublicRead`
+
+A passthrough on `OpRead` and `OpList`; on every other operation it requires
+`ctx.Auth` to be populated.
+
+It does **not**, on its own, make reads reachable. An authenticator that aborts on
+a missing credential has already answered `401` and returned without calling
+`next()`, so an `AllowPublicRead` registered after it never runs — and registered
+before it, the passthrough calls `next()` straight into the authenticator, which
+aborts anyway. Pair it with `AllowAnonymous`:
+
+```go
+server.Pipeline.Auth.Register(auth.AllowAnonymous(),
+    maniflex.ForOperation(maniflex.OpList, maniflex.OpRead),
+)
+server.Pipeline.Auth.Register(auth.JWTAuth("..."))
+server.Pipeline.Auth.Register(auth.AllowPublicRead())
+```
+
+Here it is the belt to `AllowAnonymous`'s braces: one registration, covering every
+model, re-asserting that nothing without a principal may write — a check no
+per-route exemption list can drift away from.
 
 ## `BlockOperation`
 
@@ -357,9 +404,15 @@ build per-route policy without writing custom Auth code:
 
 ```go
 // Public reads, JWT writes, admin-only deletes
-server.Pipeline.Auth.Register(auth.AllowPublicRead())
-server.Pipeline.Auth.Register(auth.JWTAuth("..."),
-    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete))
+server.Pipeline.Auth.Register(auth.AllowAnonymous(),
+    maniflex.ForOperation(maniflex.OpList, maniflex.OpRead))
+server.Pipeline.Auth.Register(auth.JWTAuth("..."))
 server.Pipeline.Auth.Register(auth.RequireRole("admin"),
     maniflex.ForOperation(maniflex.OpDelete))
 ```
+
+Note which registration carries the filter. Scoping the **authenticator** to the
+write operations would work today and fail later: `ForModel`/`ForOperation` are
+inclusion-only, so anything they do not name is covered by no auth registration at
+all. Scoping the **exemption** instead leaves the authenticator global, so the
+default for a route nobody listed is refusal.

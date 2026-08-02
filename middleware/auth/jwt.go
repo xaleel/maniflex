@@ -228,8 +228,13 @@ func jwtMiddleware(secret string, opt JWTOptions, resolve keyResolver) maniflex.
 		if trustedPrincipal(ctx) {
 			return next()
 		}
-		raw, ok := readToken(ctx, opt)
-		if !ok {
+		raw, res := readToken(ctx, opt)
+		switch res {
+		case tokenAbsent:
+			// An exempt route with nothing presented. ctx.Auth stays nil, which is
+			// what every anonymous check in the framework reads.
+			return next()
+		case tokenRefused:
 			return nil
 		}
 
@@ -313,9 +318,23 @@ func stripBearer(raw string) (token string, hadScheme bool) {
 	return raw, false
 }
 
-// readToken pulls the raw token from the configured header. It returns
-// (token, true) on success, or ("", false) after aborting the request when the
-// header is missing or malformed.
+// tokenResult is readToken's three-way answer. The middle case exists only
+// because of AllowAnonymous: before it, "no credential" and "bad credential"
+// were the same outcome, and they must not be.
+type tokenResult int
+
+const (
+	// tokenPresent — a credential was supplied and is well-framed. It has not
+	// been verified yet; that is parseJWT's job and it may still fail.
+	tokenPresent tokenResult = iota
+	// tokenAbsent — nothing was supplied, on a route that permits that. The
+	// caller continues anonymously with ctx.Auth left nil.
+	tokenAbsent
+	// tokenRefused — the request has been aborted; the caller must return nil.
+	tokenRefused
+)
+
+// readToken pulls the raw token from the configured header.
 //
 // Authorization *requires* the scheme, since a bare token there is malformed
 // rather than merely unadorned. Any other header *tolerates* it: the prefix used
@@ -324,19 +343,28 @@ func stripBearer(raw string) (token string, hadScheme bool) {
 // because it is what the header being replaced requires — parsed the scheme as
 // part of the token and answered a flat 401 about the token being invalid rather
 // than about its framing (audit 11D.9).
-func readToken(ctx *maniflex.ServerContext, opt JWTOptions) (string, bool) {
+//
+// The empty header is the only thing AllowAnonymous forgives, and the test for
+// it is deliberately the raw header rather than the extracted token: "Bearer "
+// with nothing after it, or a header carrying some other scheme, is a credential
+// that was presented and could not be read, so it is refused on an exempt route
+// exactly as it is anywhere else (audit AU-2).
+func readToken(ctx *maniflex.ServerContext, opt JWTOptions) (string, tokenResult) {
 	raw := ctx.Request.Header.Get(opt.Header)
+	if raw == "" && anonymousAllowed(ctx) {
+		return "", tokenAbsent
+	}
 	token, hadScheme := stripBearer(raw)
 	if opt.Header == "Authorization" && !hadScheme {
 		ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",
 			"missing or malformed Authorization: Bearer <token> header")
-		return "", false
+		return "", tokenRefused
 	}
 	if token == "" {
 		ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED", "missing token")
-		return "", false
+		return "", tokenRefused
 	}
-	return token, true
+	return token, tokenPresent
 }
 
 // validateRegisteredClaims checks the standard registered claims — exp, nbf, iat
@@ -547,11 +575,24 @@ func abortOwnershipMismatch(ctx *maniflex.ServerContext, ownerField string) bool
 // ── AllowPublicRead ────────────────────────────────────────────────────────────
 
 // AllowPublicRead is a passthrough on OpRead and OpList; on all other operations
-// it requires ctx.Auth to be populated (i.e. another auth middleware must run first
-// for writes). Register this After any auth middleware.
+// it requires ctx.Auth to be populated.
 //
+// It does not, on its own, make reads reachable. An authenticator that aborts on
+// a missing credential — JWTAuth, JWKSAuth, APIKeyAuth — has already answered 401
+// and returned without calling next(), so an AllowPublicRead registered after it
+// never runs; registered before it, this passthrough calls next() straight into
+// the authenticator, which aborts anyway. Pair it with AllowAnonymous, which is
+// what tells the authenticator that a missing credential is permitted here:
+//
+//	server.Pipeline.Auth.Register(auth.AllowAnonymous(),
+//	    maniflex.ForOperation(maniflex.OpList, maniflex.OpRead))
 //	server.Pipeline.Auth.Register(auth.JWTAuth(secret))
 //	server.Pipeline.Auth.Register(auth.AllowPublicRead())
+//
+// In that arrangement AllowPublicRead is the belt to AllowAnonymous's braces: it
+// re-asserts, independently of which routes were exempted, that nothing without a
+// principal may write. Its own value is in that redundancy — one registration
+// covering every model, which no per-route exemption list can drift away from.
 func AllowPublicRead() maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
 		if ctx.Operation == maniflex.OpRead || ctx.Operation == maniflex.OpList {

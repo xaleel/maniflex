@@ -339,9 +339,13 @@ import (
 auth.JWTAuth(secret, auth.JWTOptions{Issuer, Audience, TenantClaim, ScopesClaim, PublicKey})
 auth.APIKeyAuth("X-API-Key", auth.APIKeyEntry{Key, Auth: maniflex.AuthInfo{...}}, ...)
 auth.RequireRole("admin")
-auth.AllowPublicRead()                       // passthrough on read/list; must run BEFORE an aborting authenticator
+auth.AllowAnonymous()                        // register BEFORE JWTAuth/JWKSAuth + ForModel/ForOperation:
+                                             //   no credential -> served, ctx.Auth nil; bad credential -> still 401
+auth.AllowPublicRead()                       // passthrough on read/list; needs AllowAnonymous in front of the
+                                             //   authenticator to be reachable at all
 auth.BlockOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete)
-// (no AllowPublicWrite — keep an op public by NOT scoping JWTAuth onto it; scoping is inclusion-only)
+// (no AllowPublicWrite — scope AllowAnonymous onto the op instead. Prefer that to scoping JWTAuth off it:
+//  filters are inclusion-only, so a model added later is in no registration and gets no auth at all)
 
 // BODY (Deserialize / Validate steps)
 body.MaxBodySize(16 << 20)                   // override 4MB JSON default (also caps multipart, default 32MB — this LOWERS it)

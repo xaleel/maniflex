@@ -13,6 +13,7 @@ import (
 s.Pipeline.Auth.Register(auth.JWTAuth("secret", auth.JWTOptions{Issuer: "myapp"}))
 s.Pipeline.Auth.Register(auth.APIKeyAuth("X-API-Key", auth.APIKeyEntry{Key: "abc", Auth: maniflex.AuthInfo{Roles: []string{"admin"}}}))
 s.Pipeline.Auth.Register(auth.RequireRole("admin"), maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpDelete))
+s.Pipeline.Auth.Register(auth.AllowAnonymous(), maniflex.ForModel("Post"), maniflex.ForOperation(maniflex.OpList, maniflex.OpRead)) // register BEFORE the authenticator
 s.Pipeline.Auth.Register(auth.AllowPublicRead())
 s.Pipeline.Auth.Register(auth.BlockOperation(maniflex.OpCreate, maniflex.OpUpdate, maniflex.OpDelete), maniflex.ForModel("AuditLog"))
 

@@ -118,16 +118,16 @@ func buildAggregateQuery(spec []byte, model *ModelMeta, limits QueryLimits) (Agg
 		}
 		field := sf.Field
 		if field != "" {
-			dbName, err := resolveAggregateColumn(field, model, allowed)
+			dbName, err := resolveAggregateSelectField(field, model, allowed)
 			if err != nil {
 				return AggregateQuery{}, err
 			}
 			field = dbName
 		}
 		af := AggregateField{Op: op, Field: field, As: sf.As}
-		// Resolve the alias the same way aggregateExpr will, so ORDER BY field
-		// names can be matched against it below.
-		if _, alias, err := aggregateExpr(model, af); err == nil {
+		// Resolve the alias the same way the query builder will, so ORDER BY
+		// field names can be matched against it below.
+		if alias, err := aggregateAlias(model, af); err == nil {
 			selectAliases[alias] = true
 		}
 		q.Select = append(q.Select, af)
@@ -276,6 +276,28 @@ func aggregateColumnDBName(name string, model *ModelMeta) (string, bool) {
 		return f.Tags.DBName, true
 	}
 	return "", false
+}
+
+// resolveAggregateSelectField resolves what a select entry aggregates over. It
+// is resolveAggregateColumn plus registered expressions, and is used only for
+// SELECT — GROUP BY and ORDER BY take columns, so naming an expression there is
+// an unknown-field error rather than a half-supported one.
+//
+// An expression has no column, so the filterable/sortable allow-list cannot
+// speak for it; AggregateExpr.Exposed is the equivalent decision, and it is the
+// application's to make. A registered but unexposed expression is refused by
+// name, which tells the developer what to change without telling a client
+// anything it could not already guess from the model.
+func resolveAggregateSelectField(name string, model *ModelMeta, allowed map[string]bool) (string, error) {
+	if found, exposed := model.AggExpr(name); found {
+		if !exposed {
+			return "", fmt.Errorf(
+				"aggregate expression %q on model %s is not available over HTTP (set AggregateExpr.Exposed)",
+				name, model.Name)
+		}
+		return name, nil
+	}
+	return resolveAggregateColumn(name, model, allowed)
 }
 
 // resolveAggregateColumn resolves a JSON or DB field name to its DB column name

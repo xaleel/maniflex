@@ -117,9 +117,9 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	// SELECT
 	selectParts := make([]string, 0, len(agg.Select)+len(agg.GroupBy))
 	aliases := make(map[string]bool, len(agg.Select))
-	aliasExpr := make(map[string]string, len(agg.Select))
+	aliasField := make(map[string]AggregateField, len(agg.Select))
 	for _, f := range agg.Select {
-		expr, alias, err := aggregateExpr(meta, f)
+		expr, alias, err := aggregateSelectSQL(meta, f, pb)
 		if err != nil {
 			return nil, aggregateQueryError(err)
 		}
@@ -127,7 +127,7 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 			return nil, aggregateQueryErrorf("maniflex: duplicate aggregate alias %q", alias)
 		}
 		aliases[alias] = true
-		aliasExpr[alias] = expr
+		aliasField[alias] = f
 		selectParts = append(selectParts, expr+" AS "+aggQuote(alias))
 	}
 	// Always include the GROUP BY columns in the SELECT so the caller sees
@@ -170,12 +170,22 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	if len(agg.Having) > 0 {
 		parts := make([]string, 0, len(agg.Having))
 		for _, h := range agg.Having {
-			expr, ok := aliasExpr[h.Alias]
+			af, ok := aliasField[h.Alias]
 			if !ok {
 				return nil, aggregateQueryErrorf("maniflex: Having references unknown alias %q", h.Alias)
 			}
 			if !havingOpAllowed(h.Operator) {
 				return nil, aggregateQueryErrorf("maniflex: Having operator %q is not supported on aggregates", h.Operator)
+			}
+			// Re-rendered rather than reusing the SELECT string. A registered
+			// expression may carry a bound literal, and a placeholder cannot be
+			// textually reused: on SQLite a second "?" consumes the NEXT
+			// argument rather than repeating the first, so every value after it
+			// would bind one position off. Re-rendering gives this occurrence
+			// its own placeholder and its own argument.
+			expr, _, err := aggregateSelectSQL(meta, af, pb)
+			if err != nil {
+				return nil, aggregateQueryError(err)
 			}
 			parts = append(parts, fmt.Sprintf("%s %s %s", expr, sqlOp(h.Operator), pb.add(h.Value)))
 		}
@@ -227,57 +237,100 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	return c.rawQuery(query, pb.args...)
 }
 
-// aggregateExpr returns the SQL expression and resolved alias for one
-// AggregateField. Field is validated against the model unless the op is
-// AggCount with no field (COUNT(*)).
-func aggregateExpr(meta *ModelMeta, f AggregateField) (string, string, error) {
+// aggregateSelectSQL returns the SQL expression and resolved alias for one
+// AggregateField. Field names either a column on the model or a registered
+// AggregateExpr, and is validated unless the op is AggCount with no field
+// (COUNT(*)).
+//
+// It takes the placeholder builder because a registered expression may carry a
+// numeric literal, which is bound rather than interpolated.
+func aggregateSelectSQL(meta *ModelMeta, f AggregateField, pb *aggPH) (string, string, error) {
+	if f.Op == AggCount && f.Field == "" {
+		alias := f.As
+		if alias == "" {
+			alias = "count"
+		}
+		return "COUNT(*)", alias, nil
+	}
+	if f.Field == "" {
+		return "", "", fmt.Errorf("maniflex: %s requires a Field", f.Op)
+	}
+
+	operand, _, err := aggregateOperand(meta, f.Field, pb)
+	if err != nil {
+		return "", "", err
+	}
+	alias, err := aggregateAlias(meta, f)
+	if err != nil {
+		return "", "", err
+	}
+
 	switch f.Op {
 	case AggCount:
-		if f.Field == "" {
-			alias := f.As
-			if alias == "" {
-				alias = "count"
-			}
-			return "COUNT(*)", alias, nil
-		}
-		if meta.FieldByDBName(f.Field) == nil {
-			return "", "", fmt.Errorf("maniflex: aggregate column %q does not exist on model %q", f.Field, meta.Name)
-		}
-		alias := f.As
-		if alias == "" {
-			alias = "count_" + f.Field
-		}
-		return fmt.Sprintf("COUNT(%s.%s)",
-			aggQuote(meta.TableName), aggQuote(f.Field)), alias, nil
+		return fmt.Sprintf("COUNT(%s)", operand), alias, nil
 	case AggCountDistinct:
-		if f.Field == "" {
-			return "", "", fmt.Errorf("maniflex: AggCountDistinct requires a Field")
-		}
-		if meta.FieldByDBName(f.Field) == nil {
-			return "", "", fmt.Errorf("maniflex: aggregate column %q does not exist on model %q", f.Field, meta.Name)
-		}
-		alias := f.As
-		if alias == "" {
-			alias = "count_distinct_" + f.Field
-		}
-		return fmt.Sprintf("COUNT(DISTINCT %s.%s)",
-			aggQuote(meta.TableName), aggQuote(f.Field)), alias, nil
+		return fmt.Sprintf("COUNT(DISTINCT %s)", operand), alias, nil
 	case AggSum, AggAvg, AggMin, AggMax:
-		if f.Field == "" {
-			return "", "", fmt.Errorf("maniflex: %s requires a Field", f.Op)
-		}
-		if meta.FieldByDBName(f.Field) == nil {
-			return "", "", fmt.Errorf("maniflex: aggregate column %q does not exist on model %q", f.Field, meta.Name)
-		}
-		alias := f.As
-		if alias == "" {
-			alias = string(f.Op) + "_" + f.Field
-		}
-		return fmt.Sprintf("%s(%s.%s)",
-			strings.ToUpper(string(f.Op)),
-			aggQuote(meta.TableName), aggQuote(f.Field)), alias, nil
+		return fmt.Sprintf("%s(%s)", strings.ToUpper(string(f.Op)), operand), alias, nil
 	}
 	return "", "", fmt.Errorf("maniflex: unknown aggregate op %q", f.Op)
+}
+
+// aggregateAlias returns the result column name for one AggregateField:
+// AggregateField.As when set, otherwise the op-and-field default.
+//
+// Split out from the SQL so the HTTP endpoint can work out which aliases a
+// query will produce — which is how it validates an ORDER BY naming one —
+// without building any SQL or binding any placeholder.
+func aggregateAlias(meta *ModelMeta, f AggregateField) (string, error) {
+	if f.As != "" {
+		return f.As, nil
+	}
+	if f.Op == AggCount && f.Field == "" {
+		return "count", nil
+	}
+	if f.Field == "" {
+		return "", fmt.Errorf("maniflex: %s requires a Field", f.Op)
+	}
+
+	// A registered expression aliases under its own name; a column aliases
+	// under its DB name whichever spelling the caller used.
+	base := f.Field
+	if _, ok := meta.aggExprTree(f.Field); !ok {
+		fm := meta.ResolveFilterField(f.Field)
+		if fm == nil {
+			return "", fmt.Errorf("maniflex: aggregate column %q does not exist on model %q", f.Field, meta.Name)
+		}
+		base = fm.Tags.DBName
+	}
+
+	switch f.Op {
+	case AggCount:
+		return "count_" + base, nil
+	case AggCountDistinct:
+		return "count_distinct_" + base, nil
+	case AggSum, AggAvg, AggMin, AggMax:
+		return string(f.Op) + "_" + base, nil
+	}
+	return "", fmt.Errorf("maniflex: unknown aggregate op %q", f.Op)
+}
+
+// aggregateOperand resolves what an aggregate is computed over: a registered
+// expression if the name matches one, otherwise a column on the model. It
+// returns the SQL and the stem used to build a default alias.
+func aggregateOperand(meta *ModelMeta, name string, pb *aggPH) (string, string, error) {
+	if tree, ok := meta.aggExprTree(name); ok {
+		sql, err := renderAggExpr(meta, tree, pb)
+		if err != nil {
+			return "", "", err
+		}
+		return sql, name, nil
+	}
+	f := meta.ResolveFilterField(name)
+	if f == nil {
+		return "", "", fmt.Errorf("maniflex: aggregate column %q does not exist on model %q", name, meta.Name)
+	}
+	return aggQuote(meta.TableName) + "." + aggQuote(f.Tags.DBName), f.Tags.DBName, nil
 }
 
 func havingOpAllowed(op FilterOperator) bool {

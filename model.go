@@ -237,7 +237,14 @@ type ModelMeta struct {
 	// only. Mutated under mu; readers should snapshot the slice header under
 	// the read lock before iterating to avoid racing with AddComputedField.
 	Computed []ComputedField
-	mu       sync.RWMutex
+
+	// aggExprs holds named SQL expressions registered via
+	// Server.RegisterAggregateExpr, keyed by name. An aggregate may reference
+	// one wherever it takes a field, so sum(price*count) is a query rather than
+	// a Go loop. Written only during registration; read under mu.
+	aggExprs map[string]compiledAggExpr
+
+	mu sync.RWMutex
 
 	// Adapter overrides the global Config.DB for this model. nil means use
 	// the global. Copied from ModelConfig.Adapter at registration.

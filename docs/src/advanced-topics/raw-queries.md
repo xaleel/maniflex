@@ -166,6 +166,62 @@ counts the orders that are open **or** draft — the same rows
 > A filter the builder cannot render is therefore refused, or failed closed to
 > match nothing — never degraded into a predicate that happens to parse.
 
+### Expression aggregates
+
+An aggregate normally totals one column. To total something the schema does not
+store — revenue as `price × count`, margin as `(price − cost) × count` — register
+a named expression on the model:
+
+```go
+srv.MustRegisterAggregateExpr(maniflex.AggregateExpr{
+    Model:   "OrderLine",
+    Name:    "revenue",
+    Expr:    maniflex.Mul(maniflex.Col("price"), maniflex.Col("count")),
+    Exposed: true,
+})
+```
+
+`Name` is then usable wherever an aggregate takes a field:
+
+```go
+ctx.Aggregate("OrderLine", maniflex.AggregateQuery{
+    Select: []maniflex.AggregateField{
+        {Op: maniflex.AggSum, Field: "revenue", As: "total"},
+    },
+})
+```
+
+```json
+{"select": [{"op": "sum", "field": "revenue", "as": "total"}]}
+```
+
+Without this the figure is computed in Go over paged rows — a loop that has to
+read every row it sums, and pages while it does.
+
+Expressions are built from `Col`, `Lit`, `Add`, `Sub`, `Mul` and `Div`, and
+nest. The `Expr` interface is sealed, so those constructors are the only way to
+make one: **there is no path from a string to SQL.** A `Col` name is resolved
+against the model at registration (either spelling), and a `Lit` is bound as a
+parameter, never interpolated.
+
+Everything is checked when you register, not when a query runs — an unknown
+column, a non-numeric one, a name that collides with a field, or an expression
+nested past the depth limit is a startup error naming the problem.
+
+`Exposed` is what publishes an expression to the generated HTTP endpoint, and it
+is **false by default**: server-side `ctx.Aggregate` can always use one, while a
+public client gets only what the application opted in, the same decision
+`mfx:"filterable"` makes for a column. Expressions may be selected, not grouped
+or sorted by; `order_by` can still name the alias.
+
+> **`Div` divides by `NULLIF(divisor, 0)`.** SQLite answers `NULL` for a division
+> by zero and Postgres raises, so an unwrapped division would return a row in a
+> SQLite dev run and fail the identical request in Postgres production. The wrap
+> costs you the error: dividing by zero yields `NULL` on both. Note also that
+> integer columns divide with truncation on both drivers — `Div(Col("total"),
+> Col("count"))` over two `int` columns is integer division. Use a float column,
+> or multiply by `Lit(1.0)` first.
+
 The HTTP endpoint applies a default `limit` of 100 and clamps larger requested
 limits to 200; a negative limit is invalid. It also caps select, group, where,
 having, and order terms before SQL or placeholder lists are built. Configure

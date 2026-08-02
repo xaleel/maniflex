@@ -496,6 +496,83 @@ func (m *ModelMeta) rejectBadMaxCount() error {
 	return nil
 }
 
+// rejectMisplacedBounds refuses a bound on a field it cannot measure.
+//
+// min:/max: compare a magnitude and only a number has one. Declaring
+// mfx:"max:5000" on a string — the natural reading of "at most 5000
+// characters" — used to pass registration and then reject every non-empty
+// value at runtime with "field must be a number". Nothing said why, and the
+// framework's own tutorial shipped `Password string mfx:"min:8"`, which
+// rejected every password.
+//
+// minlen:/maxlen: are the mirror: they measure a length, which a string and a
+// slice have and a number does not. Each error names the other tag, because the
+// author is never wrong about what they wanted — only about which tag spells it.
+func (m *ModelMeta) rejectMisplacedBounds() error {
+	for _, f := range m.Fields {
+		hasNum := f.Tags.Min != nil || f.Tags.Max != nil
+		hasLen := f.Tags.MinLen != nil || f.Tags.MaxLen != nil
+
+		if hasNum && !isNumericKind(f.Type) {
+			hint := ""
+			if canMeasureLength(f.Type) {
+				hint = ` — for a length bound use mfx:"minlen:"/"maxlen:"`
+			}
+			return fmt.Errorf(
+				"maniflex: model %q field %q has mfx:\"min:\"/\"max:\" but its Go type is %s — "+
+					"those bound a number's magnitude%s",
+				m.Name, f.Name, f.Type, hint)
+		}
+
+		if !hasLen {
+			continue
+		}
+		// max_count already bounds a FileKeys field and is protective: it has a
+		// default and refuses a malformed value. A second spelling on the same
+		// field would leave which bound applies to reading order.
+		if f.Type == fileKeysType {
+			return fmt.Errorf(
+				"maniflex: model %q field %q is a maniflex.FileKeys and uses "+
+					"mfx:\"minlen:\"/\"maxlen:\" — use mfx:\"max_count:N\", which bounds "+
+					"how many keys it holds",
+				m.Name, f.Name)
+		}
+		if !canMeasureLength(f.Type) {
+			hint := ""
+			if isNumericKind(f.Type) {
+				hint = ` — for a numeric bound use mfx:"min:"/"max:"`
+			}
+			return fmt.Errorf(
+				"maniflex: model %q field %q has mfx:\"minlen:\"/\"maxlen:\" but its Go type "+
+					"is %s — those bound the length of a string or a list%s",
+				m.Name, f.Name, f.Type, hint)
+		}
+		if f.Tags.MinLen != nil && f.Tags.MaxLen != nil && *f.Tags.MinLen > *f.Tags.MaxLen {
+			return fmt.Errorf(
+				"maniflex: model %q field %q has mfx:\"minlen:%d\" above mfx:\"maxlen:%d\" — "+
+					"no value can satisfy both",
+				m.Name, f.Name, *f.Tags.MinLen, *f.Tags.MaxLen)
+		}
+	}
+	return nil
+}
+
+// canMeasureLength reports whether a length bound means anything for t: a
+// string or a slice/array, dereferencing a pointer.
+func canMeasureLength(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.String, reflect.Slice, reflect.Array:
+		return true
+	}
+	return false
+}
+
 // rejectReadonlyRequired refuses mfx:"readonly,required", which is the same
 // unsatisfiable shape rejectHiddenRequired covers and was left open by it.
 //
@@ -854,6 +931,13 @@ func ScanModel(v any, cfg ModelConfig) (*ModelMeta, error) {
 	// max_count is protective, so a malformed or misplaced one must not pass as
 	// a wider cap than the author wrote.
 	if err := meta.rejectBadMaxCount(); err != nil {
+		return nil, err
+	}
+
+	// A bound on a field it cannot measure enforces nothing, or — for min:/max:
+	// on a string — rejects everything. Either way the author meant the other
+	// tag, so say which.
+	if err := meta.rejectMisplacedBounds(); err != nil {
 		return nil, err
 	}
 

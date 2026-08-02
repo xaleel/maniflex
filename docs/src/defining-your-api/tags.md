@@ -57,12 +57,44 @@ These constrain the values a field accepts on write.
 | `enum:a\|b\|c` | the value must be one of the pipe-separated options              |
 | `min:N`        | numeric minimum (`N` is a number)                                |
 | `max:N`        | numeric maximum                                                  |
+| `minlen:N`     | minimum length — characters for a string, items for a list       |
+| `maxlen:N`     | maximum length                                                   |
 | `default:V`    | value applied when the field is absent; cast to the field's type |
 
 ```go
 Status   string `json:"status"   mfx:"required,enum:draft|published|archived"`
 Priority int    `json:"priority" mfx:"min:1,max:5,default:3"`
+Password string `json:"password" mfx:"required,writeonly,minlen:8"`
+Message  string `json:"message"  mfx:"maxlen:5000"`
 ```
+
+### Magnitude vs. length
+
+`min:`/`max:` bound a **number's value**. `minlen:`/`maxlen:` bound a **length**
+— of a string, or of a list. Putting one where the other belongs is a
+registration error naming the tag you wanted:
+
+```
+maniflex: model "User" field "Password" has mfx:"min:"/"max:" but its Go type
+is string — those bound a number's magnitude — for a length bound use
+mfx:"minlen:"/"maxlen:"
+```
+
+The error exists because the mistake used to be invisible. `mfx:"max:5000"` on a
+string reads exactly like "at most 5000 characters", and instead rejected *every*
+non-empty value at runtime with `field "message" must be a number` — nothing at
+startup, and an error message that named neither the tag nor the type. This
+framework's own tutorial shipped `Password string mfx:"min:8"` and rejected
+every password.
+
+String length is counted in **characters, not bytes**. A cap sized against
+English would otherwise reject the same message written in Arabic or carrying
+emoji — a limit that behaves differently depending on the writer's language, and
+never for the author.
+
+For a `maniflex.FileKeys` field use `max_count:` rather than `maxlen:`; it is
+the file-specific bound and has a default. Declaring `maxlen:` there is a
+registration error pointing at it.
 
 ### Malformed values are refused at registration
 
@@ -71,6 +103,10 @@ A value these directives cannot use is a startup error, not a silent no-op:
 | Written | Result |
 |---|---|
 | `mfx:"min:abc"`, `mfx:"max:"` | registration error — not a number |
+| `mfx:"maxlen:abc"`, `mfx:"minlen:-1"` | registration error — not a whole number |
+| `mfx:"min:8"` on a string | registration error — use `minlen:` |
+| `mfx:"maxlen:10"` on an int | registration error — use `max:` |
+| `mfx:"minlen:10,maxlen:5"` | registration error — unsatisfiable |
 | `mfx:"enum:"`, `mfx:"enum:a\|\|b"` | registration error — empty option |
 | `mfx:"readonly,required"` | registration error — unsatisfiable |
 

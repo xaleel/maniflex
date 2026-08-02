@@ -123,15 +123,7 @@ func buildModelSchemas(spec *OpenAPISpec, m *ModelMeta, reg RegistryAccessor) {
 			if f.Tags.WriteOnly {
 				s.WriteOnly = true
 			}
-			if len(f.Tags.Enum) > 0 {
-				s.Enum = stringsToAny(f.Tags.Enum)
-			}
-			if f.Tags.Min != nil {
-				s.Minimum = f.Tags.Min
-			}
-			if f.Tags.Max != nil {
-				s.Maximum = f.Tags.Max
-			}
+			applyFieldValidation(s, f)
 			if f.Tags.File {
 				s.Description = fileFieldDescription(f)
 			}
@@ -144,15 +136,7 @@ func buildModelSchemas(spec *OpenAPISpec, m *ModelMeta, reg RegistryAccessor) {
 			if f.Tags.WriteOnly {
 				s.WriteOnly = true
 			}
-			if len(f.Tags.Enum) > 0 {
-				s.Enum = stringsToAny(f.Tags.Enum)
-			}
-			if f.Tags.Min != nil {
-				s.Minimum = f.Tags.Min
-			}
-			if f.Tags.Max != nil {
-				s.Maximum = f.Tags.Max
-			}
+			applyFieldValidation(s, f)
 			if f.Tags.File {
 				s.Description = fileFieldDescription(f) +
 					". Supply via multipart upload or as a pre-uploaded storage key string."
@@ -170,15 +154,7 @@ func buildModelSchemas(spec *OpenAPISpec, m *ModelMeta, reg RegistryAccessor) {
 			if f.Tags.WriteOnly {
 				s.WriteOnly = true
 			}
-			if len(f.Tags.Enum) > 0 {
-				s.Enum = stringsToAny(f.Tags.Enum)
-			}
-			if f.Tags.Min != nil {
-				s.Minimum = f.Tags.Min
-			}
-			if f.Tags.Max != nil {
-				s.Maximum = f.Tags.Max
-			}
+			applyFieldValidation(s, f)
 			if f.Tags.File {
 				s.Description = fileFieldDescription(f) +
 					". Supply via multipart upload or as a pre-uploaded storage key string."
@@ -1341,4 +1317,33 @@ func applyConstraintTags(s *OASSchema, t FieldTags) {
 	if t.WriteOnly {
 		s.WriteOnly = true
 	}
+}
+
+// applyFieldValidation copies a field's declared constraints onto its schema.
+//
+// The three body schemas (full, create, update) each carry the same
+// constraints, and they drifted apart the moment one of them gained a case the
+// others did not — so they share this instead.
+//
+// Numeric and length bounds land in different keywords, and which pair applies
+// is settled at registration: rejectMisplacedBounds refuses min:/max: on
+// anything but a number and minlen:/maxlen: on anything but a string or list,
+// so a field can never reach here carrying a bound its schema has no word for.
+func applyFieldValidation(s *OASSchema, f FieldMeta) {
+	if len(f.Tags.Enum) > 0 {
+		s.Enum = stringsToAny(f.Tags.Enum)
+	}
+	if f.Tags.Min != nil {
+		s.Minimum = f.Tags.Min
+	}
+	if f.Tags.Max != nil {
+		s.Maximum = f.Tags.Max
+	}
+	if s.Type == "array" {
+		s.MinItems = f.Tags.MinLen
+		s.MaxItems = f.Tags.MaxLen
+		return
+	}
+	s.MinLength = f.Tags.MinLen
+	s.MaxLength = f.Tags.MaxLen
 }

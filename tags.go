@@ -48,6 +48,17 @@ type FieldTags struct {
 	Enum       []string // allowed values, e.g. mfx:"enum:draft|published"
 	Min        *float64 // numeric minimum
 	Max        *float64 // numeric maximum
+
+	// MinLen and MaxLen bound a length rather than a magnitude, parsed from
+	// mfx:"minlen:8" / mfx:"maxlen:5000". They apply to a string (counted in
+	// characters, not bytes) and to a slice (counted in elements).
+	//
+	// They exist because min:/max: read naturally as length bounds and are not:
+	// mfx:"max:5000" on a string rejected every non-empty value, and the only
+	// signal was a runtime "must be a number". Declaring a numeric bound on a
+	// non-numeric field is now a registration error pointing here.
+	MinLen *int
+	MaxLen *int
 	Default    string   // automatically cast to corresponding type (if possible)
 
 	// Relation options — set via mfx:"relation:RelationName;onDelete:cascade"
@@ -306,6 +317,22 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 			} else {
 				t.MalformedOpts = append(t.MalformedOpts, part)
 			}
+		// minlen:/maxlen: take a non-negative whole number. A malformed one is
+		// flagged rather than dropped, for the reason min: learned the hard
+		// way: a bound that parses as nothing enforces nothing, silently.
+		case strings.HasPrefix(part, "minlen:"):
+			if v, err := strconv.Atoi(strings.TrimPrefix(part, "minlen:")); err == nil && v >= 0 {
+				t.MinLen = &v
+			} else {
+				t.MalformedOpts = append(t.MalformedOpts, part)
+			}
+		case strings.HasPrefix(part, "maxlen:"):
+			if v, err := strconv.Atoi(strings.TrimPrefix(part, "maxlen:")); err == nil && v >= 0 {
+				t.MaxLen = &v
+			} else {
+				t.MalformedOpts = append(t.MalformedOpts, part)
+			}
+
 		case strings.HasPrefix(part, "default:"):
 			t.Default = strings.TrimPrefix(part, "default:")
 

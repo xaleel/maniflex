@@ -22,6 +22,7 @@ package maniflex
 import (
 	"fmt"
 	"reflect"
+	"unicode/utf8"
 )
 
 // WriteOption adjusts a programmatic write. See SkipValidation.
@@ -139,7 +140,55 @@ func checkFieldValue(f *FieldMeta, val any) string {
 			return fmt.Sprintf("field %q must be <= %g", jn, *f.Tags.Max)
 		}
 	}
+	if f.Tags.MinLen != nil || f.Tags.MaxLen != nil {
+		n, unit, ok := valueLength(val)
+		if !ok {
+			// Same rule the numeric bound follows: a bound the value cannot be
+			// measured against is a failed bound, not an absent one.
+			return fmt.Sprintf("field %q must be a string or a list", jn)
+		}
+		if f.Tags.MinLen != nil && n < *f.Tags.MinLen {
+			return fmt.Sprintf("field %q must be at least %d %s", jn, *f.Tags.MinLen, pluralUnit(*f.Tags.MinLen, unit))
+		}
+		if f.Tags.MaxLen != nil && n > *f.Tags.MaxLen {
+			return fmt.Sprintf("field %q must be at most %d %s", jn, *f.Tags.MaxLen, pluralUnit(*f.Tags.MaxLen, unit))
+		}
+	}
 	return ""
+}
+
+// valueLength measures a value for a minlen/maxlen bound, returning the count
+// and the noun to report it in.
+//
+// A string is counted in characters rather than bytes. A cap sized for English
+// would otherwise reject the same message written in Arabic or carrying emoji —
+// a limit that behaves differently depending on the writer's language is a bug
+// only some users ever see, and never the author.
+func valueLength(val any) (int, string, bool) {
+	if s, ok := val.(string); ok {
+		return utf8.RuneCountInString(s), "character", true
+	}
+	rv := reflect.ValueOf(val)
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return 0, "", false
+		}
+		rv = rv.Elem()
+	}
+	switch rv.Kind() {
+	case reflect.String:
+		return utf8.RuneCountInString(rv.String()), "character", true
+	case reflect.Slice, reflect.Array:
+		return rv.Len(), "item", true
+	}
+	return 0, "", false
+}
+
+func pluralUnit(n int, unit string) string {
+	if n == 1 {
+		return unit
+	}
+	return unit + "s"
 }
 
 func validationError(meta *ModelMeta, errs []string) error {

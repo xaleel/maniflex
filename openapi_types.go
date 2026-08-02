@@ -135,6 +135,8 @@ type OASSchema struct {
 	Maximum   *float64 `json:"maximum,omitempty"`
 	MinLength *int     `json:"minLength,omitempty"`
 	MaxLength *int     `json:"maxLength,omitempty"`
+	MinItems  *int     `json:"minItems,omitempty"`
+	MaxItems  *int     `json:"maxItems,omitempty"`
 
 	// Annotations
 	ReadOnly  bool `json:"readOnly,omitempty"`

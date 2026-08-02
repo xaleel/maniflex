@@ -17,7 +17,7 @@ type User struct {
     maniflex.BaseModel
 
     Email    string `json:"email"    mfx:"required,filterable,unique,immutable"`
-    Password string `json:"password" mfx:"required,writeonly,min:8"`
+    Password string `json:"password" mfx:"required,writeonly,minlen:8"`
     Name     string `json:"name"     mfx:"required,filterable,sortable"`
     Role     string `json:"role"     mfx:"required,enum:admin|customer,default:customer,filterable"`
 }
@@ -28,7 +28,9 @@ A few tag choices to notice:
 - **`email`** is `unique` and `immutable` — once a user signs up, the address
   is the account identity.
 - **`password`** is `writeonly` so it is accepted on input but never appears
-  in responses, and `min:8` enforces a minimum length.
+  in responses, and `minlen:8` enforces a minimum length of eight characters.
+  (`min:`/`max:` bound a number's value, not a string's length — declaring one on
+  a string is a registration error naming this tag.)
 - **`role`** is an enum with a safe default; we'll gate `admin` writes
   separately in middleware.
 

@@ -171,6 +171,13 @@ If you need to tell "empty" from "not set", make the field a pointer. A
 non-pointer field genuinely cannot represent the difference — it reads back as
 the zero value either way.
 
+Note the corollary for anything reading the database directly: because every
+non-pointer field is `NOT NULL`, `NOT NULL` says nothing about whether a value
+is *required*, and the zero value rather than `NULL` is what "absent" means. If
+you are writing a migration script, a reporting query, or another service
+against a maniflex schema, read [Field Schema & Nullability](schema.md) first — that
+distinction has cost real data.
+
 ## Table names
 
 By default the table name is the struct name converted to snake_case and

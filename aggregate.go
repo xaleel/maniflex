@@ -1,6 +1,7 @@
 package maniflex
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -118,6 +119,7 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	selectParts := make([]string, 0, len(agg.Select)+len(agg.GroupBy))
 	aliases := make(map[string]bool, len(agg.Select))
 	aliasField := make(map[string]AggregateField, len(agg.Select))
+	numericAliases := make(map[string]bool, len(agg.Select))
 	for _, f := range agg.Select {
 		expr, alias, err := aggregateSelectSQL(meta, f, pb)
 		if err != nil {
@@ -128,6 +130,9 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 		}
 		aliases[alias] = true
 		aliasField[alias] = f
+		if aggregateYieldsNumber(meta, f) {
+			numericAliases[alias] = true
+		}
 		selectParts = append(selectParts, expr+" AS "+aggQuote(alias))
 	}
 	// Always include the GROUP BY columns in the SELECT so the caller sees
@@ -234,7 +239,15 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	// rawQuery, not RawQuery: the public one refuses while an ActionScope is in
 	// force, and rightly — but this statement is the framework's own, and the
 	// scope has already been AND-ed into its WHERE above.
-	return c.rawQuery(query, pb.args...)
+	rows, err := c.rawQuery(query, pb.args...)
+	if err != nil {
+		return nil, err
+	}
+	// A numeric result must be a JSON number whichever driver answered. Only
+	// here, not in rawQuery: RawQuery is the escape hatch and returns what the
+	// driver gave.
+	normalizeAggregateNumbers(rows, numericAliases)
+	return rows, nil
 }
 
 // aggregateSelectSQL returns the SQL expression and resolved alias for one
@@ -275,6 +288,120 @@ func aggregateSelectSQL(meta *ModelMeta, f AggregateField, pb *aggPH) (string, s
 	}
 	return "", "", fmt.Errorf("maniflex: unknown aggregate op %q", f.Op)
 }
+
+// aggregateYieldsNumber reports whether an aggregate's result is always a
+// number, so a driver that hands it back as text can be normalised without
+// touching a value that is legitimately a string.
+//
+// count and count_distinct are integers, and sum and avg are numeric by
+// definition. min and max return the operand's own type — MIN over a text
+// column is text, and rewriting a value like "00123" into a number there would
+// corrupt it — so they qualify only when the operand is numeric. A registered
+// expression always qualifies: its columns are checked numeric at registration.
+func aggregateYieldsNumber(meta *ModelMeta, f AggregateField) bool {
+	switch f.Op {
+	case AggCount, AggCountDistinct, AggSum, AggAvg:
+		return true
+	case AggMin, AggMax:
+		if _, ok := meta.aggExprTree(f.Field); ok {
+			return true
+		}
+		fm := meta.ResolveFilterField(f.Field)
+		return fm != nil && isNumericKind(fm.Type)
+	}
+	return false
+}
+
+// normalizeAggregateNumbers rewrites text-valued numeric aggregate results into
+// json.Number, so the same query answers with a JSON number on every driver.
+//
+// lib/pq scans a Postgres NUMERIC — which is what SUM over a BIGINT, and AVG
+// over anything, come back as — into a []byte that the row scanner turns into a
+// Go string. SQLite returns an int64 or a float64. The same aggregate therefore
+// produced {"sum_amount": "150"} against one driver and {"sum_amount": 150}
+// against the other, and every consumer had to accept both.
+//
+// json.Number rather than float64: it marshals as the exact digits the database
+// produced, so a total wider than float64's 53-bit mantissa is not silently
+// rounded, and a large round number is not re-rendered in exponent form.
+//
+// Only aliases in `numeric` are touched, so a group_by column and a MIN over a
+// text column keep their strings.
+func normalizeAggregateNumbers(rows []Row, numeric map[string]bool) {
+	for _, row := range rows {
+		for alias := range numeric {
+			v, ok := row[alias]
+			if !ok {
+				continue
+			}
+			var s string
+			switch t := v.(type) {
+			case string:
+				s = t
+			case []byte:
+				s = string(t)
+			default:
+				continue // already a number, or NULL
+			}
+			if isJSONNumber(s) {
+				row[alias] = json.Number(s)
+			}
+		}
+	}
+}
+
+// isJSONNumber reports whether s is a JSON number literal, matching the grammar
+// encoding/json enforces when marshalling a json.Number.
+//
+// The check is not paranoia. A Postgres NUMERIC also admits 'NaN' and
+// 'Infinity', and neither is a JSON number — handing one to the encoder as a
+// bare token fails the marshal and takes the whole response down with it, so a
+// value this rejects stays the string it already was.
+func isJSONNumber(s string) bool {
+	i := 0
+	if i < len(s) && s[i] == '-' {
+		i++
+	}
+	// Integer part: "0" or [1-9][0-9]*. Leading zeros are invalid JSON.
+	switch {
+	case i < len(s) && s[i] == '0':
+		i++
+	case i < len(s) && s[i] >= '1' && s[i] <= '9':
+		for i < len(s) && isDigit(s[i]) {
+			i++
+		}
+	default:
+		return false
+	}
+	// Optional fraction, which must have at least one digit.
+	if i < len(s) && s[i] == '.' {
+		i++
+		start := i
+		for i < len(s) && isDigit(s[i]) {
+			i++
+		}
+		if i == start {
+			return false
+		}
+	}
+	// Optional exponent, likewise.
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		start := i
+		for i < len(s) && isDigit(s[i]) {
+			i++
+		}
+		if i == start {
+			return false
+		}
+	}
+	return i == len(s)
+}
+
+func isDigit(b byte) bool { return b >= '0' && b <= '9' }
 
 // aggregateAlias returns the result column name for one AggregateField:
 // AggregateField.As when set, otherwise the op-and-field default.

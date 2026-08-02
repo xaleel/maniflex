@@ -166,6 +166,31 @@ counts the orders that are open **or** draft — the same rows
 > A filter the builder cannot render is therefore refused, or failed closed to
 > match nothing — never degraded into a predicate that happens to parse.
 
+### Result types
+
+A numeric aggregate comes back as a **JSON number** on every driver:
+
+```json
+{"data": [{"region": "us", "total": 150}]}
+```
+
+That needs saying because it did not used to be true. Postgres computes `SUM`
+over a `BIGINT`, and `AVG` over anything, as `NUMERIC`, which `lib/pq` hands
+back as text — so the identical query answered `"total": "150"` there and
+`"total": 150` on SQLite, and every consumer had to accept both. The aggregate
+path now normalises it, keeping the exact digits the database produced rather
+than routing them through a float, so a total wider than 53 bits is not rounded
+and a large round number is not re-rendered as `1e+06`.
+
+Only results that are numeric *by definition* are normalised — `count`,
+`count_distinct`, `sum`, `avg`, and `min`/`max` over a numeric column. A `min`
+over a text column returns text and is left alone, as is any `group_by` column:
+coercing `"00123"` into `123` would be a new bug, not a fix.
+
+`ctx.RawQuery` is deliberately untouched. It is the escape hatch and returns
+what the driver returned, so a raw `SUM` still arrives as a string on Postgres —
+see `pkg/ledger` for the small coercion helper that implies.
+
 ### Expression aggregates
 
 An aggregate normally totals one column. To total something the schema does not

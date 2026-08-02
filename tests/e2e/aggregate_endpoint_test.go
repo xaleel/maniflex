@@ -457,11 +457,15 @@ func TestAggregateEndpoint_ValidationErrors(t *testing.T) {
 			},
 		},
 		{
+			// "between" used to belong here, because the aggregate WHERE builder
+			// had no case for it. It does now, so the allowlist is exercised with
+			// an operator that is genuinely not one — the shape a typo takes,
+			// since FilterOperator is a bare string type.
 			"unsupported where operator",
 			map[string]any{
 				"select": []any{map[string]any{"op": "count", "as": "n"}},
 				"where": []any{
-					map[string]any{"field": "amount", "operator": "between", "value": "1,2"},
+					map[string]any{"field": "amount", "operator": "equals", "value": "1"},
 				},
 			},
 		},
@@ -485,6 +489,35 @@ func TestAggregateEndpoint_ValidationErrors(t *testing.T) {
 				t.Errorf("error code: got %q, want INVALID_AGGREGATE", code)
 			}
 		})
+	}
+}
+
+// AG-4. "between" is renderable now, so the body may use it — and it has to
+// mean what it means everywhere else: two inclusive bounds, not an equality
+// against the literal string "50,200", which is what the builder's old default
+// branch produced via sqlOp's catch-all "=".
+func TestAggregateEndpoint_BetweenWhere(t *testing.T) {
+	t.Parallel()
+	srv := aggEndpointServer(t, nil)
+	seedSales(t, srv)
+
+	resp := aggGET(srv, map[string]any{
+		"select": []any{map[string]any{"op": "count", "as": "n"}},
+		"where": []any{
+			map[string]any{"field": "amount", "operator": "between", "value": "50,200"},
+		},
+	})
+	resp.AssertStatus(http.StatusOK)
+
+	rows := resp.DataList()
+	if len(rows) != 1 {
+		t.Fatalf("want one row, got %d: %s", len(rows), resp.Body)
+	}
+	row, _ := rows[0].(map[string]any)
+	n, _ := row["n"].(float64)
+	// amounts are 100, 50, 200, 300, 25 → three fall within [50, 200].
+	if int(n) != 3 {
+		t.Fatalf("between counted %v, want 3\nbody: %s", row["n"], resp.Body)
 	}
 }
 

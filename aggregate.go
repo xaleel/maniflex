@@ -2,6 +2,7 @@ package maniflex
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -138,10 +139,12 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 		selectParts = append(selectParts, aggQuote(meta.TableName)+"."+aggQuote(col))
 	}
 
-	// WHERE — validate column names against the model so an unknown column is
-	// a clean error rather than a SQL fault.
+	// WHERE — validate field names against the model so an unknown one is a
+	// clean error rather than a SQL fault. Either spelling resolves, matching
+	// the list path; aggBuildWhere fails an unresolvable filter closed, so this
+	// is the layer that can say why rather than the one holding the line.
 	for _, f := range agg.Where {
-		if !f.IsNested && meta.FieldByDBName(f.Field) == nil {
+		if !f.IsNested && meta.ResolveFilterField(f.Field) == nil {
 			return nil, aggregateQueryErrorf("maniflex: Where filter references unknown column %q", f.Field)
 		}
 	}
@@ -311,54 +314,137 @@ func aggBuildWhere(meta *ModelMeta, filters []*FilterExpr, driver DriverType, pb
 	if len(filters) == 0 {
 		return "", nil
 	}
-	parts := make([]string, 0, len(filters))
 	for _, f := range filters {
-		if f.IsNested {
+		if f != nil && f.IsNested {
 			return "", fmt.Errorf("maniflex: nested-relation filters are not yet supported in Aggregate")
 		}
-		col := aggQuote(meta.TableName) + "." + aggQuote(f.Field)
-		switch f.Operator {
-		case OpIsNull:
-			parts = append(parts, col+" IS NULL")
-		case OpNotNull:
-			parts = append(parts, col+" IS NOT NULL")
-		case OpIn, OpNotIn:
-			vals := splitInValue(f.Value)
-			if len(vals) == 0 {
-				return "", fmt.Errorf("maniflex: filter %s on %q has no values", f.Operator, f.Field)
-			}
-			placeholders := make([]string, len(vals))
-			for i, v := range vals {
-				placeholders[i] = pb.add(v)
-			}
-			kw := "IN"
-			if f.Operator == OpNotIn {
-				kw = "NOT IN"
-			}
-			parts = append(parts, fmt.Sprintf("%s %s (%s)", col, kw, strings.Join(placeholders, ", ")))
-		case OpLike:
-			parts = append(parts, fmt.Sprintf("%s LIKE %s", col, pb.add(f.Value)))
-		case OpILike:
-			if driver == Postgres {
-				parts = append(parts, fmt.Sprintf("%s ILIKE %s", col, pb.add(f.Value)))
-			} else {
-				parts = append(parts, fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", col, pb.add(f.Value)))
-			}
-		case OpContains, OpStartsWith, OpEndsWith:
-			// Escaped pattern + an explicit ESCAPE, so % and _ in the value match
-			// themselves and both drivers agree on what escapes what.
-			pattern := LikePattern(f.Operator, f.Value)
-			if driver == Postgres {
-				parts = append(parts, fmt.Sprintf("%s ILIKE %s ESCAPE '\\'", col, pb.add(pattern)))
-			} else {
-				parts = append(parts, fmt.Sprintf("LOWER(%s) LIKE LOWER(%s) ESCAPE '\\'", col, pb.add(pattern)))
-			}
-		default:
-			parts = append(parts, fmt.Sprintf("%s %s %s", col, sqlOp(f.Operator), pb.add(f.Value)))
+	}
+
+	// Partition by group, exactly as db/sqlcore's filterConds does: Group <= 0
+	// (the FilterExpr zero value included) is its own AND clause, and filters
+	// sharing a Group >= 1 are OR-ed together. The two builders disagreeing on
+	// this is what made a grouped-OR aggregate collapse to the AND intersection
+	// — usually zero — while the identical filter listed correctly.
+	var ungrouped []*FilterExpr
+	grouped := make(map[int][]*FilterExpr)
+	var groupOrder []int
+	seen := make(map[int]bool)
+	for _, f := range filters {
+		if f == nil {
+			continue
 		}
+		if f.Group <= 0 {
+			ungrouped = append(ungrouped, f)
+			continue
+		}
+		if !seen[f.Group] {
+			seen[f.Group] = true
+			groupOrder = append(groupOrder, f.Group)
+		}
+		grouped[f.Group] = append(grouped[f.Group], f)
+	}
+	sort.Ints(groupOrder) // deterministic SQL
+
+	var parts []string
+	for _, f := range ungrouped {
+		parts = append(parts, aggCond(meta, f, driver, pb))
+	}
+	for _, gid := range groupOrder {
+		exprs := grouped[gid]
+		if len(exprs) == 1 {
+			parts = append(parts, aggCond(meta, exprs[0], driver, pb))
+			continue
+		}
+		orParts := make([]string, len(exprs))
+		for i, f := range exprs {
+			orParts[i] = aggCond(meta, f, driver, pb)
+		}
+		parts = append(parts, "("+strings.Join(orParts, " OR ")+")")
+	}
+	if len(parts) == 0 {
+		return "", nil
 	}
 	return " WHERE " + strings.Join(parts, " AND "), nil
 }
+
+// aggCond renders one aggregate filter as a predicate.
+//
+// It resolves the field and normalises the value the same way the list path
+// does, so the same filter counts what it lists: a json field name resolves to
+// its column, a bool column receives a real bool rather than the word "false",
+// and a time value is written in the canonical form the adapters store.
+//
+// Everything it cannot render fails closed to a false predicate rather than
+// degrading to something that looks like SQL. That is the half of AG-4 worth
+// keeping: the old default branch sent every unhandled operator through sqlOp,
+// which answers "=" for anything it does not know, so `amount:between:5,25`
+// became `amount = '5,25'` — not an error, just a count of zero. A predicate
+// this builder cannot express must match nothing, for the reason db/sqlcore's
+// buildCond gives at length: matching everything deletes the filter, and a
+// deleted filter on an aggregate is a total computed over rows the caller
+// never asked for.
+func aggCond(meta *ModelMeta, f *FilterExpr, driver DriverType, pb *aggPH) string {
+	fm := meta.ResolveFilterField(f.Field)
+	if fm == nil {
+		return falsePredicate
+	}
+	col := aggQuote(meta.TableName) + "." + aggQuote(fm.Tags.DBName)
+	val := NormalizeFilterValue(fm, f.Operator, f.Value)
+
+	switch f.Operator {
+	case OpEq, OpNeq, OpGt, OpGte, OpLt, OpLte:
+		return fmt.Sprintf("%s %s %s", col, sqlOp(f.Operator), pb.add(val))
+	case OpIsNull:
+		return col + " IS NULL"
+	case OpNotNull:
+		return col + " IS NOT NULL"
+	case OpIn, OpNotIn:
+		vals := splitInValue(val)
+		if len(vals) == 0 {
+			// An empty set has no SQL form: "IN ()" is a syntax error on every
+			// driver. Empty IN matches nothing, which is also what an empty set
+			// means, so the false predicate is the honest answer either way.
+			return falsePredicate
+		}
+		placeholders := make([]string, len(vals))
+		for i, v := range vals {
+			placeholders[i] = pb.add(v)
+		}
+		kw := "IN"
+		if f.Operator == OpNotIn {
+			kw = "NOT IN"
+		}
+		return fmt.Sprintf("%s %s (%s)", col, kw, strings.Join(placeholders, ", "))
+	case OpBetween:
+		bounds := SplitCSV(fmt.Sprint(val))
+		if len(bounds) != 2 {
+			return falsePredicate
+		}
+		return fmt.Sprintf("(%s >= %s AND %s <= %s)",
+			col, pb.add(bounds[0]), col, pb.add(bounds[1]))
+	case OpLike:
+		return fmt.Sprintf("%s LIKE %s", col, pb.add(val))
+	case OpILike:
+		if driver == Postgres {
+			return fmt.Sprintf("%s ILIKE %s", col, pb.add(val))
+		}
+		return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", col, pb.add(val))
+	case OpContains, OpStartsWith, OpEndsWith:
+		// Escaped pattern + an explicit ESCAPE, so % and _ in the value match
+		// themselves and both drivers agree on what escapes what.
+		pattern := LikePattern(f.Operator, val)
+		if driver == Postgres {
+			return fmt.Sprintf("%s ILIKE %s ESCAPE '\\'", col, pb.add(pattern))
+		}
+		return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s) ESCAPE '\\'", col, pb.add(pattern))
+	}
+	return falsePredicate
+}
+
+// falsePredicate is the condition a builder emits when it cannot render the
+// filter it was given. Spelled once so the aggregate path and the adapters
+// answer an impossible filter the same way.
+const falsePredicate = "1=0"
 
 func splitInValue(v any) []any {
 	switch x := v.(type) {

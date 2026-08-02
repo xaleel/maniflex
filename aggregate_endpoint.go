@@ -59,12 +59,20 @@ var aggregateOps = map[string]AggregateOp{
 }
 
 // aggregateWhereOps is the set of filter operators the aggregate WHERE clause
-// supports. It mirrors what aggBuildWhere can render; notably "between" is
-// excluded because the aggregate WHERE builder does not expand it.
+// supports — now every operator the list path supports, "between" included.
+//
+// It used to exclude "between" because aggBuildWhere had no case for it, which
+// made this map the only thing standing between a client and wrong SQL. It was
+// not standing there alone, though: aggregateDB folds the request's ?filter=
+// conditions in after this check runs, and those never passed it — so
+// ?filter=amount:between:5,25 reached a builder that rendered it as
+// `amount = '5,25'` and answered zero. The builder is total now, and fails
+// closed on anything it cannot render, so this map is a backstop that names the
+// problem rather than the thing preventing it.
 var aggregateWhereOps = map[FilterOperator]bool{
 	OpEq: true, OpNeq: true, OpGt: true, OpGte: true, OpLt: true, OpLte: true,
 	OpLike: true, OpILike: true, OpIn: true, OpNotIn: true,
-	OpIsNull: true, OpNotNull: true,
+	OpIsNull: true, OpNotNull: true, OpBetween: true,
 	OpContains: true, OpStartsWith: true, OpEndsWith: true,
 }
 

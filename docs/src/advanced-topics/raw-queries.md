@@ -143,16 +143,28 @@ failed in production. A request body is not read; sending one gets a
 `field` on `count` for `COUNT(*)`). Field names use the same convention as
 `?filter=`/`?sort=` — the JSON name (DB column name also accepted) — and **every
 referenced field must be `mfx:"filterable"` or `mfx:"sortable"`**, so the public
-endpoint can never aggregate a hidden or sensitive column. WHERE operators are
-the flat comparison set plus
-`in`/`not_in`/`like`/`ilike`/`contains`/`starts_with`/`ends_with`/`is_null`/`not_null`
-(no `between`).
+endpoint can never aggregate a hidden or sensitive column. The WHERE clause
+takes **every operator `?filter=` takes**, and renders them the same way, so a
+filter counts what it lists.
 
 The endpoint runs as the **list** operation: any auth or tenancy middleware you
 registered for `OpList` applies unchanged (no separate registration needed), and
 request `?filter=` conditions — including middleware-injected tenancy
-force-filters — are AND-ed into the aggregate WHERE alongside the spec's own
-`where`.
+force-filters — are folded into the aggregate WHERE alongside the spec's own
+`where`. Filters sharing a group OR together and groups AND with everything
+else, exactly as they do on the list endpoint:
+
+```
+GET /orders/aggregate?aggregate=…&filter[0]=status:eq:open&filter[0]=status:eq:draft
+```
+
+counts the orders that are open **or** draft — the same rows
+`GET /orders?filter[0]=…` returns.
+
+> Aggregates report totals, so a WHERE clause that quietly means something other
+> than what it says is worse here than on a list: there are no rows to eyeball.
+> A filter the builder cannot render is therefore refused, or failed closed to
+> match nothing — never degraded into a predicate that happens to parse.
 
 The HTTP endpoint applies a default `limit` of 100 and clamps larger requested
 limits to 200; a negative limit is invalid. It also caps select, group, where,

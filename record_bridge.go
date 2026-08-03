@@ -12,7 +12,14 @@ package maniflex
 // locale, framework *_hmac columns, populated ?include= relations) rides on the
 // BaseModel `extra` carrier. The present-key set is recorded too. As a result
 // recordToMap(mapToRecord(m)) == m exactly — same keys, same value types — so
-// no pipeline behavior changes. The genuinely typed scan/write path (scanStruct
+// no pipeline behavior changes.
+//
+// Carried values are additionally copied into their struct fields, without
+// leaving the carrier, wherever that can be done losslessly (hydrateFields,
+// audit WR-1). The map is rebuilt from the carrier, so the round-trip above is
+// untouched; the copy exists so a caller holding the *T — a hand-written action,
+// a service middleware — can read a column the row genuinely holds, instead of
+// the zero value the envelope used to report. The genuinely typed scan/write path (scanStruct
 // / buildInsert) is exercised by db/sqlcore's adapter_struct_test and goes live
 // with the Phase-4 pipeline rewrite, where these helpers are deleted.
 
@@ -74,6 +81,9 @@ func mapToRecord(model *ModelMeta, m map[string]any) (any, error) {
 		}
 		extra[k] = v
 	}
+	if extra != nil {
+		hydrateFields(model, sv, extra)
+	}
 	if rm, ok := pv.Interface().(recordMeta); ok {
 		rm.mfxSetPresent(present)
 		if extra != nil {
@@ -84,6 +94,110 @@ func mapToRecord(model *ModelMeta, m map[string]any) (any, error) {
 		}
 	}
 	return pv.Interface(), nil
+}
+
+// hydrateFields fills a struct field from the value parked on the extra carrier
+// for its column, when that value can be placed there without changing it.
+//
+// It exists because assignField's exact-type rule, correct as it is for the map,
+// left the struct itself lying. A `*time.Time` field is not assignable from a
+// `time.Time`, so a column written through the adapter went to the carrier and
+// the field stayed nil — and a caller holding the returned *T read nil for a
+// column the row holds correctly (audit WR-1). The generated CRUD path never
+// showed it, because it converts back to a map and the carrier overwrites; only
+// hand-written code that reads the struct saw it, which is the worst place for a
+// bug to hide.
+//
+// It is additive on purpose: the value stays on the carrier. That is what keeps
+// recordToMap(mapToRecord(m)) == m exact — the map is rebuilt from the carrier,
+// which still holds the original value at its original Go type — and it is also
+// what keeps every other reader unchanged, since recordValue prefers the carrier
+// to the struct field and structForWrite refuses the typed write path whenever
+// the carrier is non-empty.
+//
+// Both pointer and plain fields are filled, because both were affected: the echo
+// map is a re-read of the row, so a plain `int` column arrives as the driver's
+// int64 and missed the exact-type test for the same reason a *string did.
+//
+// A value is taken when it is assignable to the field (or, for a pointer, to its
+// element), or when it converts between numeric types without changing what it
+// says — checked by converting back and comparing, so an int64 too large for an
+// int32 column is declined rather than silently wrapped. Everything else stays
+// where it is: a string spelling a timestamp is not parsed, because that is scan
+// logic in the wrong layer, and numeric↔string conversion is excluded outright
+// since Go reads int→string as a rune and would turn 65 into "A".
+//
+// Note that the reason assignField must be exact does not apply here. That rule
+// protects the Go type of the *map* value, and hydration never touches the map —
+// the carrier keeps the original, and recordToMap rebuilds from the carrier.
+func hydrateFields(model *ModelMeta, sv reflect.Value, extra map[string]any) {
+	for i := range model.Fields {
+		f := &model.Fields[i]
+		val, ok := extra[f.Tags.DBName]
+		if !ok || val == nil {
+			// A SQL NULL belongs in a nil pointer, and in the zero value of a
+			// plain field. Pointing it at a zero value would turn "no value"
+			// into "the empty string".
+			continue
+		}
+		fv := sv.FieldByIndex(f.Index)
+		// A non-zero field was set by assignField, which means the column is not
+		// on the carrier at all — so this only ever fills what the bridge left
+		// behind, and never overwrites a value the map placed directly.
+		if !fv.CanSet() || !fv.IsZero() {
+			continue
+		}
+		target := fv.Type()
+		wantPtr := target.Kind() == reflect.Pointer
+		if wantPtr {
+			target = target.Elem()
+		}
+		out, ok := losslessAs(reflect.ValueOf(val), target)
+		if !ok {
+			continue
+		}
+		if !wantPtr {
+			fv.Set(out)
+			continue
+		}
+		p := reflect.New(target)
+		p.Elem().Set(out)
+		fv.Set(p)
+	}
+}
+
+// losslessAs returns rv as type target when that can be done without changing
+// the value it stands for.
+func losslessAs(rv reflect.Value, target reflect.Type) (reflect.Value, bool) {
+	if rv.Type().AssignableTo(target) {
+		return rv, true
+	}
+	if !numericScalar(rv.Kind()) || !numericScalar(target.Kind()) {
+		return reflect.Value{}, false
+	}
+	if !rv.Type().ConvertibleTo(target) {
+		return reflect.Value{}, false
+	}
+	out := rv.Convert(target)
+	// Round-trip: an int64 that does not fit the column's Go type, or a float
+	// with a fraction landing in an integer field, comes back different.
+	if !out.Convert(rv.Type()).Equal(rv) {
+		return reflect.Value{}, false
+	}
+	return out, true
+}
+
+// numericScalar reports whether k is an integer or float kind. Complex, bool and
+// string are excluded: Go converts between numbers and strings, but as runes,
+// which is never what a column means.
+func numericScalar(k reflect.Kind) bool {
+	switch k {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return true
+	}
+	return false
 }
 
 // assignField sets f from val only when val's type is DIRECTLY assignable to f's

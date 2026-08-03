@@ -3,7 +3,6 @@ package maniflex
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"net/http"
 )
 
@@ -40,7 +39,19 @@ type Pinger interface {
 // The adapter is tested for the Pinger interface at call time, not at
 // construction, so the handler degrades gracefully if the adapter does not
 // implement Ping: it returns "db":"unknown" rather than failing the check.
+//
+// The ping itself is pingAdapters, shared with GET {prefix}/ready — one
+// endpoint disagreeing with the other about whether the database is reachable
+// would be a bug with nowhere to hide. Concurrent requests share one ping (see
+// probeFlight), so an unauthenticated probe cannot be used to amplify traffic
+// against the database.
+//
+// The "db" key is not gated by Config.Probes.PublishReadinessChecks: it is a
+// name the framework owns rather than one the application chose, so unlike
+// readiness it describes no topology.
 func healthHandler(cfg *Config, reg *Registry) http.HandlerFunc {
+	var flight probeFlight[string]
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 
@@ -54,51 +65,25 @@ func healthHandler(cfg *Config, reg *Registry) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), cfg.HealthTimeout)
 		defer cancel()
 
-		adapters := distinctAdapters(cfg, reg)
-		if len(adapters) == 0 {
-			// No adapters configured at all (no global, no per-model). Treat as
-			// "unknown" rather than degraded so a server still in bootstrap
-			// doesn't fail liveness probes.
-			w.WriteHeader(http.StatusOK)
+		db := flight.do(func() string { return pingAdapters(ctx, cfg, reg) })
+
+		if db == probeError {
+			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(map[string]string{
-				"status": "ok",
-				"db":     "unknown",
+				"status": "degraded",
+				"db":     probeError,
 			})
 			return
 		}
 
-		anySupportsPing := false
-		for _, a := range adapters {
-			p, ok := a.(Pinger)
-			if !ok {
-				continue
-			}
-			anySupportsPing = true
-			if err := p.Ping(ctx); err != nil {
-				cfg.logger().Error("health: db ping failed",
-					slog.String("error", err.Error()))
-				w.WriteHeader(http.StatusServiceUnavailable)
-				_ = json.NewEncoder(w).Encode(map[string]string{
-					"status": "degraded",
-					"db":     "error",
-				})
-				return
-			}
-		}
-
-		if !anySupportsPing {
-			w.WriteHeader(http.StatusOK)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"status": "ok",
-				"db":     "unknown",
-			})
-			return
-		}
-
+		// "unknown" covers both no adapter configured at all and an adapter
+		// that cannot be pinged. Neither is degraded: a server still in
+		// bootstrap, or one whose adapter does not implement Pinger, has not
+		// told us anything is wrong.
 		w.WriteHeader(http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"status": "ok",
-			"db":     "ok",
+			"db":     db,
 		})
 	}
 }

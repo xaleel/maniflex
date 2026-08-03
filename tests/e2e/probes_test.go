@@ -429,10 +429,15 @@ type probeOptions struct {
 // newProbeServer builds a test server whose readiness dependencies are
 // controlled by probeOptions. HealthCheckDB stays off throughout: readiness
 // does not depend on it.
+//
+// PublishReadinessChecks is on because these tests assert on per-dependency
+// results, which are opt-in since DOC-6. The default — that the map is absent —
+// is covered by probes_hardening_test.go.
 func newProbeServer(t *testing.T, opts probeOptions) *testutil.Server {
 	t.Helper()
 	return testutil.NewServer(t, testutil.Options{
 		Config: func(cfg *maniflex.Config) {
+			cfg.Probes.PublishReadinessChecks = true
 			cfg.ReadinessChecks = opts.checks
 			cfg.HealthTimeout = opts.healthTimeout
 		},

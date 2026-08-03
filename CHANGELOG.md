@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 (2026-08-03)
 
 - **Bugfix:** fixed a bug where test with heavy `t.Parallel()` could generate two instances with the same name. `RandomString(6, DIGITS)` isn't enough.
 - **Security (breaking):** a `mfx:"file"` field marked `readonly`, `hidden`, or `immutable` now refuses a multipart upload. Those tags were applied by stripping the field from the parsed JSON body, which an uploaded part never passes through — so a client could set a server-managed document on create and **replace its bytes on update**. Such fields also leave the `multipart/form-data` schema. For uploadable-but-not-echoed, use `writeonly`.
@@ -18,6 +18,8 @@
 - **Developer experience:** the record-identity contract is now frozen, in `docs/src/defining-your-api/identity.md`. Identity is one string column, `id`: a framework-generated lowercase UUIDv4, `TEXT PRIMARY KEY`, `readOnly`. No client or request-path middleware can choose it; server-side writes through the model accessor still may, which is how `SingletonID` names its row. Composite, client-supplied, and integer ids are out of contract for v1.
 - **Feature:** liveness and readiness are separate endpoints under `PathPrefix`. `GET /live` answers `200` while the process can serve, and is unaffected by the drain, since a probe that fails mid-drain earns a `SIGKILL`. `GET /ready` answers `503` while starting or stopping, otherwise the database check plus each new `Config.ReadinessChecks` entry, run concurrently on one `HealthTimeout` budget. `/health` is unchanged, a compatibility alias.
 - **Feature (breaking):** `BaseModel`'s columns now default to `mfx:"readonly"`. `created_at` loses `filterable`/`sortable` and `updated_at` loses `sortable`, so those `?filter=`/`?sort=` requests `400` until a model opts in, and a client-supplied `"id"` in a create body is ignored. Opt in via the new `ModelConfig.BaseModelTags`, a per-column map in `mfx` syntax. Migrate: `BaseModelTags: map[string]string{"created_at": "filterable,sortable"}`.
+- **Security (breaking):** `{prefix}/ready` no longer names your dependencies. Its `checks` map listed each `ReadinessChecks` entry and which failed — on an endpoint that bypasses auth by design, so any caller learned what the app runs on and when it broke. `Probes.PublishReadinessChecks` restores it; failures are still logged. Concurrent probes share one check run, and a panicking adapter `Ping` is a failed check, not a **process crash**.
+- **Feature:** `Config.Probes` gates or unmounts `/live`, `/ready` and `/health`. They mount outside the pipeline, so `Pipeline.Auth` never runs for them and `AllowPublic` has nothing to exempt — deliberate, but until now unoverridable without wrapping every route. `Probes.Middleware` wraps all three, a per-probe chain appends to it, and `Disabled` unmounts one so the router answers `404`. Unchanged by default. Gate `/ready`, not `/live`.
 - **Bugfix:** `?include=` now populates a `BelongsTo` whose foreign key is declared as a pointer — the only way to model an optional relation. The batch lookup was keyed off the pointer and formatted its address instead of the id, so every id missed and the relation was dropped from the response with no error. Rows whose foreign key is genuinely `NULL` still come back without the relation key at all.
 
 ## v0.4.2 (2026-07-30)

@@ -27,6 +27,75 @@ type DocumentationConfig struct {
 	Middleware []HTTPMiddleware
 }
 
+// ProbesConfig governs the three probe endpoints — GET {prefix}/live,
+// {prefix}/ready and {prefix}/health.
+//
+// The probes are mounted straight onto the router and never enter the model
+// pipeline, so no Pipeline.Auth middleware runs for them and authx.AllowPublic
+// has nothing to exempt them from. That is deliberate: an orchestrator's probe
+// is the canonical unauthenticated request. This struct is the way to override
+// it — the only lever scoped to the probes alone, since Config.HTTPMiddlewares
+// wraps every route on the router.
+//
+// The zero value mounts all three publicly, which is what shipped before this
+// existed.
+//
+//	cfg.Probes = maniflex.ProbesConfig{
+//	    // Readiness names your dependencies and reports which are down.
+//	    Ready:  maniflex.ProbeConfig{Middleware: []maniflex.HTTPMiddleware{probeToken}},
+//	    // The legacy endpoint, retired in favour of /live and /ready.
+//	    Health: maniflex.ProbeConfig{Disabled: true},
+//	}
+//
+// Think before gating Live. A liveness probe that receives a 401 is a liveness
+// probe that fails, and an orchestrator answers a failing liveness probe by
+// killing the process — during the graceful drain, taking its in-flight
+// requests with it. Gate Ready and leave Live open, or make the probe carry the
+// credential: a middleware that reads a query parameter works from a kubelet
+// httpGet path, where a rotating header does not.
+type ProbesConfig struct {
+	// Middleware wraps every mounted probe, in order. A probe's own Middleware
+	// runs after this chain, not instead of it. Use AdaptAuth to reuse pipeline
+	// auth middleware such as auth.JWTAuth.
+	Middleware []HTTPMiddleware
+
+	// Live, Ready and Health configure one probe each.
+	Live   ProbeConfig
+	Ready  ProbeConfig
+	Health ProbeConfig
+
+	// PublishReadinessChecks writes the per-dependency results into the
+	// {prefix}/ready body:
+	//
+	//	false  503 {"status":"not_ready"}
+	//	true   503 {"status":"not_ready","checks":{"db":"ok","billing":"error"}}
+	//
+	// It is off by default because the map names every ReadinessChecks entry
+	// and says which of them are failing — telling anyone who can reach the
+	// probe what the application is built on, and when it is degraded. The
+	// status code is the whole of an orchestrator's contract, so withholding
+	// the names costs it nothing, and a failing check is logged through
+	// Config.Logger either way.
+	//
+	// Turn it on where the probe is reachable only from inside the cluster, or
+	// alongside a Ready.Middleware that says who may read it.
+	//
+	// {prefix}/health is unaffected: its "db" key is a name the framework owns
+	// rather than one the application chose, so it describes no topology.
+	PublishReadinessChecks bool
+}
+
+// ProbeConfig is one probe's share of ProbesConfig.
+type ProbeConfig struct {
+	// Disabled leaves this probe off the router entirely, so a request for it
+	// gets the router's 404 rather than a handler that refuses. Nothing is
+	// mounted, so neither Middleware chain runs for it.
+	Disabled bool
+
+	// Middleware wraps this probe in order, after ProbesConfig.Middleware.
+	Middleware []HTTPMiddleware
+}
+
 // QueryLimits bounds client-controlled URL query and aggregate complexity.
 // Zero fields inherit the global/default value; negative fields explicitly
 // disable that individual limit. ModelConfig.QueryLimits can tighten or
@@ -713,6 +782,12 @@ type Config struct {
 	// Leave it empty when the database is the only dependency that decides
 	// whether this process can serve traffic. See ReadinessCheck.
 	ReadinessChecks []ReadinessCheck
+
+	// Probes gates or unmounts the probe endpoints. Its zero value mounts
+	// {prefix}/live, {prefix}/ready and {prefix}/health publicly — the probes
+	// bypass Pipeline.Auth by design, and this is the only lever scoped to them
+	// alone. See ProbesConfig.
+	Probes ProbesConfig
 
 	// DBWriteURL is the DSN/connection-string for the primary (write) database.
 	// Not used by the framework directly — set Config.DB with the adapter you

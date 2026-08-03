@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // ReadinessCheck is one named dependency probe reported by GET {prefix}/ready.
@@ -28,6 +30,8 @@ import (
 // 503. The error is logged through Config.Logger and never written to the
 // response: a probe body is the one place an unauthenticated client reads
 // straight from a dependency, and connection strings live in those messages.
+// Name is withheld too unless Config.Probes.PublishReadinessChecks is set — it
+// says what this application is built on, and which part of it is failing.
 type ReadinessCheck struct {
 	// Name identifies the check in the response body. It must be non-empty,
 	// unique, and not "db", which the framework reserves for its own check.
@@ -49,6 +53,133 @@ const (
 	probeError   = "error"
 	probeUnknown = "unknown"
 )
+
+// mountProbes registers the three probe endpoints under the path prefix,
+// subject to Config.Probes (audit DOC-4).
+//
+// The probes never enter the model pipeline, so Pipeline.Auth does not run for
+// them and there is nothing for authx.AllowPublic to exempt them from. That is
+// the intended posture — an orchestrator's probe is the canonical
+// unauthenticated request — and Config.Probes is the override, the only lever
+// scoped to the probes alone. (Config.HTTPMiddlewares reaches them too, but it
+// reaches every other route at the same time.)
+//
+// A disabled probe is not mounted at all, so the router answers 404 and neither
+// middleware chain runs. Mounting a handler that refused would be a worse
+// answer to the same question: it says the endpoint exists.
+func mountProbes(r chi.Router, cfg *Config, reg *Registry, phase func() readinessPhase) {
+	probes := cfg.Probes
+
+	// Validated up front, and for every probe rather than only the mounted
+	// ones: a nil entry is a typo either way, and finding it the day someone
+	// re-enables the probe is finding it too late.
+	validateProbeMiddleware(probes.Middleware, "Probes.Middleware")
+	validateProbeMiddleware(probes.Live.Middleware, "Probes.Live.Middleware")
+	validateProbeMiddleware(probes.Ready.Middleware, "Probes.Ready.Middleware")
+	validateProbeMiddleware(probes.Health.Middleware, "Probes.Health.Middleware")
+
+	mount := func(probe ProbeConfig, path string, h http.HandlerFunc) {
+		if probe.Disabled {
+			return
+		}
+		// The shared chain first, then the probe's own — appended, not
+		// replaced, so declaring one probe's chain cannot silently drop the
+		// policy the operator meant to apply to all of them.
+		router := r
+		for _, mw := range probes.Middleware {
+			router = router.With(mw)
+		}
+		for _, mw := range probe.Middleware {
+			router = router.With(mw)
+		}
+		router.Get(path, h)
+	}
+
+	mount(probes.Live, "/live", liveHandler())
+	mount(probes.Ready, "/ready", readyHandler(cfg, reg, phase))
+	mount(probes.Health, "/health", healthHandler(cfg, reg))
+}
+
+// validateProbeMiddleware panics on a nil entry, naming the field so the
+// message points at the configuration rather than at a nil dereference inside
+// chi. Same contract as Config.HTTPMiddlewares and Documentation.Middleware.
+func validateProbeMiddleware(chain []HTTPMiddleware, field string) {
+	for i, mw := range chain {
+		if mw == nil {
+			panic(fmt.Sprintf("maniflex: Config.%s[%d] must not be nil", field, i))
+		}
+	}
+}
+
+// probeFlight collapses concurrent probe requests onto one dependency check
+// (audit DOC-6).
+//
+// A probe endpoint is unauthenticated by design, so without this every request
+// that reaches it costs a database ping plus one call per ReadinessCheck, and a
+// flood of probes becomes a flood against the dependencies they name. Requests
+// arriving while a check is running now wait for it and share its answer.
+//
+// It coalesces; it does not cache. A request that arrives after the flight
+// closed starts a new one, because readiness that is even slightly stale keeps
+// a pod in the load balancer after its database has gone away. The saving is in
+// concurrency, which is where the amplification is: serial requests are already
+// bounded by how long a check takes.
+//
+// This is x/sync/singleflight in miniature. The core module depends on chi and
+// uuid and nothing else, and that is worth more than the twenty lines below.
+type probeFlight[T any] struct {
+	mu      sync.Mutex
+	current *probeFlightCall[T]
+}
+
+type probeFlightCall[T any] struct {
+	done     chan struct{}
+	result   T
+	panicked any
+	failed   bool
+}
+
+// do runs work, or joins the run already in progress and returns its result.
+//
+// A panic reaches every participant. Handing the waiters a zero value instead
+// would be a fail-open: a readiness map that is nil reads as "no check
+// failed", so a panicking adapter would answer 200 to everyone who happened to
+// be waiting on it. An adapter's Ping is third-party code and nothing else on
+// this path recovers it.
+func (f *probeFlight[T]) do(work func() T) T {
+	f.mu.Lock()
+	if call := f.current; call != nil {
+		f.mu.Unlock()
+		<-call.done
+		if call.failed {
+			panic(call.panicked)
+		}
+		return call.result
+	}
+	call := &probeFlightCall[T]{done: make(chan struct{})}
+	f.current = call
+	f.mu.Unlock()
+
+	// Released before the waiters are woken, so a request that arrives while
+	// they drain opens a fresh flight rather than joining a finished one.
+	release := func() {
+		f.mu.Lock()
+		f.current = nil
+		f.mu.Unlock()
+		close(call.done)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			call.panicked, call.failed = r, true
+			release()
+			panic(r) // the initiator keeps its own panic, and its stack
+		}
+		release()
+	}()
+
+	call.result = work()
+	return call.result
+}
 
 // readinessPhase is the lifecycle summary readiness answers from before it
 // looks at any dependency.
@@ -112,13 +243,27 @@ func liveHandler() http.HandlerFunc {
 // budget — the database (all distinct adapters the registry resolves to) plus
 // each Config.ReadinessChecks entry:
 //
-//	HTTP 200  {"status":"ok",        "checks":{"db":"ok","broker":"ok"}}
+//	HTTP 200  {"status":"ok"}
+//	HTTP 503  {"status":"not_ready"}
+//
+// The per-dependency results are withheld unless
+// Config.Probes.PublishReadinessChecks is set, since they name what the
+// application depends on and which part is currently failing:
+//
 //	HTTP 503  {"status":"not_ready", "checks":{"db":"ok","broker":"error"}}
+//
+// Concurrent requests share one run of the checks — see probeFlight — so the
+// endpoint cannot be used to amplify traffic against the dependencies it
+// reports on.
 //
 // Unlike /health, this does not consult Config.HealthCheckDB: readiness that
 // skips its dependencies reports nothing worth probing. Error text is logged,
 // never echoed.
 func readyHandler(cfg *Config, reg *Registry, phase func() readinessPhase) http.HandlerFunc {
+	// One flight per server, not per process: two servers in the same binary
+	// have different dependencies to report on.
+	var flight probeFlight[map[string]string]
+
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch phase() {
 		case phaseStarting:
@@ -136,7 +281,9 @@ func readyHandler(cfg *Config, reg *Registry, phase func() readinessPhase) http.
 			defer cancel()
 		}
 
-		checks := runReadinessChecks(ctx, cfg, reg)
+		checks := flight.do(func() map[string]string {
+			return runReadinessChecks(ctx, cfg, reg)
+		})
 
 		status, code := probeOK, http.StatusOK
 		for _, result := range checks {
@@ -145,7 +292,15 @@ func readyHandler(cfg *Config, reg *Registry, phase func() readinessPhase) http.
 				break
 			}
 		}
-		writeProbe(w, code, probeBody{Status: status, Checks: checks})
+
+		// The status code always answers the orchestrator's question. The
+		// per-dependency map names what this application is built on and which
+		// part of it is failing, so it is published only on request.
+		body := probeBody{Status: status}
+		if cfg.Probes.PublishReadinessChecks {
+			body.Checks = checks
+		}
+		writeProbe(w, code, body)
 	}
 }
 
@@ -199,7 +354,30 @@ func runReadinessCheck(ctx context.Context, check ReadinessCheck) (err error) {
 // pingAdapters reports the database outcome across every distinct adapter the
 // registry resolves to. One unreachable adapter fails the check: a model whose
 // database is down cannot serve traffic.
-func pingAdapters(ctx context.Context, cfg *Config, reg *Registry) string {
+//
+// Shared by {prefix}/ready and by {prefix}/health when HealthCheckDB is on, so
+// the two cannot come to disagree about whether the database is reachable. That
+// is also why the log line names neither: with concurrent requests sharing one
+// ping, whichever endpoint opened the flight is not the interesting fact.
+//
+// A panicking Ping is a failed check, not a crash. Ping is third-party code —
+// any adapter may implement it — and on the readiness path this runs on its own
+// goroutine, out of reach of the router's PanicRecoverer, so an unrecovered
+// panic took the whole process down from an unauthenticated probe request. Same
+// reasoning as runReadinessCheck, which already guarded the application's own
+// checks but not the framework's.
+func pingAdapters(ctx context.Context, cfg *Config, reg *Registry) (result string) {
+	defer func() {
+		if r := recover(); r != nil {
+			cfg.logger().Error("probe: db ping panicked",
+				slog.Any("panic", r))
+			result = probeError
+		}
+	}()
+	return pingAdaptersUnguarded(ctx, cfg, reg)
+}
+
+func pingAdaptersUnguarded(ctx context.Context, cfg *Config, reg *Registry) string {
 	adapters := distinctAdapters(cfg, reg)
 	if len(adapters) == 0 {
 		return probeUnknown
@@ -213,7 +391,7 @@ func pingAdapters(ctx context.Context, cfg *Config, reg *Registry) string {
 		}
 		pingable = true
 		if err := p.Ping(ctx); err != nil {
-			cfg.logger().Error("readiness: db ping failed",
+			cfg.logger().Error("probe: db ping failed",
 				slog.String("error", err.Error()))
 			return probeError
 		}

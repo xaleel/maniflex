@@ -79,6 +79,9 @@ This flag is an assertion and does not install authentication.
 
 Generated documentation is already explicit: its zero value mounts nothing,
 `Documentation.Middleware` protects it, and `Documentation.Public` deliberately
-publishes it. The probe endpoints — `/live`, `/ready`, and `/health` — are
-intentionally public, while static serving requires an explicit non-empty
-`StaticDir`.
+publishes it. Static serving requires an explicit non-empty `StaticDir`.
+
+The probe endpoints — `/live`, `/ready`, and `/health` — are public by default
+and the sweep exempts them, because an orchestrator's probe is the canonical
+unauthenticated request. `Config.Probes` gates or unmounts them when that is not
+what you want; setting it does not change what `ValidateProduction` asks for.

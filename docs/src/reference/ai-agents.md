@@ -501,16 +501,29 @@ type Config struct {
     HealthCheckDB   bool           // legacy GET {prefix}/health pings DB
     ReadinessChecks []ReadinessCheck // {Name, Check} app dependencies on {prefix}/ready
     HealthTimeout   time.Duration  // default 3s; budget shared by all dependency checks
+    Probes          ProbesConfig   // {Middleware, Live, Ready, Health, PublishReadinessChecks}
 }
 ```
 
 Probes are mounted under `PathPrefix`: `GET {prefix}/live` is liveness (always
 `200`, no I/O, stays `200` during the drain), `GET {prefix}/ready` is readiness
-(`503` while starting or stopping, then `{"status":…,"checks":{"db":"ok",…}}`
-from the DB ping plus every `ReadinessChecks` entry), and `GET {prefix}/health`
+(`503` while starting or stopping, then `{"status":…}` from the DB ping plus
+every `ReadinessChecks` entry — the per-dependency `checks` map is withheld
+unless `Probes.PublishReadinessChecks` is set, since it names what the app
+depends on and which part is failing; concurrent requests share one run of the
+checks, coalesced not cached), and `GET {prefix}/health`
 is the legacy alias whose meaning follows `HealthCheckDB`. Never point a
 liveness probe at a database-backed endpoint. Check errors are logged, never
 echoed; a check name that is empty, duplicated, or `db` panics at router build.
+
+Probes never enter the pipeline, so `Pipeline.Auth` does not run for them and
+they are public by default. `Config.Probes` is the only probe-scoped override:
+`Probes.Middleware` wraps all three, `Probes.{Live,Ready,Health}.Middleware`
+wraps one (after the shared chain, not instead of it), and
+`Probes.{Live,Ready,Health}.Disabled` unmounts one so the router answers `404`
+and no middleware runs. Gate `/ready`, not `/live` — a rejected liveness probe
+gets the container killed mid-drain; gate `/live` only with a credential the
+probe URL can carry.
 
 After registration and before `Start`/`Handler`, call
 `server.ValidateProduction()`. Generated operations need matching Auth

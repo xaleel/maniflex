@@ -65,10 +65,10 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 
 	r.Route(cfg.PathPrefix, func(r chi.Router) {
 		// Probes. /live and /ready have fixed meanings; /health is the legacy
-		// endpoint whose meaning follows Config.HealthCheckDB.
-		r.Get("/live", liveHandler())
-		r.Get("/ready", readyHandler(cfg, reg, phase))
-		r.Get("/health", healthHandler(cfg, reg))
+		// endpoint whose meaning follows Config.HealthCheckDB. All three are
+		// public unless Config.Probes says otherwise — they never enter the
+		// pipeline, so Pipeline.Auth cannot reach them.
+		mountProbes(r, cfg, reg, phase)
 
 		// Generated documentation is private-by-default. A shared router-level
 		// policy protects both formats. Existing OpenAPI Auth pipeline users

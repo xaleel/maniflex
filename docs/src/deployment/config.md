@@ -196,13 +196,37 @@ from its load balancer while in-flight requests drain. Otherwise every
 dependency is checked concurrently:
 
 ```json
+200 {"status":"ok"}
+503 {"status":"not_ready"}
+```
+
+The per-dependency results are withheld by default, because the map names every
+`ReadinessChecks` entry and says which of them are failing — telling anyone who
+can reach the probe what your application is built on, and when it is degraded.
+Set `Probes.PublishReadinessChecks` where the probe is reachable only from
+inside the cluster, or alongside a `Probes.Ready.Middleware` that says who may
+read it:
+
+```json
 200 {"status":"ok",        "checks":{"db":"ok","broker":"ok"}}
 503 {"status":"not_ready", "checks":{"db":"ok","broker":"error"}}
 ```
 
+Withholding them costs the orchestrator nothing — the status code is the whole
+of its contract — and a failing check is logged through `Config.Logger` either
+way, so a `503` is never undiagnosable. `GET {prefix}/health` is unaffected: its
+`db` key is a name the framework owns rather than one you chose, so it describes
+no topology.
+
 A check reads `unknown` — which is not a failure — when the framework has no way
 to test it: an adapter that does not implement `Ping`, or no adapter configured
 at all.
+
+Concurrent probe requests share one run of the checks, so a flood of probes
+cannot be amplified into a flood against the dependencies they report on. It
+coalesces rather than caches: a request arriving after the run finished starts a
+new one, since readiness that is even slightly stale keeps a pod in the load
+balancer after its database has gone away.
 
 | Field | Default | Purpose |
 |---|---|---|
@@ -237,6 +261,71 @@ anything else panics when the router is built rather than on a probe request.
 `live`, `ready`, and `health` are reserved path segments under `PathPrefix` — a
 custom action or route registered at one of them collides with the probe
 already mounted there.
+
+### Gating and unmounting the probes
+
+The probes are mounted straight onto the router and never enter the model
+pipeline, so **no `Pipeline.Auth` middleware runs for them** and
+`authx.AllowPublic` has nothing to exempt them from. That is deliberate: an
+orchestrator's probe is the canonical unauthenticated request.
+
+`Config.Probes` is the override — the only lever scoped to the probes alone.
+(`Config.HTTPMiddlewares` reaches them too, but it reaches every other route at
+the same time.) Its zero value mounts all three publicly.
+
+```go
+cfg.Probes = maniflex.ProbesConfig{
+    // Readiness names your dependencies and reports which are down.
+    Ready: maniflex.ProbeConfig{
+        Middleware: []maniflex.HTTPMiddleware{probeToken},
+    },
+    // The legacy endpoint, retired in favour of /live and /ready.
+    Health: maniflex.ProbeConfig{Disabled: true},
+}
+```
+
+| Field | Purpose |
+|---|---|
+| `Probes.Middleware` | wraps every mounted probe, in order |
+| `Probes.{Live,Ready,Health}.Middleware` | wraps that one probe, **after** the shared chain — appended, not instead of it |
+| `Probes.{Live,Ready,Health}.Disabled` | leaves that probe off the router entirely |
+| `Probes.PublishReadinessChecks` | writes the per-dependency results into the `/ready` body; off by default |
+
+A disabled probe is not mounted, so the request gets the router's plain `404`
+and neither middleware chain runs. That is a more honest answer than a handler
+that refuses: a `401` says the endpoint is there.
+
+`AdaptAuth` reuses pipeline auth middleware here, the same way it does for
+`Documentation.Middleware`:
+
+```go
+cfg.Probes.Ready.Middleware = []maniflex.HTTPMiddleware{
+    maniflex.AdaptAuth(auth.JWTAuth(opts), auth.RequireRole("ops")),
+}
+```
+
+> **Think before gating `/live`.** A liveness probe that receives a `401` is a
+> liveness probe that fails, and Kubernetes answers a failing liveness probe by
+> killing the container — during the graceful drain, taking its in-flight
+> requests with it. Gating `/ready` alone is usually what you want.
+>
+> If you do gate `/live`, the probe has to carry the credential, and a kubelet
+> `httpGet` varies a path far more easily than it rotates a header:
+>
+> ```yaml
+> livenessProbe:
+>   httpGet:
+>     path: /api/live?token=...
+>     port: 8080
+> ```
+>
+> Which means the middleware must accept the query parameter, not only a header.
+
+A public `/ready` is a defensible default, and the two things that used to make
+it uncomfortable are handled without gating: the dependency names are withheld
+unless you ask for them, and concurrent requests share one run of the checks.
+Gate it when the endpoint is reachable from outside the cluster, or when even
+`{"status":"not_ready"}` is more than you want to publish.
 
 ## Reading from environment
 

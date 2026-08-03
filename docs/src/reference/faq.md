@@ -382,6 +382,10 @@ path has time to complete. See [Graceful Shutdown](../deployment/shutdown.md).
 
 The same applies to `/health` when `Config.HealthCheckDB` is true.
 
+Which dependency failed is in the log, not the response — the body reports only
+`{"status":"not_ready"}` unless `Config.Probes.PublishReadinessChecks` is set,
+so that a public probe does not name what you depend on.
+
 ### "Kubernetes restarts my pods whenever the database blips."
 
 The liveness probe is pointed at a database-backed endpoint — `/api/ready`, or
@@ -390,6 +394,28 @@ The liveness probe is pointed at a database-backed endpoint — `/api/ready`, or
 Restarting a replica cannot fix a database, and doing it to every replica at
 once is how an outage gets worse. See
 [Configuration](../deployment/config.md#probes).
+
+### "My auth middleware doesn't run on `/health` or `/ready`."
+
+By design. The probes are mounted straight onto the router and never enter the
+model pipeline, so no `Pipeline.Auth` middleware sees them and
+`authx.AllowPublic` has nothing to exempt them from — an orchestrator's probe is
+the canonical unauthenticated request.
+
+Use `Config.Probes` when that is not what you want. It gates or unmounts each
+probe independently, and it is the only lever scoped to the probes alone
+(`Config.HTTPMiddlewares` reaches them, but reaches every other route too):
+
+```go
+cfg.Probes = maniflex.ProbesConfig{
+    Ready:  maniflex.ProbeConfig{Middleware: []maniflex.HTTPMiddleware{probeToken}},
+    Health: maniflex.ProbeConfig{Disabled: true},
+}
+```
+
+Gate `/ready`, not `/live`. A liveness probe that gets a `401` is a liveness
+probe that fails, and the answer to that is a `SIGKILL` mid-drain. See
+[Gating and unmounting the probes](../deployment/config.md#gating-and-unmounting-the-probes).
 
 ### "Logs are noisy with debug records."
 

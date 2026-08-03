@@ -124,6 +124,14 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
   `{prefix}/live`**; tune `Config.HealthTimeout` shorter than the probe timeout.
   A liveness probe aimed at a database-backed endpoint turns a dependency
   outage into a restart loop across every replica.
+- **Leave `Probes.PublishReadinessChecks` off** unless `{prefix}/ready` is
+  reachable only from inside the cluster. It writes the *names* of your
+  dependencies and which are failing into a body the probes serve without
+  authentication — they bypass `Pipeline.Auth` by design. `Config.Probes` also
+  gates or unmounts each probe; see
+  [Gating and unmounting the probes](../deployment/config.md#gating-and-unmounting-the-probes).
+  Gate `/ready`, not `/live`: a 401 from a liveness probe gets the container
+  killed mid-drain.
 - **Use `Config.PanicLogger`** to route panics to a different sink than the
   rest of the framework logs, so they are easier to alert on.
 

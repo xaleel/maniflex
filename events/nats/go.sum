@@ -42,6 +42,8 @@ github.com/xaleel/maniflex v0.4.0 h1:PqphDTlKsbVvzyGgqoZx9bT/reBIwhKHH8ehE3fMiuA
 github.com/xaleel/maniflex v0.4.0/go.mod h1:jXddnFYN59dsOgxrJDDb6S1mwISy56RA7ogP5H5Ihh4=
 github.com/xaleel/maniflex v0.4.2 h1:MHQ40yRqYUZu2xOMVDabyzlG3HXHUkHmMIK4b7GF5vQ=
 github.com/xaleel/maniflex v0.4.2/go.mod h1:jXddnFYN59dsOgxrJDDb6S1mwISy56RA7ogP5H5Ihh4=
+github.com/xaleel/maniflex v0.5.0 h1:zgFwKytugj+NRSQFGL/4veFhamciZXIFlo6vWJoAn5Q=
+github.com/xaleel/maniflex v0.5.0/go.mod h1:jXddnFYN59dsOgxrJDDb6S1mwISy56RA7ogP5H5Ihh4=
 golang.org/x/crypto v0.51.0 h1:IBPXwPfKxY7cWQZ38ZCIRPI50YLeevDLlLnyC5wRGTI=
 golang.org/x/crypto v0.51.0/go.mod h1:8AdwkbraGNABw2kOX6YFPs3WM22XqI4EXEd8g+x7Oc8=
 golang.org/x/sys v0.44.0 h1:ildZl3J4uzeKP07r2F++Op7E9B29JRUy+a27EibtBTQ=

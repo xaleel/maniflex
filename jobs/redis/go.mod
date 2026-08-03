@@ -2,7 +2,7 @@ module github.com/xaleel/maniflex/jobs/redis
 
 go 1.25.12
 
-require github.com/xaleel/maniflex v0.4.2
+require github.com/xaleel/maniflex v0.5.0
 
 require github.com/redis/go-redis/v9 v9.19.0
 

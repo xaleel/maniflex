@@ -2,7 +2,7 @@ module github.com/xaleel/maniflex/events/rabbitmq
 
 go 1.25.12
 
-require github.com/xaleel/maniflex v0.4.2
+require github.com/xaleel/maniflex v0.5.0
 
 require github.com/rabbitmq/amqp091-go v1.11.0
 

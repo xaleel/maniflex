@@ -2110,6 +2110,22 @@ func (e dbExec) restorer() (Restorer, bool) {
 	return r, ok
 }
 
+// incrementer reports the Incrementer behind this exec — the transaction when
+// the request runs in one, else the adapter — and whether it supports atomic
+// column arithmetic at all.
+//
+// Preferring the transaction matters more here than for a read: an increment
+// issued outside the caller's open transaction would commit on its own, so a
+// rollback would leave the counter moved and nothing else.
+func (e dbExec) incrementer() (Incrementer, bool) {
+	if e.tx != nil {
+		i, ok := e.tx.(Incrementer)
+		return i, ok
+	}
+	i, ok := e.adapter.(Incrementer)
+	return i, ok
+}
+
 // dbExec presents a map-based facade over the now-typed DBAdapter/Tx interface
 // (Phase 3 bridge). Each method calls the typed method and bridges *T↔map so the
 // still-map pipeline is unchanged. Removed in Phase 7 when the pipeline is typed.

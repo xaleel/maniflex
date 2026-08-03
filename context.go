@@ -1032,6 +1032,60 @@ func (a *ModelAccessor) Update(id string, data map[string]any, opts ...WriteOpti
 	return row, nil
 }
 
+// Increment applies arithmetic to numeric columns of one record in a single
+// statement, and returns the updated record.
+//
+// Each key is a DB column name and each value the amount to add; negative
+// subtracts. Several columns move together, so a transfer between two of them
+// cannot be observed half-done:
+//
+//	row, err := ctx.GetModel("Item").Increment(id, map[string]any{
+//	    "stock": -3, "reserved": 3,
+//	})
+//
+// Use it wherever the new value is a function of the old one. Reading a counter,
+// adding in Go and writing the sum back loses an update whenever two requests
+// read before either writes — and nothing reports it, because both writes
+// succeed. Here the database does the arithmetic on whatever it currently holds.
+//
+// A column's mfx:"min:"/"max:" bounds are enforced inside the same statement, so
+// "decrement, but never below zero" needs no pre-flight read of its own. An
+// increment that would cross a bound writes nothing and returns
+// ErrIncrementOutOfBounds, which is distinct from ErrNotFound: the row exists,
+// and a later attempt may well succeed.
+//
+// Returns ErrNotFound when no such record exists, and likewise when a scope is
+// in force and the record falls outside it — the scope travels into the
+// statement rather than being checked first, so there is no window between the
+// check and the write. Returns ErrIncrementNotSupported when the adapter has no
+// atomic increment; it never falls back to read-then-write.
+func (a *ModelAccessor) Increment(id string, deltas map[string]any) (map[string]any, error) {
+	if a.err != nil {
+		return nil, a.err
+	}
+	if err := validateDeltas(a.meta, deltas); err != nil {
+		return nil, err
+	}
+	inc, ok := a.exec.incrementer()
+	if !ok {
+		return nil, ErrIncrementNotSupported
+	}
+	var scope *QueryParams
+	if a.scope != nil && len(a.scope.Filters) > 0 {
+		scope = &QueryParams{Filters: a.scope.Filters}
+	}
+	rec, err := inc.Increment(a.ctx, a.meta, id, deltas,
+		IncrementBounds(a.meta, deltas), scope)
+	if err != nil {
+		return nil, err
+	}
+	row := recordToMap(a.meta, rec)
+	if err := decryptForRead(a.ctx, a.keyProvider, a.meta, row); err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
 // Delete removes (or soft-deletes) the record identified by id.
 // Returns maniflex.ErrNotFound when absent, and likewise when a scope is in
 // force and the record falls outside it.

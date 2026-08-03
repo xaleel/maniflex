@@ -29,13 +29,14 @@ name := row["name"].(string)
 JSON name — see [Relationship to pipeline middleware](#relationship-to-pipeline-middleware)
 below.
 
-| Method   | Signature                                                        | Returns                   |
-| -------- | ---------------------------------------------------------------- | ------------------------- |
-| `List`   | `List(q *QueryParams) ([]map[string]any, error)`                 | A page of rows            |
-| `Read`   | `Read(id string) (map[string]any, error)`                        | One row, or `ErrNotFound` |
-| `Create` | `Create(data map[string]any) (map[string]any, error)`            | The stored row            |
-| `Update` | `Update(id string, data map[string]any) (map[string]any, error)` | The updated row           |
-| `Delete` | `Delete(id string) error`                                        | —                         |
+| Method      | Signature                                                              | Returns                   |
+| ----------- | ---------------------------------------------------------------------- | ------------------------- |
+| `List`      | `List(q *QueryParams) ([]map[string]any, error)`                       | A page of rows            |
+| `Read`      | `Read(id string) (map[string]any, error)`                              | One row, or `ErrNotFound` |
+| `Create`    | `Create(data map[string]any) (map[string]any, error)`                  | The stored row            |
+| `Update`    | `Update(id string, data map[string]any) (map[string]any, error)`       | The updated row           |
+| `Increment` | `Increment(id string, deltas map[string]any) (map[string]any, error)`  | The updated row           |
+| `Delete`    | `Delete(id string) error`                                              | —                         |
 
 ```go
 // List - q may be nil (page 1, limit 20, no filters or sorts).
@@ -97,6 +98,71 @@ pagination all apply. `Read`, `Update`, and `Delete` return
 `*maniflex.ErrConstraint` on unique or check violations, allowing DB errors to
 be mapped to HTTP responses the same way the pipeline does (see
 [Error Handling](../the-request-pipeline/errors.md)).
+
+## `Increment` — arithmetic the database does
+
+Use `Increment` wherever the new value is a function of the old one. Reading a
+counter, adding in Go, and writing the sum back is a lost update waiting to
+happen: two requests that read before either writes both store the same value,
+one of the increments disappears, and **both writes report success**.
+
+```go
+row, err := ctx.GetModel("Item").Increment(id, map[string]any{
+    "stock": -3, "reserved": 3,
+})
+```
+
+Keys are DB column names, values are amounts to add — negative subtracts. All the
+columns move in one statement, so a transfer between two of them is never
+observable half-done and never left inconsistent by a partial failure.
+
+### Bounds are enforced in the same statement
+
+"Decrement, but never below zero" is the shape most counters have, and checking
+it in Go before calling `Increment` puts the race straight back. So the column's
+existing `mfx:"min:"` / `mfx:"max:"` bounds become conditions on the `UPDATE`
+itself:
+
+```go
+type Item struct {
+    maniflex.BaseModel
+    Stock int `json:"stock" db:"stock" mfx:"min:0"`
+}
+```
+
+An increment that would cross a bound writes **nothing** and returns
+`maniflex.ErrIncrementOutOfBounds`. That is deliberately distinct from
+`ErrNotFound`, which the same zero-rows-matched result would otherwise be
+indistinguishable from — one means "no such row" and the other means "not right
+now", and only the second is worth retrying:
+
+```go
+switch {
+case errors.Is(err, maniflex.ErrIncrementOutOfBounds):
+    ctx.Abort(http.StatusConflict, "OUT_OF_STOCK", "not enough stock")
+case errors.Is(err, maniflex.ErrNotFound):
+    ctx.Abort(http.StatusNotFound, "NOT_FOUND", "no such item")
+}
+```
+
+The guard applies to the value *after* the increment, so a positive delta is
+never judged against a minimum it is moving away from.
+
+### What it will not do
+
+- **Non-numeric or unknown columns are refused**, rather than dropped. A silently
+  ignored column would bump `updated_at`, report success, and leave the counter
+  where it was.
+- **`mfx:"encrypted"` columns are refused.** The database holds ciphertext;
+  adding to it would produce a number unrelated to the plaintext.
+- **It never falls back to read-then-write.** An adapter without atomic increment
+  returns `maniflex.ErrIncrementNotSupported`. A fallback would be correct under
+  test and lossy under load, with no way for the caller to tell which they got.
+
+Inside a transaction it routes through `ctx.Tx` like every other accessor call,
+so it rolls back with the rest of the request. When you need to read other
+fields under the same lock and compute from them, `ctx.LockForUpdate` is still
+the tool — `Increment` replaces the read-then-write, not the row lock.
 
 ## Errors surface on first use
 

@@ -168,6 +168,12 @@ Both mean "not from a client". A value the *server* stamps via `ctx.SetField` �
 kept, even on a `readonly` or `immutable` field. Only values parsed from the
 request body are stripped.
 
+They cover a multipart upload too. A `mfx:"file"` field carrying `readonly`,
+`hidden`, or `immutable` on update refuses an uploaded part with
+`422 VALIDATION_ERROR`, and is left out of the `multipart/form-data` schema. For
+a file the client should upload but never see the storage key of, use
+`writeonly` — see [Who may write a file field](files.md#who-may-write-a-file-field).
+
 ```go
 Email   string `json:"email"    mfx:"required,immutable"`
 ApiKey  string `json:"api_key"  mfx:"readonly"`
@@ -184,8 +190,10 @@ client may _write_ the field.
 | `hidden`    | no                | no                       |
 
 - **`writeonly`** is for values the client must supply but should never see
-  again — typically passwords. The field is included in the create and update
-  request schemas; only the response is scrubbed.
+  again — typically passwords, and the storage key of a
+  [private file field](files.md#who-may-write-a-file-field). The field is
+  included in the create and update request schemas; only the response is
+  scrubbed.
 - **`hidden`** is for values clients have no business touching at all —
   server-managed internals, audit fields, derived data. The field is dropped
   from create and update schemas as well, so it cannot be set from the API. It

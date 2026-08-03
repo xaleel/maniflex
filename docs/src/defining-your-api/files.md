@@ -61,6 +61,48 @@ field. A typo used to be read as `private`, which looks like the safe direction
 and is not the safe outcome: the field was asked to serve signed or public URLs
 and served raw storage keys instead, with nothing to say why.
 
+### Who may write a file field
+
+`file_acl` decides how the value is *presented*. The access tags decide who may
+*set* it, and they mean the same thing for a file field as anywhere else — a
+multipart upload is a client write like any other:
+
+| Tag | Client may upload | Key in responses | Attachment route |
+|---|---|---|---|
+| (none) | yes | yes | yes |
+| `writeonly` | **yes** | **no** | **yes** |
+| `readonly` | no | yes | yes |
+| `hidden` | no | no | yes |
+| `immutable` | on create only | yes | yes |
+
+**`mfx:"file,writeonly"` is the combination to reach for when the storage key
+should not appear in responses but the file must stay uploadable and
+downloadable.** The client posts the file, every response omits the key, and
+`GET /{model}/{id}/{field}` still streams the bytes. The OpenAPI read schema
+marks the field `writeOnly: true`, so a generated client models it correctly
+rather than expecting a key that never arrives.
+
+```go
+type Document struct {
+    maniflex.BaseModel
+    // Uploadable, never echoed, still downloadable through the attachment route.
+    Scan string `json:"scan" db:"scan" mfx:"file,writeonly,max_size:10MB"`
+    // Server-managed: only the application sets this.
+    Report string `json:"report" db:"report" mfx:"file,readonly"`
+}
+```
+
+A client upload to a `readonly`, `hidden`, or already-set `immutable` field is
+refused with `422 VALIDATION_ERROR`, and those fields are left out of the
+`multipart/form-data` schema so a generated client never offers the part.
+
+> Before this was enforced, `readonly` and `hidden` were applied by stripping the
+> field from the parsed JSON body — which a multipart part never passes through.
+> A `mfx:"file,readonly"` field therefore refused a key reference but accepted an
+> upload, so a client could set a server-managed document on create and replace
+> its bytes on update. If you were relying on that to get "uploadable but not
+> echoed", `writeonly` is the tag that means it.
+
 `accept` matches the content type the client declared on the multipart part; when
 the part declares nothing (or the generic `application/octet-stream`), the type is
 sniffed from the first 512 bytes. A declared type is a client-supplied claim, so

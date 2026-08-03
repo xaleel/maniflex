@@ -761,6 +761,14 @@ func withMultipartContent(
 			continue
 		}
 		jn := f.Tags.JSONName
+		// Only fields the base schema kept. It has already applied this
+		// operation's readonly/hidden/immutable rules, so deferring to it means
+		// the form body cannot offer a part the server will refuse — and cannot
+		// drift from the JSON rules later, which is how it came to advertise
+		// uploads to readonly file fields in the first place (audit MS-3).
+		if _, offered := props[jn]; !offered {
+			continue
+		}
 		props[jn] = &OASSchema{
 			Type:        "string",
 			Format:      "binary",

@@ -537,6 +537,35 @@ func (s *defaultSteps) service(ctx *ServerContext, next func() error) error {
 	return next()
 }
 
+// fileFieldNotWritable reports why a client may not upload to this field, or ""
+// when they may.
+//
+// It mirrors the strip the Validate step applies to ctx.ParsedBody, because a
+// multipart part bypasses that strip entirely: the tag has to mean the same
+// thing whichever door the value arrives through. The ServerSetField escape is
+// mirrored too, so a middleware that stamps a readonly field is still allowed to.
+//
+// The readonly message names writeonly, because "the key must not appear in
+// responses, but the client still uploads the file" is the case people reach for
+// readonly to express, and it is the one tag that actually means it.
+func fileFieldNotWritable(ctx *ServerContext, f FieldMeta) string {
+	jn := f.Tags.JSONName
+	if f.Tags.Readonly && !ctx.ServerSetField(jn) {
+		hint := "it is mfx:\"readonly\""
+		if f.Tags.Hidden {
+			hint = "it is mfx:\"hidden\", which implies readonly"
+		}
+		return fmt.Sprintf(
+			"field %q cannot be uploaded by a client because %s — to accept an upload "+
+				"while keeping the storage key out of responses, use mfx:\"writeonly\"", jn, hint)
+	}
+	if f.Tags.Immutable && ctx.Operation == OpUpdate && !ctx.ServerSetField(jn) {
+		return fmt.Sprintf(
+			"field %q is mfx:\"immutable\" and cannot be replaced after creation", jn)
+	}
+	return ""
+}
+
 // processFileFields handles file fields for create/update operations.
 // For each file field on the model it handles four cases:
 //   - Case A: file uploaded via multipart (entry in ctx.Files)
@@ -560,10 +589,21 @@ func (s *defaultSteps) processFileFields(ctx *ServerContext) error {
 		}
 
 		if uf, ok := ctx.Files[jn]; ok {
-			// Case A: file uploaded. A key list cannot be populated this way —
-			// multipart carries one file per field (fileHeaders[0]), so letting
-			// this through would write a single key into a column that holds an
-			// array, and silently drop every other part the client sent.
+			// Case A: file uploaded. First, may this client write this field at
+			// all? The readonly/immutable strip in the Validate step operates on
+			// ctx.ParsedBody, and a multipart part never passes through it — it
+			// arrives in ctx.Files. So mfx:"file,readonly" (and mfx:"file,hidden",
+			// which implies readonly) refused a JSON key reference and accepted an
+			// upload, letting a client set a server-managed document on create and
+			// replace its bytes on update (audit MS-3).
+			if msg := fileFieldNotWritable(ctx, field); msg != "" {
+				ctx.Abort(http.StatusUnprocessableEntity, "VALIDATION_ERROR", msg)
+				return fmt.Errorf("field %q: not client-writable", jn)
+			}
+			// A key list cannot be populated this way — multipart carries one file
+			// per field (fileHeaders[0]), so letting this through would write a
+			// single key into a column that holds an array, and silently drop
+			// every other part the client sent.
 			if field.IsFileList() {
 				ctx.Abort(http.StatusUnprocessableEntity, "VALIDATION_ERROR",
 					fmt.Sprintf("field %q holds many files and cannot be uploaded as multipart — "+

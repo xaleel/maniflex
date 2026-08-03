@@ -84,7 +84,7 @@ func (c *ServerContext) RecursiveQuery(modelName string, q RecursiveQuery) ([]Ro
 
 	driver := c.DriverType()
 	pb := newAggPH(driver)
-	table := aggQuote(meta.TableName)
+	table := Quote(meta.TableName)
 
 	anchorWhere, recursiveWhere, err := rqBuildWhere(meta, q, table, driver, pb)
 	if err != nil {
@@ -122,7 +122,7 @@ func (c *ServerContext) RecursiveQuery(modelName string, q RecursiveQuery) ([]Ro
 
 // rqIDText renders the row's id as text, for building the visited-path string.
 func rqIDText(tableQuoted string) string {
-	return "CAST(" + tableQuoted + "." + aggQuote("id") + " AS TEXT)"
+	return "CAST(" + tableQuoted + "." + Quote("id") + " AS TEXT)"
 }
 
 // rqCycleCond returns a predicate that admits a row only when its id is not
@@ -172,7 +172,7 @@ func rqValidate(c *ServerContext, modelName string, q RecursiveQuery) (*ModelMet
 // aggBuildWhere is called twice so placeholder positions advance correctly;
 // filter arg values are duplicated in pb.args — correct for both drivers.
 func rqBuildWhere(meta *ModelMeta, q RecursiveQuery, table string, driver DriverType, pb *aggPH) (anchorWhere, recursiveWhere string, err error) {
-	anchorConds := []string{table + "." + aggQuote("id") + " = " + pb.add(q.RootID)}
+	anchorConds := []string{table + "." + Quote("id") + " = " + pb.add(q.RootID)}
 	if meta.SoftDelete.Enabled {
 		anchorConds = append(anchorConds, rqSDCond(meta, table))
 	}
@@ -219,15 +219,15 @@ func rqEffectiveDepth(maxDepth int) int {
 // rqJoinCond returns the ON expression for the recursive member JOIN.
 func rqJoinCond(dir RecursiveDirection, table, parentField string) string {
 	if dir == RecursiveDescendants {
-		return table + "." + aggQuote(parentField) + " = _cte." + aggQuote("id")
+		return table + "." + Quote(parentField) + " = _cte." + Quote("id")
 	}
-	return table + "." + aggQuote("id") + " = _cte." + aggQuote(parentField)
+	return table + "." + Quote("id") + " = _cte." + Quote(parentField)
 }
 
 // rqSDCond returns a soft-delete predicate qualified with the table name.
 func rqSDCond(meta *ModelMeta, tableQuoted string) string {
 	sd := meta.SoftDelete
-	col := tableQuoted + "." + aggQuote(sd.Field)
+	col := tableQuoted + "." + Quote(sd.Field)
 	if sd.FieldType == SoftDeleteBool {
 		return col + " = FALSE"
 	}

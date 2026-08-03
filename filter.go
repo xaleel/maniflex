@@ -155,9 +155,17 @@ func LikePattern(op FilterOperator, value any) string {
 // FilterExpr is a single parsed and validated filter condition.
 type FilterExpr struct {
 	// Flat filter (not nested)
-	Field    string         // DB column name on the primary table
+	Field    string         // DB column name on the primary table, or its json name
 	Operator FilterOperator
-	Value    any // raw string from URL; adapters cast as needed
+
+	// Value is the raw string a URL carries, or any Go value when the filter is
+	// built programmatically. It is coerced against the column it targets — see
+	// NormalizeFilterValue — so a time.Time and a bool need no pre-formatting.
+	//
+	// For the multi-value operators (in, not_in, between) a []string or []any is
+	// taken as written; anything else takes the comma-separated form. A slice is
+	// the safer spelling, since a value containing a comma stays one element.
+	Value any
 
 	// Nested filter (Field contains a "." and references a BelongsTo relation)
 	IsNested      bool

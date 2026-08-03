@@ -9,7 +9,7 @@ package maniflex
 // Like ctx.Aggregate and ctx.RecursiveQuery it builds driver-specific SQL in
 // this core package and runs it through ctx.RawQuery, so it needs no addition to
 // the DBAdapter interface. It reuses the same-package placeholder/quote helpers
-// from aggregate.go (newAggPH/aggQuote) and duplicates the small FTS bits from
+// from aggregate.go (newAggPH/Quote) and duplicates the small FTS bits from
 // db/sqlcore/fts.go (the <table>_fts convention, the search-language lookup, and
 // the safe FTS5 match-query sanitiser) — the same trade-off aggregate.go makes
 // to avoid a core→sqlcore import cycle.
@@ -199,12 +199,12 @@ func (c *ServerContext) searchModel(m *ModelMeta, query string, limit int, drive
 // (rank, headline, predicate) in the order it appears in the SQL.
 func searchSQLPostgres(m *ModelMeta, query string, limit int, pb *aggPH) string {
 	lang := searchLang(m)
-	tbl := aggQuote(m.TableName)
-	ftsCol := tbl + "." + aggQuote("fts")
+	tbl := Quote(m.TableName)
+	ftsCol := tbl + "." + Quote("fts")
 
 	docParts := make([]string, len(m.SearchFields))
 	for i, col := range m.SearchFields {
-		docParts[i] = fmt.Sprintf("coalesce(%s.%s, '')", tbl, aggQuote(col))
+		docParts[i] = fmt.Sprintf("coalesce(%s.%s, '')", tbl, Quote(col))
 	}
 	doc := strings.Join(docParts, " || ' ' || ")
 
@@ -224,7 +224,7 @@ func searchSQLPostgres(m *ModelMeta, query string, limit int, pb *aggPH) string 
 
 	return fmt.Sprintf(
 		"SELECT %s.%s AS id, %s AS score, %s AS snippet FROM %s WHERE %s ORDER BY score DESC LIMIT %s",
-		tbl, aggQuote("id"), score, snippet, tbl, where, pb.add(limit))
+		tbl, Quote("id"), score, snippet, tbl, where, pb.add(limit))
 }
 
 // searchSQLSQLite builds the per-model search query for SQLite. It joins the
@@ -237,8 +237,8 @@ func searchSQLSQLite(m *ModelMeta, query string, limit int, pb *aggPH) string {
 	if match == "" {
 		return ""
 	}
-	tbl := aggQuote(m.TableName)
-	fts := aggQuote(searchFTSTable(m.TableName))
+	tbl := Quote(m.TableName)
+	fts := Quote(searchFTSTable(m.TableName))
 
 	where := fmt.Sprintf("%s MATCH %s", fts, pb.add(match))
 	if sd := searchSoftDeleteCond(m, SQLite); sd != "" {
@@ -250,9 +250,9 @@ func searchSQLSQLite(m *ModelMeta, query string, limit int, pb *aggPH) string {
 	return fmt.Sprintf(
 		"SELECT %s.%s AS id, -%s.%s AS score, snippet(%s, -1, '', '', '…', 12) AS snippet "+
 			"FROM %s JOIN %s ON %s.%s = %s.%s WHERE %s ORDER BY %s.%s ASC LIMIT %s",
-		tbl, aggQuote("id"), fts, aggQuote("rank"), fts,
-		tbl, fts, fts, aggQuote("rowid"), tbl, aggQuote("rowid"),
-		where, fts, aggQuote("rank"), pb.add(limit))
+		tbl, Quote("id"), fts, Quote("rank"), fts,
+		tbl, fts, fts, Quote("rowid"), tbl, Quote("rowid"),
+		where, fts, Quote("rank"), pb.add(limit))
 }
 
 // mergeSearch combines each model's best-first hit lists into one relevance-
@@ -325,7 +325,7 @@ func searchSoftDeleteCond(m *ModelMeta, driver DriverType) string {
 	if !sd.Enabled {
 		return ""
 	}
-	col := aggQuote(m.TableName) + "." + aggQuote(sd.Field)
+	col := Quote(m.TableName) + "." + Quote(sd.Field)
 	if sd.FieldType == SoftDeleteBool {
 		if driver == Postgres {
 			return col + " = FALSE"

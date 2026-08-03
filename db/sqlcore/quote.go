@@ -1,6 +1,6 @@
 package sqlcore
 
-import "strings"
+import "github.com/xaleel/maniflex"
 
 // q quotes an SQL identifier (table name, column name, alias) with ANSI
 // double-quote delimiters, supported by both SQLite and PostgreSQL.
@@ -22,10 +22,13 @@ import "strings"
 // characters (the ANSI escape for a literal " inside a quoted identifier).
 // Dots are NOT passed through q — callers like q(table)+"."+q(col) split
 // them deliberately.
+//
+// The implementation is maniflex.Quote. It used to be a third copy of the same
+// four characters, alongside the core package's own; identifier quoting has to
+// mean exactly one thing or the shared filter builder and this adapter can
+// disagree about what a column is called (audit AG-5).
 func q(name string) string {
-	// Escape embedded double-quotes by doubling them (ANSI SQL §5.2).
-	escaped := strings.ReplaceAll(name, `"`, `""`)
-	return `"` + escaped + `"`
+	return maniflex.Quote(name)
 }
 
 // Quote is the exported version of q for packages that need to build SQL

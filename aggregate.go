@@ -3,7 +3,6 @@ package maniflex
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -133,7 +132,7 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 		if aggregateYieldsNumber(meta, f) {
 			numericAliases[alias] = true
 		}
-		selectParts = append(selectParts, expr+" AS "+aggQuote(alias))
+		selectParts = append(selectParts, expr+" AS "+Quote(alias))
 	}
 	// Always include the GROUP BY columns in the SELECT so the caller sees
 	// which group each row belongs to.
@@ -141,7 +140,7 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 		if meta.FieldByDBName(col) == nil {
 			return nil, aggregateQueryErrorf("maniflex: GroupBy column %q does not exist on model %q", col, modelName)
 		}
-		selectParts = append(selectParts, aggQuote(meta.TableName)+"."+aggQuote(col))
+		selectParts = append(selectParts, Quote(meta.TableName)+"."+Quote(col))
 	}
 
 	// WHERE — validate field names against the model so an unknown one is a
@@ -163,7 +162,7 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	if len(agg.GroupBy) > 0 {
 		parts := make([]string, len(agg.GroupBy))
 		for i, col := range agg.GroupBy {
-			parts[i] = aggQuote(meta.TableName) + "." + aggQuote(col)
+			parts[i] = Quote(meta.TableName) + "." + Quote(col)
 		}
 		groupBySQL = " GROUP BY " + strings.Join(parts, ", ")
 	}
@@ -209,9 +208,9 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 			var col string
 			switch {
 			case aliases[s.DBName]:
-				col = aggQuote(s.DBName)
+				col = Quote(s.DBName)
 			case groupSet[s.DBName]:
-				col = aggQuote(meta.TableName) + "." + aggQuote(s.DBName)
+				col = Quote(meta.TableName) + "." + Quote(s.DBName)
 			default:
 				return nil, aggregateQueryErrorf("maniflex: OrderBy %q is not an aggregate alias or GroupBy column", s.DBName)
 			}
@@ -232,7 +231,7 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 
 	query := fmt.Sprintf("SELECT %s FROM %s%s%s%s%s%s",
 		strings.Join(selectParts, ", "),
-		aggQuote(meta.TableName),
+		Quote(meta.TableName),
 		whereSQL, groupBySQL, havingSQL, orderBySQL, limitSQL,
 	)
 
@@ -457,7 +456,7 @@ func aggregateOperand(meta *ModelMeta, name string, pb *aggPH) (string, string, 
 	if f == nil {
 		return "", "", fmt.Errorf("maniflex: aggregate column %q does not exist on model %q", name, meta.Name)
 	}
-	return aggQuote(meta.TableName) + "." + aggQuote(f.Tags.DBName), f.Tags.DBName, nil
+	return Quote(meta.TableName) + "." + Quote(f.Tags.DBName), f.Tags.DBName, nil
 }
 
 func havingOpAllowed(op FilterOperator) bool {
@@ -486,168 +485,27 @@ func sqlOp(op FilterOperator) string {
 	return "="
 }
 
-// aggBuildWhere composes a minimal WHERE clause for the aggregate path. It
-// deliberately does not handle nested-relation filters — that is a future
-// enhancement; nested filters are rejected with a clear error instead of
-// silently producing bad SQL.
+// aggBuildWhere composes the WHERE clause for the aggregate path.
+//
+// The rendering is BuildFilterSQL, shared with every other query the framework
+// builds (audit AG-5). This function is what remains specific to the aggregate:
+// the leading " WHERE ", and the one filter kind the aggregate may not accept.
+//
+// Nested-relation filters render as "relation"."column", which needs a JOIN the
+// aggregate FROM clause does not emit. They are refused here rather than passed
+// to the builder, so the failure is an error naming the limitation instead of
+// SQL referencing a table the query never joined.
 func aggBuildWhere(meta *ModelMeta, filters []*FilterExpr, driver DriverType, pb *aggPH) (string, error) {
-	if len(filters) == 0 {
-		return "", nil
-	}
 	for _, f := range filters {
 		if f != nil && f.IsNested {
 			return "", fmt.Errorf("maniflex: nested-relation filters are not yet supported in Aggregate")
 		}
 	}
-
-	// Partition by group, exactly as db/sqlcore's filterConds does: Group <= 0
-	// (the FilterExpr zero value included) is its own AND clause, and filters
-	// sharing a Group >= 1 are OR-ed together. The two builders disagreeing on
-	// this is what made a grouped-OR aggregate collapse to the AND intersection
-	// — usually zero — while the identical filter listed correctly.
-	var ungrouped []*FilterExpr
-	grouped := make(map[int][]*FilterExpr)
-	var groupOrder []int
-	seen := make(map[int]bool)
-	for _, f := range filters {
-		if f == nil {
-			continue
-		}
-		if f.Group <= 0 {
-			ungrouped = append(ungrouped, f)
-			continue
-		}
-		if !seen[f.Group] {
-			seen[f.Group] = true
-			groupOrder = append(groupOrder, f.Group)
-		}
-		grouped[f.Group] = append(grouped[f.Group], f)
-	}
-	sort.Ints(groupOrder) // deterministic SQL
-
-	var parts []string
-	for _, f := range ungrouped {
-		parts = append(parts, aggCond(meta, f, driver, pb))
-	}
-	for _, gid := range groupOrder {
-		exprs := grouped[gid]
-		if len(exprs) == 1 {
-			parts = append(parts, aggCond(meta, exprs[0], driver, pb))
-			continue
-		}
-		orParts := make([]string, len(exprs))
-		for i, f := range exprs {
-			orParts[i] = aggCond(meta, f, driver, pb)
-		}
-		parts = append(parts, "("+strings.Join(orParts, " OR ")+")")
-	}
-	if len(parts) == 0 {
+	conds := BuildFilterSQL(meta, filters, driver, pb)
+	if conds == "" {
 		return "", nil
 	}
-	return " WHERE " + strings.Join(parts, " AND "), nil
-}
-
-// aggCond renders one aggregate filter as a predicate.
-//
-// It resolves the field and normalises the value the same way the list path
-// does, so the same filter counts what it lists: a json field name resolves to
-// its column, a bool column receives a real bool rather than the word "false",
-// and a time value is written in the canonical form the adapters store.
-//
-// Everything it cannot render fails closed to a false predicate rather than
-// degrading to something that looks like SQL. That is the half of AG-4 worth
-// keeping: the old default branch sent every unhandled operator through sqlOp,
-// which answers "=" for anything it does not know, so `amount:between:5,25`
-// became `amount = '5,25'` — not an error, just a count of zero. A predicate
-// this builder cannot express must match nothing, for the reason db/sqlcore's
-// buildCond gives at length: matching everything deletes the filter, and a
-// deleted filter on an aggregate is a total computed over rows the caller
-// never asked for.
-func aggCond(meta *ModelMeta, f *FilterExpr, driver DriverType, pb *aggPH) string {
-	fm := meta.ResolveFilterField(f.Field)
-	if fm == nil {
-		return falsePredicate
-	}
-	col := aggQuote(meta.TableName) + "." + aggQuote(fm.Tags.DBName)
-	val := NormalizeFilterValue(fm, f.Operator, f.Value)
-
-	switch f.Operator {
-	case OpEq, OpNeq, OpGt, OpGte, OpLt, OpLte:
-		return fmt.Sprintf("%s %s %s", col, sqlOp(f.Operator), pb.add(val))
-	case OpIsNull:
-		return col + " IS NULL"
-	case OpNotNull:
-		return col + " IS NOT NULL"
-	case OpIn, OpNotIn:
-		vals := splitInValue(val)
-		if len(vals) == 0 {
-			// An empty set has no SQL form: "IN ()" is a syntax error on every
-			// driver. Empty IN matches nothing, which is also what an empty set
-			// means, so the false predicate is the honest answer either way.
-			return falsePredicate
-		}
-		placeholders := make([]string, len(vals))
-		for i, v := range vals {
-			placeholders[i] = pb.add(v)
-		}
-		kw := "IN"
-		if f.Operator == OpNotIn {
-			kw = "NOT IN"
-		}
-		return fmt.Sprintf("%s %s (%s)", col, kw, strings.Join(placeholders, ", "))
-	case OpBetween:
-		bounds := SplitCSV(fmt.Sprint(val))
-		if len(bounds) != 2 {
-			return falsePredicate
-		}
-		return fmt.Sprintf("(%s >= %s AND %s <= %s)",
-			col, pb.add(bounds[0]), col, pb.add(bounds[1]))
-	case OpLike:
-		return fmt.Sprintf("%s LIKE %s", col, pb.add(val))
-	case OpILike:
-		if driver == Postgres {
-			return fmt.Sprintf("%s ILIKE %s", col, pb.add(val))
-		}
-		return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", col, pb.add(val))
-	case OpContains, OpStartsWith, OpEndsWith:
-		// Escaped pattern + an explicit ESCAPE, so % and _ in the value match
-		// themselves and both drivers agree on what escapes what.
-		pattern := LikePattern(f.Operator, val)
-		if driver == Postgres {
-			return fmt.Sprintf("%s ILIKE %s ESCAPE '\\'", col, pb.add(pattern))
-		}
-		return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s) ESCAPE '\\'", col, pb.add(pattern))
-	}
-	return falsePredicate
-}
-
-// falsePredicate is the condition a builder emits when it cannot render the
-// filter it was given. Spelled once so the aggregate path and the adapters
-// answer an impossible filter the same way.
-const falsePredicate = "1=0"
-
-func splitInValue(v any) []any {
-	switch x := v.(type) {
-	case []any:
-		return x
-	case []string:
-		out := make([]any, len(x))
-		for i, s := range x {
-			out[i] = s
-		}
-		return out
-	case string:
-		parts := strings.Split(x, ",")
-		out := make([]any, 0, len(parts))
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				out = append(out, p)
-			}
-		}
-		return out
-	}
-	return nil
+	return " WHERE " + conds, nil
 }
 
 // aggPH is a tiny placeholder builder local to this file so we don't reach
@@ -666,6 +524,11 @@ func (p *aggPH) add(v any) string {
 	}
 	return "?"
 }
+
+// Add is the PlaceholderBinder spelling, so this builder can be handed to
+// BuildFilterSQL. The lower-case add stays because ~19 call sites in this
+// package use it and the two must not drift apart.
+func (p *aggPH) Add(v any) string { return p.add(v) }
 
 // aggDirection maps a SortExpr.Direction onto the only two words allowed to
 // reach the SQL, rather than upper-casing whatever the caller supplied.
@@ -687,10 +550,4 @@ func aggDirection(d SortDir) (string, error) {
 		return "DESC", nil
 	}
 	return "", fmt.Errorf("maniflex: OrderBy direction %q is not valid (use asc or desc)", d)
-}
-
-// aggQuote wraps an identifier in double quotes and escapes any embedded
-// quote. Mirrors sqlcore.Quote without the package dependency.
-func aggQuote(id string) string {
-	return `"` + strings.ReplaceAll(id, `"`, `""`) + `"`
 }

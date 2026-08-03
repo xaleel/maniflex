@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -912,6 +911,11 @@ func (p *ph) add(v any) string {
 	}
 	return "?"
 }
+
+// Add is the maniflex.PlaceholderBinder spelling, so this builder can be handed
+// to BuildFilterSQL. The lower-case add stays because ~60 call sites in this
+// package use it and the two must not drift apart.
+func (p *ph) Add(v any) string { return p.add(v) }
 
 // PlaceholderBuilder is the exported version of the placeholder helper,
 // allowing other packages (e.g. jobs/sql) to reuse this logic instead of
@@ -1841,208 +1845,20 @@ func allWhereConds(model *maniflex.ModelMeta, filters []*maniflex.FilterExpr, dr
 	return out
 }
 
-func filterConds(model *maniflex.ModelMeta, filters []*maniflex.FilterExpr, driver maniflex.DriverType, p *ph) string {
-	// Partition filters by group. Group <= 0 filters (including the FilterExpr
-	// zero value) each become their own AND clause. Filters with the same
-	// Group >= 1 are OR-ed together. The URL parser maps ?filter[N]= onto N+1,
-	// so user-facing group 0 lands here as group 1.
-	ungrouped := make([]*maniflex.FilterExpr, 0)
-	grouped := make(map[int][]*maniflex.FilterExpr)
-	var groupOrder []int
-	seen := make(map[int]bool)
-
-	for _, f := range filters {
-		if f.Group <= 0 {
-			ungrouped = append(ungrouped, f)
-		} else {
-			if !seen[f.Group] {
-				seen[f.Group] = true
-				groupOrder = append(groupOrder, f.Group)
-			}
-			grouped[f.Group] = append(grouped[f.Group], f)
-		}
-	}
-
-	// Sort group keys for deterministic SQL.
-	sort.Ints(groupOrder)
-
-	buildCol := func(f *maniflex.FilterExpr) string {
-		if f.IsLocale {
-			col := q(model.TableName) + "." + q(f.Field)
-			if driver == maniflex.Postgres {
-				// Bind the locale key as a parameter so it can never break out of
-				// the JSON-path expression (SEC-1). The ::text cast pins the ->>
-				// overload to object-field access regardless of how the driver
-				// types the parameter.
-				return col + "->>" + p.add(f.LocaleKey) + "::text"
-			}
-			// SQLite: bind the whole "$.<key>" path as a parameter.
-			return "json_extract(" + col + ", " + p.add("$."+f.LocaleKey) + ")"
-		}
-		if f.IsNested {
-			return q(f.RelationKey) + "." + q(f.NestedField)
-		}
-		return q(model.TableName) + "." + q(f.Field)
-	}
-
-	// cond renders one filter as a predicate.
-	//
-	// A plain filter — not nested, not locale — is resolved against the model
-	// first, which does two things a filter parsed from a URL already had done
-	// for it in resolveFlatFilter and a filter built in Go never did.
-	//
-	// It settles the column: ResolveFilterField accepts the json spelling as well
-	// as the DB one, so a caller who wrote the name the model publishes gets the
-	// column rather than an identifier no table has.
-	//
-	// And it settles the value: NormalizeFilterValue puts it in the form that
-	// column binds against, which is what makes a Go-built filter and a URL one
-	// mean the same thing. A time.Time has to reach SQLite in the same
-	// fixed-width form the write path stored, and a bool column has to receive a
-	// real bool rather than the word "false", which binds as TEXT against an
-	// INTEGER column and can never compare equal.
-	//
-	// A field the model does not have fails closed, for the reason buildCond
-	// gives at length for an operator no adapter implements: a predicate that
-	// cannot be built must match nothing rather than everything, because
-	// matching everything deletes the filter — and a deleted forced filter is a
-	// tenant scope that has silently stopped scoping.
-	cond := func(f *maniflex.FilterExpr) string {
-		if f.IsLocale || f.IsNested {
-			return buildCond(buildCol(f), f.Operator, f.Value, driver, p)
-		}
-		fm := model.ResolveFilterField(f.Field)
-		if fm == nil {
-			return "1=0"
-		}
-		col := q(model.TableName) + "." + q(fm.Tags.DBName)
-		return buildCond(col, f.Operator,
-			maniflex.NormalizeFilterValue(fm, f.Operator, f.Value), driver, p)
-	}
-
-	var parts []string
-
-	// Ungrouped filters — each is its own AND clause.
-	for _, f := range ungrouped {
-		parts = append(parts, cond(f))
-	}
-
-	// Grouped filters — OR within a group, AND between groups.
-	for _, gid := range groupOrder {
-		exprs := grouped[gid]
-		if len(exprs) == 1 {
-			parts = append(parts, cond(exprs[0]))
-			continue
-		}
-		orParts := make([]string, len(exprs))
-		for i, f := range exprs {
-			orParts[i] = cond(f)
-		}
-		parts = append(parts, "("+strings.Join(orParts, " OR ")+")")
-	}
-
-	return strings.Join(parts, " AND ")
-}
-
-func buildCond(col string, op maniflex.FilterOperator, val any, driver maniflex.DriverType, p *ph) string {
-	switch op {
-	case maniflex.OpEq:
-		return fmt.Sprintf("%s = %s", col, p.add(val))
-	case maniflex.OpNeq:
-		return fmt.Sprintf("%s != %s", col, p.add(val))
-	case maniflex.OpGt:
-		return fmt.Sprintf("%s > %s", col, p.add(val))
-	case maniflex.OpGte:
-		return fmt.Sprintf("%s >= %s", col, p.add(val))
-	case maniflex.OpLt:
-		return fmt.Sprintf("%s < %s", col, p.add(val))
-	case maniflex.OpLte:
-		return fmt.Sprintf("%s <= %s", col, p.add(val))
-	case maniflex.OpLike:
-		return fmt.Sprintf("%s LIKE %s", col, p.add(val))
-	case maniflex.OpILike:
-		if driver == maniflex.Postgres {
-			return fmt.Sprintf("%s ILIKE %s", col, p.add(val))
-		}
-		return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s)", col, p.add(val))
-	case maniflex.OpContains, maniflex.OpStartsWith, maniflex.OpEndsWith:
-		return substringCond(col, op, val, driver, p)
-	case maniflex.OpIn:
-		return inCond(col, val, p, false)
-	case maniflex.OpNotIn:
-		return inCond(col, val, p, true)
-	case maniflex.OpIsNull:
-		return fmt.Sprintf("%s IS NULL", col)
-	case maniflex.OpNotNull:
-		return fmt.Sprintf("%s IS NOT NULL", col)
-	case maniflex.OpBetween:
-		return betweenCond(col, val, p)
-	}
-	// Fail closed. An operator this switch does not implement cannot be turned
-	// into a predicate, and the choice is between a condition that matches nothing
-	// and one that matches everything. Matching everything deletes the filter: a
-	// list returns the whole table, and a forced filter — a tenant scope — stops
-	// scoping, on reads and on the writes that read back through it. Matching
-	// nothing is wrong too, but it is wrong in the direction that shows up on the
-	// first request rather than the first breach. maniflex's DB step rejects such
-	// a filter outright (validateFilterOperators); this is the backstop for the
-	// paths that do not run it, and for a filter built after it ran.
-	return "1=0"
-}
-
-// substringCond builds the condition for contains / starts_with / ends_with: a
-// case-insensitive LIKE against a pattern whose metacharacters are escaped, so a
-// value of "50%" matches the literal "50%" instead of everything starting with 50.
+// filterConds renders the WHERE body for every query this adapter builds.
 //
-// The ESCAPE clause is spelled out because the drivers disagree without it —
-// SQLite has no escape character by default, Postgres has a backslash — and the
-// same filter must mean the same thing on both.
-func substringCond(col string, op maniflex.FilterOperator, val any, driver maniflex.DriverType, p *ph) string {
-	pattern := maniflex.LikePattern(op, val)
-	if driver == maniflex.Postgres {
-		return fmt.Sprintf("%s ILIKE %s ESCAPE '\\'", col, p.add(pattern))
-	}
-	return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s) ESCAPE '\\'", col, p.add(pattern))
-}
-
-// betweenCond expands a "lo,hi" value into "col >= lo AND col <= hi". The two
-// bounds are validated to be present upstream in ParseFilterParam, so only a
-// hand-built FilterExpr reaches here malformed; it degrades to a false predicate
-// rather than emitting broken SQL. False, not true, for the reason buildCond
-// gives: a between with one bound is a filter whose author meant to exclude
-// something, and answering "everything matches" is the one reading that cannot
-// be right.
-func betweenCond(col string, val any, p *ph) string {
-	vals := maniflex.SplitCSV(fmt.Sprint(val))
-	if len(vals) != 2 {
-		return "1=0"
-	}
-	return fmt.Sprintf("(%s >= %s AND %s <= %s)", col, p.add(vals[0]), col, p.add(vals[1]))
-}
-
-// inCond expands a "a,b,c" value into "col IN (?, ?, ?)". At least one value is
-// required upstream in ParseFilterParam; an empty list here (a hand-built
-// FilterExpr from the typed API) degrades to a constant predicate rather than
-// emitting "col IN ()", which is a syntax error on every driver. An empty IN
-// matches nothing and an empty NOT IN matches everything, which is what the set
-// semantics say.
-func inCond(col string, val any, p *ph, negate bool) string {
-	vals := maniflex.SplitCSV(fmt.Sprint(val))
-	if len(vals) == 0 {
-		if negate {
-			return "1=1"
-		}
-		return "1=0"
-	}
-	phs := make([]string, len(vals))
-	for i, v := range vals {
-		phs[i] = p.add(v)
-	}
-	op := "IN"
-	if negate {
-		op = "NOT IN"
-	}
-	return fmt.Sprintf("%s %s (%s)", col, op, strings.Join(phs, ", "))
+// It is BuildFilterSQL, and nothing else. There used to be a full second
+// implementation here — grouping, operator switch, LIKE escaping, IN
+// expansion, the lot — because the core package cannot import this one and the
+// aggregate path needed the same thing. Keeping two renderers in agreement by
+// hand did not work: AG-1, AG-4 and QF-3's aggregate half were all one path
+// growing a capability the other did not, each shipping as a silently wrong
+// answer (audit AG-5).
+//
+// If you are about to add an operator or fix a rendering bug, do it in
+// maniflex.BuildFilterSQL. Re-forking this function is the bug.
+func filterConds(model *maniflex.ModelMeta, filters []*maniflex.FilterExpr, driver maniflex.DriverType, p *ph) string {
+	return maniflex.BuildFilterSQL(model, filters, driver, p)
 }
 
 func buildOrder(model *maniflex.ModelMeta, sorts []maniflex.SortExpr, driver maniflex.DriverType, p *ph) string {

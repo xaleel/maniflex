@@ -145,6 +145,40 @@ So a custom adapter must:
 Nothing in the type system enforces either, which is why it is written down here
 and on the `DBAdapter` godoc.
 
+### Rendering filters
+
+A SQL-backed adapter does not have to write its own filter renderer, and should
+not. `maniflex.BuildFilterSQL` turns a `[]*FilterExpr` into the body of a
+`WHERE` clause — grouping, operator rendering, `LIKE` escaping, `IN` expansion,
+field resolution and value coercion — and `maniflex.Quote` quotes identifiers
+the way the framework does:
+
+```go
+p := sqlcore.NewPlaceholderBuilder(maniflex.SQLite) // or your own PlaceholderBinder
+where := maniflex.BuildFilterSQL(model, qp.Filters, maniflex.SQLite, p)
+
+sql := "SELECT * FROM " + maniflex.Quote(model.TableName)
+if where != "" {
+    sql += " WHERE " + where
+}
+rows, err := db.Query(sql, p.Args()...)
+```
+
+`PlaceholderBinder` is one method, `Add(any) string`, returning the placeholder
+text and recording the value. Implementations **must** append in call order:
+SQLite binds `?` by where it appears in the statement text, so a binder that
+registered a placeholder out of order would misalign every argument after it
+without raising a syntax error.
+
+This is shared rather than copied for a reason. The framework used to carry two
+filter renderers, and every capability one grew that the other did not shipped
+as a silently wrong answer — three separate P0 bugs before they were merged. A
+third copy inside an adapter is the same trap.
+
+`BuildFilterSQL` renders a nested-relation filter as `"relation"."column"`,
+which assumes your `FROM` clause joined that relation. An adapter or query path
+that does not join must reject nested filters rather than pass them through.
+
 ## Per-model adapter routing
 
 `Config.DB` sets the default adapter. Individual models can override it by

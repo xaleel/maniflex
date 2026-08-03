@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.5.1
+
+- **Bugfix:** one WHERE builder now serves every query. The aggregate path and the adapter each had one, agreeing by hand — the cause of three P0s — and three divergences were still live: a `[]string` on `in` bound as the literal `"[a b]"` and matched nothing; an empty `not_in` matched everything when listing, nothing when aggregating; a locale filter read raw JSON. A `nil` filter panicked. `BuildFilterSQL` is exported for adapters.
+
 ## v0.5.0 (2026-08-03)
 
 - **Bugfix:** fixed a bug where test with heavy `t.Parallel()` could generate two instances with the same name. `RandomString(6, DIGITS)` isn't enough.

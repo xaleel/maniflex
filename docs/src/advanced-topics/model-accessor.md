@@ -61,6 +61,9 @@ resolved and normalised the same way once it reaches the query builder:
   `time.Time` or `*time.Time` is written in the canonical form the write path
   stores, and a boolean column accepts the `true`/`false` and `1`/`0` spellings.
   You do not need to pre-format either.
+- **`Value` for `in`, `not_in` and `between`** may be a `[]string` or `[]any` as
+  well as the comma-separated string a URL carries. A slice is taken as written,
+  so a value containing a comma stays one element.
 - **`Operator`** is a bare string type, so a typo compiles. Use the `Op*`
   constants; an operator no adapter implements is refused rather than dropped.
 
@@ -72,6 +75,10 @@ filters := []*maniflex.FilterExpr{
 
     // A time value needs no formatting.
     {Field: "created_at", Operator: maniflex.OpLte, Value: time.Now()},
+
+    // A set may be a slice or the CSV spelling.
+    {Field: "status", Operator: maniflex.OpIn, Value: []string{"open", "held"}},
+    {Field: "status", Operator: maniflex.OpIn, Value: "open,held"},
 }
 
 // Create - returns the stored representation, id and defaults populated.

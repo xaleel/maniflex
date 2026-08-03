@@ -251,7 +251,7 @@ func renderAggExpr(meta *ModelMeta, e Expr, pb *aggPH) (string, error) {
 			// database with an unresolved name.
 			return "", fmt.Errorf("maniflex: aggregate expression references unknown field %q", n.name)
 		}
-		return aggQuote(meta.TableName) + "." + aggQuote(f.Tags.DBName), nil
+		return Quote(meta.TableName) + "." + Quote(f.Tags.DBName), nil
 	case litExpr:
 		return pb.add(n.v), nil
 	case binExpr:

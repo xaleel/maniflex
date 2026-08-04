@@ -261,9 +261,13 @@ Operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `contains`, `
 
 `like`/`ilike` take a raw SQL pattern (`%`, `_` are wildcards). `contains`/`starts_with`/`ends_with` take a literal value — `%` and `_` are escaped and match themselves — and are case-insensitive. Use the latter for user-typed text.
 
+Bare `?filter=` clauses AND. `?filter[N]=` puts a clause in OR group N: same index ORs, different indexes AND, and a bare clause is its own AND term — so the expressible shape is an AND of ORs, with no nesting and no OR across groups. The index must be a non-negative integer (`filter[recent]` is `400 INVALID_QUERY`). In Go the equivalent is `FilterExpr.Group`, where `0` means ungrouped, so URL `filter[0]` is `Group: 1`.
+
 ```
 ?filter=status:eq:published
 ?filter=views:gte:100&filter=status:eq:published   # ANDed
+?filter[0]=status:eq:draft&filter[0]=status:eq:published   # OR within a group
+?filter[0]=a:eq:1&filter[0]=b:eq:2&filter[1]=c:gte:3       # (a OR b) AND (c)
 ?filter=tag:in:go,rust,zig
 ?filter=title:contains:intro                       # literal, case-insensitive
 ?filter=author.name:ilike:%ursula%                 # relation dot notation

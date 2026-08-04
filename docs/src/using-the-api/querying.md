@@ -139,6 +139,60 @@ Filters reference a field by its `json` name. Only fields tagged
 `mfx:"filterable"` may be used; unknown or non-filterable references abort the
 request with `400 INVALID_QUERY`.
 
+### Combining filters with OR
+
+Add a bracketed index to put filters in the same **OR group**. Filters sharing
+an index are OR-ed together:
+
+```
+?filter[0]=status:eq:draft&filter[0]=status:eq:published
+```
+
+Different indexes are separate groups, and groups combine with AND. A bare
+`?filter=` has no group and is its own AND clause, so the two spellings mix
+freely:
+
+```
+# (owner = u1 OR owner = u2) AND amount >= 20
+?filter[0]=owner:eq:u1&filter[0]=owner:eq:u2&filter[1]=amount:gte:20
+
+# resolved = false AND (owner = u1 OR owner = u2)
+?filter=resolved:eq:false&filter[0]=owner:eq:u1&filter[0]=owner:eq:u2
+```
+
+That is the whole expressible shape: **an AND of ORs**. There is no way to OR
+across groups, and no nesting — `(a AND b) OR (c AND d)` cannot be written as a
+query string. When you need it, put the query behind a
+[custom action](../advanced-topics/actions.md) and write it with
+[`ctx.RawQuery`](../advanced-topics/raw-queries.md), where the shape is yours to
+choose and is not client-controlled.
+
+The index is a label, not an ordering: `filter[7]` and `filter[2]` are simply
+two groups, and gaps are fine. It must be a non-negative integer — `filter[recent]`
+is refused with `400 INVALID_QUERY` naming the requirement rather than being
+ignored.
+
+Group counts are bounded by `Config.QueryLimits` — by default 8 groups of 8
+clauses, inside an overall ceiling of 32 filter clauses. See
+[Query complexity limits](#query-complexity-limits) above.
+
+The `/aggregate` endpoint reads `?filter=` with exactly these semantics, so a
+grouped filter counts the rows the same filter lists.
+
+> **Go callers:** the equivalent is `FilterExpr.Group`. Any value ≥ 1 is a
+> group; `0` is the zero value and means ungrouped, so groups start at 1 rather
+> than 0 and the numbering does **not** line up with the URL's — `filter[0]`
+> parses to `Group: 1`.
+
+```go
+filters := []*maniflex.FilterExpr{
+    // (owner = u1 OR owner = u2) AND amount >= 20
+    {Field: "owner", Operator: maniflex.OpEq, Value: "u1", Group: 1},
+    {Field: "owner", Operator: maniflex.OpEq, Value: "u2", Group: 1},
+    {Field: "amount", Operator: maniflex.OpGte, Value: 20}, // ungrouped → AND
+}
+```
+
 ### Values are read against the column's type
 
 A filter value arrives as text — a URL has no types — and is coerced to the form

@@ -2,6 +2,7 @@
 
 ## v0.5.1
 
+- **Developer experience:** OR filters are documented. `?filter[0]=a&filter[0]=b` OR-s within a group and ANDs between groups — shipped long ago, but `querying.md` described only the AND form and mentioned groups solely in the limit on how many you may send. It now covers mixing grouped and bare filters, the AND-of-ORs ceiling and what to do past it, and `FilterExpr.Group` for Go callers.
 - **Bugfix:** one WHERE builder now serves every query. The aggregate path and the adapter each had one, agreeing by hand — the cause of three P0s — and three divergences were still live: a `[]string` on `in` bound as the literal `"[a b]"` and matched nothing; an empty `not_in` matched everything when listing, nothing when aggregating; a locale filter read raw JSON. A `nil` filter panicked. `BuildFilterSQL` is exported for adapters.
 
 ## v0.5.0 (2026-08-03)

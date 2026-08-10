@@ -548,11 +548,13 @@ db, err := postgres.Open(os.Getenv("DB_WRITE_URL"), os.Getenv("DB_READ_URL"), se
 // Pool/session tuning → OpenWithConfig(writeDSN, readDSN, registry, writePool, readPool, session):
 db, err := postgres.OpenWithConfig(
     os.Getenv("DB_WRITE_URL"), os.Getenv("DB_READ_URL"), server.Registry(),
-    postgres.PoolConfig{MaxOpenConns: 25, MaxIdleConns: 5, ConnMaxLifetime: 30 * time.Minute}, // write
-    postgres.PoolConfig{MaxOpenConns: 25, MaxIdleConns: 5, ConnMaxLifetime: 30 * time.Minute}, // read
+    postgres.PoolConfig{MaxOpenConns: 4, MaxIdleConns: 4, ConnMaxLifetime: 30 * time.Minute},   // write
+    postgres.PoolConfig{MaxOpenConns: 10, MaxIdleConns: 10, ConnMaxLifetime: 30 * time.Minute}, // read
     postgres.SessionConfig{ApplicationName: "myapp"},
 )
 ```
+
+Pool defaults are 3 write / 6 read — both pools open even when readDSN is `""`, so budget `(write + read) × processes ≤ max_connections − reserved` (entry tiers: Heroku 20, DigitalOcean/GCP 25, Azure B1ms 50, Supabase 60, Neon 104). `Open` WARNs when the pools claim over half the server's `max_connections`; route it with `SessionConfig.Logger`. Behind PgBouncer in transaction mode, add `binary_parameters=yes` to the DSN.
 
 Reads route to ReadURL outside an active transaction; reads inside a tx go to write primary. AutoMigrate adds missing columns; never drops. Logs drift warnings.
 

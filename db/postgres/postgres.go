@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"database/sql/driver"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strings"
 	"time"
@@ -23,11 +24,35 @@ import (
 // Zero values are replaced by the defaults documented on each field.
 type PoolConfig struct {
 	// MaxOpenConns is the maximum number of open connections in the pool.
-	// Default: 20 for the write pool, 40 for the read pool.
+	// Default: 3 for the write pool, 6 for the read pool.
+	//
+	// Open builds both pools, so the default ceiling is 9 connections per
+	// process. That is sized for the smallest tier a managed provider sells,
+	// because exceeding it fails in production under load rather than at Open:
+	//
+	//	Heroku Postgres Essential   20
+	//	DigitalOcean (1 GiB)        25, 3 reserved for maintenance
+	//	GCP Cloud SQL db-f1-micro   25
+	//	Azure Flexible B1ms         50, 15 reserved
+	//	Supabase Nano/Micro         60
+	//	Neon 0.25 CU               104, 7 reserved
+	//	AWS RDS db.t4g.micro       ~112 (derived from instance memory)
+	//
+	// Size up with OpenWithConfig once you know your server's limit, keeping
+	// (write + read) × processes ≤ max_connections − reserved. More is not
+	// faster: a small instance has one or two vCPUs, and Postgres throughput
+	// peaks at a low multiple of core count. Extra connections buy queueing
+	// headroom for bursts, nothing else.
 	MaxOpenConns int
 
 	// MaxIdleConns is the maximum number of idle connections retained.
-	// Should be ≤ MaxOpenConns. Default: half of MaxOpenConns.
+	// Should be ≤ MaxOpenConns. Default: equal to MaxOpenConns.
+	//
+	// Pools this small keep every connection they open. Retaining half of 3
+	// means a burst closes two connections as soon as they are returned and
+	// reopens them on the next one — a TLS handshake plus the session SET
+	// round trip each time (see sessionConnector). ConnMaxIdleTime is what
+	// releases connections an idle process is no longer using.
 	MaxIdleConns int
 
 	// ConnMaxLifetime is the maximum time a connection may be reused before
@@ -51,13 +76,13 @@ var DefaultSchema = "public"
 func (c PoolConfig) withDefaults(isWriter bool) PoolConfig {
 	if c.MaxOpenConns == 0 {
 		if isWriter {
-			c.MaxOpenConns = 20
+			c.MaxOpenConns = 3
 		} else {
-			c.MaxOpenConns = 40
+			c.MaxOpenConns = 6
 		}
 	}
 	if c.MaxIdleConns == 0 {
-		c.MaxIdleConns = c.MaxOpenConns / 2
+		c.MaxIdleConns = c.MaxOpenConns
 	}
 	if c.ConnMaxLifetime == 0 {
 		c.ConnMaxLifetime = 30 * time.Minute
@@ -100,6 +125,10 @@ type SessionConfig struct {
 	// Default: "UTC".
 	TimeZone string
 
+	// Logger receives the pool-capacity warning raised at Open. When nil,
+	// slog.Default() is used.
+	Logger *slog.Logger
+
 	// SchemaName scopes every pooled connection to a PostgreSQL schema via
 	//   SET search_path TO <SchemaName>;
 	// When the named schema does not exist it is created on connect (see
@@ -117,6 +146,14 @@ func (s SessionConfig) schema() string {
 		return *s.SchemaName
 	}
 	return DefaultSchema
+}
+
+// log returns the configured Logger, or slog.Default() when nil.
+func (s SessionConfig) log() *slog.Logger {
+	if s.Logger != nil {
+		return s.Logger
+	}
+	return slog.Default()
 }
 
 func (s SessionConfig) withDefaults() SessionConfig {
@@ -147,11 +184,16 @@ func (s SessionConfig) withDefaults() SessionConfig {
 // route reads to the same primary — useful when there is no replica.
 //
 // Both pools are configured with sensible production defaults:
-//   - Connection pool sizes tuned for OLTP workloads.
+//   - 3 write and 6 read connections — 9 per process, which fits the smallest
+//     tier every managed provider sells. See PoolConfig.MaxOpenConns for the
+//     per-provider limits and how to size up.
 //   - statement_timeout, lock_timeout, and idle_in_transaction_session_timeout
 //     to prevent runaway queries and stalled transactions.
 //   - application_name = "maniflex" visible in pg_stat_activity.
 //   - TimeZone = UTC for consistent timestamp handling.
+//
+// Open asks the server for its max_connections and logs a WARN when the pools
+// claim more than half of it — set SessionConfig.Logger to route that warning.
 //
 // Defaults can be overridden by calling OpenWithConfig.
 //
@@ -230,6 +272,13 @@ func OpenWithConfig(
 		return nil, fmt.Errorf("postgres: read pool: %w", err)
 	}
 
+	// Both pools are up, so their ceilings are now real. Ask the server what it
+	// allows and say so while the operator is still watching a deploy, rather
+	// than leaving "sorry, too many clients already" to arrive under load.
+	checkPoolCapacity(context.Background(), session.log(),
+		writePool.MaxOpenConns, readPool.MaxOpenConns,
+		func(ctx context.Context) (int, error) { return serverMaxConnections(ctx, writeDB) })
+
 	adapter := sqlcore.New(writeDB, readDB, maniflex.Postgres, reg)
 	adapter.SetErrorNormalizer(NormalizeError)
 	return adapter, nil
@@ -288,6 +337,62 @@ func ensureSchema(db *sql.DB, schema string) error {
 		return fmt.Errorf("create schema %q: %w", schema, err)
 	}
 	return nil
+}
+
+// ── Capacity check ────────────────────────────────────────────────────────────
+
+// serverMaxConnections reads the server's own max_connections.
+//
+// current_setting rather than SHOW: it is an ordinary query, so it survives
+// poolers that special-case the SHOW statement.
+func serverMaxConnections(ctx context.Context, db *sql.DB) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	var n int
+	err := db.QueryRowContext(ctx,
+		"SELECT current_setting('max_connections')::int").Scan(&n)
+	return n, err
+}
+
+// checkPoolCapacity warns when the pools claim more of the server's connection
+// budget than one process safely can.
+//
+// The line is half the server's limit, not all of it. A deployment is almost
+// never one process: an API and a migration job, two replicas, a worker — plus
+// the connections the provider reserves for itself and whatever psql session an
+// operator has open. By the time one process has claimed half, it is the second
+// one that takes the database down, and that failure lands under load rather
+// than at startup.
+//
+// It warns; it never fails Open. Oversubscribing deliberately in front of a
+// transaction-mode pooler is legitimate, and a diagnostic that can refuse to
+// start a service is worse than the misconfiguration it reports.
+func checkPoolCapacity(
+	ctx context.Context,
+	logger *slog.Logger,
+	writeMax, readMax int,
+	serverMax func(context.Context) (int, error),
+) {
+	limit, err := serverMax(ctx)
+	if err != nil || limit <= 0 {
+		// Unanswerable — a role without permission, a pooler returning
+		// something else, a server that timed out. Nothing to report.
+		return
+	}
+	total := writeMax + readMax
+	if total <= limit/2 {
+		return
+	}
+	logger.Warn("postgres: connection pools may exceed server capacity",
+		slog.Int("pool_max", total),
+		slog.Int("write_max", writeMax),
+		slog.Int("read_max", readMax),
+		slog.Int("server_max_connections", limit),
+		slog.String("hint", "one process is claiming more than half the server's "+
+			"connections; size the pools with postgres.OpenWithConfig so that "+
+			"(write + read) × processes stays under max_connections"),
+	)
 }
 
 // openPool opens a single *sql.DB with the given pool sizing and session

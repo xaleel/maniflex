@@ -38,8 +38,8 @@ you set only what you want to change:
 schema := "orders"
 db, err := postgres.OpenWithConfig(
     writeDSN, readDSN, server.Registry(),
-    postgres.PoolConfig{MaxOpenConns: 20}, // write pool
-    postgres.PoolConfig{MaxOpenConns: 60}, // read pool
+    postgres.PoolConfig{MaxOpenConns: 5},  // write pool
+    postgres.PoolConfig{MaxOpenConns: 15}, // read pool
     postgres.SessionConfig{
         StatementTimeout: 10 * time.Second,
         ApplicationName:  "orders-api",
@@ -50,22 +50,59 @@ db, err := postgres.OpenWithConfig(
 
 ## Connection-pool tuning
 
-The defaults suit a small service. `OpenWithConfig` exposes them as `PoolConfig`
-fields, set independently for the write and read pools:
+The defaults are sized for the smallest tier a managed provider sells.
+`OpenWithConfig` exposes them as `PoolConfig` fields, set independently for the
+write and read pools:
 
 | `PoolConfig` field | Default (write / read) | Considerations |
 |---|---|---|
-| `MaxOpenConns` | 20 / 40 | keep the sum ≤ `max_connections / number_of_app_instances` |
-| `MaxIdleConns` | half of `MaxOpenConns` | enough open to absorb bursts, not so many you waste server slots |
+| `MaxOpenConns` | 3 / 6 | `(write + read) × processes ≤ max_connections − reserved` |
+| `MaxIdleConns` | equal to `MaxOpenConns` | a pool this small keeps every connection; reopening costs a TLS handshake plus the session `SET` round trip |
 | `ConnMaxLifetime` | 30 min | rotate connections to pick up failover or DNS changes |
-| `ConnMaxIdleTime` | 5 min | close idle connections so PgBouncer can recycle |
+| `ConnMaxIdleTime` | 5 min | release connections an idle process is no longer using |
+
+### Sizing against your server
+
+`Open` builds both pools even when the read DSN is empty, so the number that
+matters is the **sum**, multiplied by every process that connects — an API, a
+worker, a migration job, each replica. Providers also reserve connections for
+themselves, and you want a slot left for `psql`:
+
+| Provider (entry tier) | `max_connections` | Usable |
+|---|---|---|
+| Heroku Postgres Essential-0/1/2 | 20 | 20 |
+| DigitalOcean Managed PG (1 GiB) | 25 (25 per GiB) | 22 — 3 reserved |
+| GCP Cloud SQL `db-f1-micro` | 25 | ~22 |
+| Azure Flexible Server B1ms | 50 | 35 — 15 reserved |
+| Supabase Nano / Micro | 60 | 60 |
+| Neon 0.25 CU | 104 | 97 — 7 reserved |
+| AWS RDS `db.t4g.micro` | ~112 (from instance memory) | ~110 |
+
+At `Open`, the adapter reads the server's own `max_connections` and logs a
+`WARN` when the pools claim more than half of it. Set `SessionConfig.Logger` to
+route that warning into your application's logger; it defaults to
+`slog.Default()`. The check never fails startup.
+
+Raising the ceiling past what your instance needs makes things slower, not
+faster: an entry-tier instance has one or two vCPUs, and Postgres throughput
+peaks at a low multiple of core count. Extra connections buy queueing headroom
+for bursts. Watch `Stats().WaitCount` and `WaitDuration` on the pool — sustained
+waiting is the signal to size up, and the read pool is almost always the one
+that needs it.
 
 If you front Postgres with **PgBouncer in transaction-pooling mode**:
 
 - Set `MaxOpenConns` on the client to roughly match the bouncer's
   `default_pool_size`.
-- Avoid prepared statements that span transactions (the framework doesn't use
-  any; your raw queries should follow suit).
+- **Add `binary_parameters=yes` to the DSN.** `lib/pq` sends any parameterised
+  query as Parse/Describe/`Sync` followed by Bind/Execute/`Sync` — two implicit
+  transactions, so the bouncer may hand the server connection to another client
+  in between and the unnamed prepared statement is gone when the Bind lands.
+  The symptom is intermittent `prepared statement "" does not exist` under load.
+  With `binary_parameters=yes`, `lib/pq` sends Parse/Bind/Describe/Execute/Sync
+  in one packet, which is a single implicit transaction and safe. The framework
+  caches no *named* statements of its own; this is the driver's behaviour and
+  applies to every query, including your raw ones.
 - `LISTEN` / `NOTIFY` is not supported under transaction pooling — use the
   event-bus satellites instead.
 

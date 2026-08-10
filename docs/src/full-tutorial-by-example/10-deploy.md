@@ -30,8 +30,11 @@ db, err := postgres.OpenWithConfig(
     os.Getenv("DB_WRITE_URL"),
     os.Getenv("DB_READ_URL"), // optional; "" routes reads to the primary
     server.Registry(),
-    postgres.PoolConfig{MaxOpenConns: 25, MaxIdleConns: 5, ConnMaxLifetime: 30 * time.Minute}, // write pool
-    postgres.PoolConfig{MaxOpenConns: 25, MaxIdleConns: 5, ConnMaxLifetime: 30 * time.Minute}, // read pool
+    // Both pools count against the same server. Keep
+    // (write + read) × processes under your max_connections; the defaults
+    // (3 / 6) are sized for the smallest managed tier.
+    postgres.PoolConfig{MaxOpenConns: 4, MaxIdleConns: 4, ConnMaxLifetime: 30 * time.Minute},  // write pool
+    postgres.PoolConfig{MaxOpenConns: 10, MaxIdleConns: 10, ConnMaxLifetime: 30 * time.Minute}, // read pool
     postgres.SessionConfig{ApplicationName: "bookstore"},
 )
 ```

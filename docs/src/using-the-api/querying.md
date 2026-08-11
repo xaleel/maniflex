@@ -253,6 +253,8 @@ for the per-column allowlist.
 | `between` | field ≥ lo AND ≤ hi (inclusive) | exactly two comma-separated values `lo,hi` |
 | `is_null` | field IS NULL | no value |
 | `not_null` | field IS NOT NULL | no value |
+| `eq_field`, `neq_field` | field = / ≠ **another column** | the name of another column |
+| `gt_field`, `gte_field`, `lt_field`, `lte_field` | comparisons against **another column** | the name of another column |
 
 ```
 ?filter=tag:in:go,rust,zig
@@ -261,6 +263,7 @@ for the per-column allowlist.
 ?filter=archived_at:is_null
 ?filter=title:ilike:%intro%
 ?filter=title:contains:intro
+?filter=paid_amount:gte_field:amount_due
 ```
 
 ### Patterns vs. literals
@@ -285,6 +288,43 @@ string:
 ?filter=label:contains:50%25       → matches the literal "50%"
 ?filter=label:like:50%25           → matches "50%", "500 units", "50 off", …
 ```
+
+### Comparing two columns
+
+The `*_field` operators compare one column against another column of the same
+record, instead of against a value you supply:
+
+```
+?filter=paid_amount:gte_field:amount_due     # settled orders
+?filter=paid_amount:lt_field:amount_due      # orders still owing
+```
+
+The value is a **field name**, never a literal — that is why these are separate
+operators rather than a marker on the value. `?filter=note:eq:status` compares
+the `note` column against the *text* `"status"`; `?filter=note:eq_field:status`
+compares it against the `status` **column**. Neither spelling can be mistaken for
+the other.
+
+Both sides must:
+
+- be columns on the model you are listing — a relation (`customer.credit`) or a
+  locale sub-key is rejected with `400 INVALID_QUERY`;
+- be marked `mfx:"filterable"`, the same tag the left side of any filter needs;
+- hold the same kind of value. Numbers compare with numbers, strings with
+  strings, booleans with booleans, timestamps with timestamps. Mixing them —
+  `?filter=paid_amount:gte_field:note` — is rejected rather than left to the
+  database, because SQLite and PostgreSQL would not agree on what it means.
+
+Encrypted columns cannot be compared, for the same reason they cannot be
+filtered: their stored ordering is not their plaintext ordering.
+
+If either column is `NULL` on a row, the comparison is `NULL` rather than true,
+so the row is excluded — from `neq_field` as well as from `eq_field`. Add an
+explicit `?filter=credit:not_null` when you need those rows counted.
+
+Arithmetic is not supported: there is no way to write
+`paid_amount >= amount_due + delivery_fee`. Maintain the total you want to
+compare against as its own column.
 
 ### Filtering on related fields
 

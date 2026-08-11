@@ -45,6 +45,8 @@ var everyOperator = []maniflex.FilterOperator{
 	maniflex.OpEq, maniflex.OpNeq, maniflex.OpGt, maniflex.OpGte, maniflex.OpLt, maniflex.OpLte,
 	maniflex.OpLike, maniflex.OpILike, maniflex.OpContains, maniflex.OpStartsWith, maniflex.OpEndsWith,
 	maniflex.OpIn, maniflex.OpNotIn, maniflex.OpIsNull, maniflex.OpNotNull, maniflex.OpBetween,
+	maniflex.OpEqField, maniflex.OpNeqField, maniflex.OpGtField,
+	maniflex.OpGteField, maniflex.OpLtField, maniflex.OpLteField,
 }
 
 func TestFilterCondsDelegates(t *testing.T) {
@@ -104,6 +106,22 @@ func TestFilterCondsDelegates_ShapesBeyondOneFlatFilter(t *testing.T) {
 		{"one_group", []*maniflex.FilterExpr{
 			{Field: "title", Operator: maniflex.OpEq, Value: "a", Group: 1},
 			{Field: "title", Operator: maniflex.OpEq, Value: "b", Group: 1},
+		}},
+		{"field_cmp_same_class", []*maniflex.FilterExpr{
+			{Field: "amount", Operator: maniflex.OpGteField, ValueField: "amount"},
+		}},
+		{"field_cmp_json_spelling", []*maniflex.FilterExpr{
+			{Field: "title", Operator: maniflex.OpEqField, ValueField: "ownerId"},
+		}},
+		{"field_cmp_unknown_rhs_fails_closed", []*maniflex.FilterExpr{
+			{Field: "amount", Operator: maniflex.OpGteField, ValueField: "nope"},
+		}},
+		{"field_cmp_empty_rhs_fails_closed", []*maniflex.FilterExpr{
+			{Field: "amount", Operator: maniflex.OpGteField},
+		}},
+		{"field_cmp_mixed_with_a_literal_filter", []*maniflex.FilterExpr{
+			{Field: "amount", Operator: maniflex.OpGteField, ValueField: "amount"},
+			{Field: "title", Operator: maniflex.OpEq, Value: "a"},
 		}},
 		{"groups_declared_out_of_order", []*maniflex.FilterExpr{
 			{Field: "title", Operator: maniflex.OpEq, Value: "a", Group: 3},

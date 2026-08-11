@@ -68,6 +68,11 @@ func NormalizeFilterValue(f *FieldMeta, op FilterOperator, v any) any {
 	// bool or a timestamp would destroy the pattern.
 	case OpLike, OpILike, OpContains, OpStartsWith, OpEndsWith:
 		return v
+	// The right-hand side of these is a column, carried in FilterExpr.ValueField;
+	// Value is unused. filterCond settles them before reaching here, so this is
+	// the guard for an adapter that calls NormalizeFilterValue on its own.
+	case OpEqField, OpNeqField, OpGtField, OpGteField, OpLtField, OpLteField:
+		return v
 	}
 
 	switch {

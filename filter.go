@@ -30,6 +30,29 @@ const (
 	OpContains   FilterOperator = "contains"    // field contains value  (%value%)
 	OpStartsWith FilterOperator = "starts_with" // field starts with value (value%)
 	OpEndsWith   FilterOperator = "ends_with"   // field ends with value   (%value)
+
+	// The *_field operators compare two columns of the same model instead of
+	// comparing a column to a literal — "paid_amount >= amount_due". Their value
+	// is a field name, carried in FilterExpr.ValueField.
+	//
+	// They are separate operators rather than a sigil on the value ("gte:$col")
+	// because that is what makes the reading unambiguous by construction. With a
+	// sigil, whether the right-hand side is a column depends on the text a client
+	// sent, so a literal that happens to look like a marker silently becomes a
+	// column comparison and returns a confident, wrong list — and dodging that
+	// needs an escaping rule in a parser that has none. Here the six take a column
+	// and the other sixteen take a literal, and no input can cross between them.
+	//
+	// Scope: both columns live on the model being filtered, both are filterable,
+	// and both hold the same kind of value. Arithmetic on the right-hand side is
+	// deliberately absent — "a >= b + c" needs an expression grammar, which is a
+	// separate feature.
+	OpEqField  FilterOperator = "eq_field"  // field = other field
+	OpNeqField FilterOperator = "neq_field" // field != other field
+	OpGtField  FilterOperator = "gt_field"  // field > other field
+	OpGteField FilterOperator = "gte_field" // field >= other field
+	OpLtField  FilterOperator = "lt_field"  // field < other field
+	OpLteField FilterOperator = "lte_field" // field <= other field
 )
 
 var validOperators = map[FilterOperator]bool{
@@ -38,6 +61,8 @@ var validOperators = map[FilterOperator]bool{
 	OpIn: true, OpNotIn: true, OpIsNull: true, OpNotNull: true,
 	OpBetween: true,
 	OpContains: true, OpStartsWith: true, OpEndsWith: true,
+	OpEqField: true, OpNeqField: true, OpGtField: true,
+	OpGteField: true, OpLtField: true, OpLteField: true,
 }
 
 // Valid reports whether o is an operator the query builder implements.
@@ -104,14 +129,23 @@ func validateFilterFields(model *ModelMeta, fs []*FilterExpr) error {
 		if f == nil || f.IsNested || f.IsLocale {
 			continue
 		}
-		if model.ResolveFilterField(f.Field) != nil {
-			continue
+		if model.ResolveFilterField(f.Field) == nil {
+			return fmt.Errorf(
+				"maniflex: filter names %q, which is not a field on model %s — a FilterExpr built "+
+					"in Go is not parsed, so the field is whatever was typed; use the column's DB "+
+					"name or its json name",
+				f.Field, model.Name)
 		}
-		return fmt.Errorf(
-			"maniflex: filter names %q, which is not a field on model %s — a FilterExpr built "+
-				"in Go is not parsed, so the field is whatever was typed; use the column's DB "+
-				"name or its json name",
-			f.Field, model.Name)
+		// A *_field filter names a second column, which reaches the renderer just
+		// as unparsed as the first. Left unchecked it fails closed to 1=0 — safe,
+		// but indistinguishable from a table with no matching rows.
+		if f.ValueField != "" && model.ResolveFilterField(f.ValueField) == nil {
+			return fmt.Errorf(
+				"maniflex: filter on %q compares against %q, which is not a field on model %s — "+
+					"a FilterExpr built in Go is not parsed, so the field is whatever was typed; "+
+					"use the column's DB name or its json name",
+				f.Field, f.ValueField, model.Name)
+		}
 	}
 	return nil
 }
@@ -166,6 +200,21 @@ type FilterExpr struct {
 	// taken as written; anything else takes the comma-separated form. A slice is
 	// the safer spelling, since a value containing a comma stays one element.
 	Value any
+
+	// ValueField names a second column on the same model that this filter
+	// compares against, instead of comparing Field to a literal Value. It is set
+	// only by the *_field operators and is empty for every other filter.
+	//
+	// It is a field of its own rather than a column name stuffed into Value
+	// because Value is coerced against the target column by NormalizeFilterValue.
+	// Handed the string "amount_due" for an int64 column, that coercion has
+	// nothing to measure and would pass a column name along as a literal — the
+	// value would bind, the comparison would be against the text rather than the
+	// column, and nothing would say so. Keeping it separate means normalisation
+	// is skipped rather than fooled.
+	//
+	// Like Field, it accepts either the DB column name or the json name.
+	ValueField string
 
 	// Nested filter (Field contains a "." and references a BelongsTo relation)
 	IsNested      bool
@@ -302,6 +351,7 @@ func validateFilterGroups(filters []*FilterExpr, primaryTable string) error {
 //	author.status:neq:banned      (nested — author must be a registered relation)
 //	deleted_at:is_null            (no value)
 //	role:in:admin,editor
+//	paid_amount:gte_field:amount_due   (compares two columns of this model)
 func ParseFilterParam(raw string, model *ModelMeta, reg RegistryAccessor) (*FilterExpr, error) {
 	parts := strings.SplitN(raw, ":", 3)
 	if len(parts) < 2 {
@@ -324,6 +374,12 @@ func ParseFilterParam(raw string, model *ModelMeta, reg RegistryAccessor) (*Filt
 
 	expr := &FilterExpr{Operator: op, Value: value, Group: -1}
 
+	// A *_field filter resolves both sides as columns, so it takes neither the
+	// nested path (its right-hand side is not a value on another table) nor the
+	// flat one (which would coerce the column name as a literal).
+	if _, isFieldOp := fieldComparisonOp(op); isFieldOp {
+		return resolveFieldComparison(expr, fieldPath, fmt.Sprint(value), model)
+	}
 	if strings.Contains(fieldPath, ".") {
 		return resolveNestedFilter(expr, fieldPath, model, reg)
 	}
@@ -355,6 +411,16 @@ func checkFilterValue(op FilterOperator, value any) error {
 	case OpContains, OpStartsWith, OpEndsWith:
 		if value == nil {
 			return fmt.Errorf("operator %q requires a value (e.g. name:contains:acme)", op)
+		}
+
+	// The *_field operators take a column name, not a literal. With none at all
+	// ("paid_amount:gte_field") there is no right-hand side, and a blank one
+	// would resolve to no column and fail closed as an empty list — say so here
+	// instead.
+	case OpEqField, OpNeqField, OpGtField, OpGteField, OpLtField, OpLteField:
+		if value == nil || strings.TrimSpace(fmt.Sprint(value)) == "" {
+			return fmt.Errorf(
+				"operator %q requires a field name (e.g. paid_amount:gte_field:amount_due)", op)
 		}
 	}
 	return nil

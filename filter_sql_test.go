@@ -101,6 +101,81 @@ func TestBuildFilterSQL(t *testing.T) {
 			wantSQL: `"tickets"."title" IS NULL AND "tickets"."owner_id" IS NOT NULL`,
 		},
 
+		// ── Column-to-column comparison (*_field) ────────────────────────────
+		{
+			name:    "eq_field_binds_no_parameter",
+			driver:  SQLite,
+			filters: []*FilterExpr{{Field: "amount", Operator: OpEqField, ValueField: "amount"}},
+			wantSQL: `"tickets"."amount" = "tickets"."amount"`,
+		},
+		{
+			name:    "gte_field_renders_both_columns",
+			driver:  SQLite,
+			filters: []*FilterExpr{{Field: "title", Operator: OpGteField, ValueField: "owner_id"}},
+			wantSQL: `"tickets"."title" >= "tickets"."owner_id"`,
+		},
+		{
+			name:    "gte_field_is_identical_on_postgres",
+			driver:  Postgres,
+			filters: []*FilterExpr{{Field: "title", Operator: OpGteField, ValueField: "owner_id"}},
+			wantSQL: `"tickets"."title" >= "tickets"."owner_id"`,
+		},
+		{
+			name:   "every_field_operator_renders_its_comparison",
+			driver: SQLite,
+			filters: []*FilterExpr{
+				{Field: "amount", Operator: OpNeqField, ValueField: "amount"},
+				{Field: "amount", Operator: OpGtField, ValueField: "amount"},
+				{Field: "amount", Operator: OpGteField, ValueField: "amount"},
+				{Field: "amount", Operator: OpLtField, ValueField: "amount"},
+				{Field: "amount", Operator: OpLteField, ValueField: "amount"},
+			},
+			wantSQL: `"tickets"."amount" != "tickets"."amount" AND ` +
+				`"tickets"."amount" > "tickets"."amount" AND ` +
+				`"tickets"."amount" >= "tickets"."amount" AND ` +
+				`"tickets"."amount" < "tickets"."amount" AND ` +
+				`"tickets"."amount" <= "tickets"."amount"`,
+		},
+		{
+			// The json spelling must resolve on both sides, exactly as it does
+			// for the left side of an ordinary filter.
+			name:    "field_operator_accepts_the_json_spelling",
+			driver:  SQLite,
+			filters: []*FilterExpr{{Field: "amount", Operator: OpGteField, ValueField: "ownerId"}},
+			wantSQL: `"tickets"."amount" >= "tickets"."owner_id"`,
+		},
+		{
+			// Fail closed: an unresolvable right-hand column must match nothing,
+			// never vanish from the WHERE clause.
+			name:    "field_operator_with_unknown_rhs_fails_closed",
+			driver:  SQLite,
+			filters: []*FilterExpr{{Field: "amount", Operator: OpGteField, ValueField: "nope"}},
+			wantSQL: `1=0`,
+		},
+		{
+			name:    "field_operator_with_empty_rhs_fails_closed",
+			driver:  SQLite,
+			filters: []*FilterExpr{{Field: "amount", Operator: OpGteField}},
+			wantSQL: `1=0`,
+		},
+		{
+			// A stray Value alongside ValueField must not become a bound
+			// parameter — the right-hand side is the column, always.
+			name:    "field_operator_ignores_a_stray_value",
+			driver:  SQLite,
+			filters: []*FilterExpr{{Field: "amount", Operator: OpGteField, ValueField: "amount", Value: "99"}},
+			wantSQL: `"tickets"."amount" >= "tickets"."amount"`,
+		},
+		{
+			name:   "field_operator_ors_within_a_group",
+			driver: SQLite,
+			filters: []*FilterExpr{
+				{Field: "amount", Operator: OpGtField, ValueField: "amount", Group: 1},
+				{Field: "title", Operator: OpEqField, ValueField: "owner_id", Group: 1},
+			},
+			wantSQL: `("tickets"."amount" > "tickets"."amount" OR "tickets"."title" = "tickets"."owner_id")`,
+		},
+
 		// ── IN / NOT IN, including the two builders' disagreements ───────────
 		{
 			name:     "in_csv",

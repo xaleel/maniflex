@@ -114,6 +114,9 @@ func partitionFilters(filters []*FilterExpr) ([]*FilterExpr, map[int][]*FilterEx
 //
 // A field the model does not have fails closed, for the reason filterPredicate
 // gives at length for an unimplemented operator.
+//
+// A *_field filter compares two columns and binds nothing; it is settled before
+// the value path, since there is no value to normalise.
 func filterCond(model *ModelMeta, f *FilterExpr, driver DriverType, p PlaceholderBinder) string {
 	if f.IsLocale || f.IsNested {
 		return filterPredicate(filterColumn(model, f, driver, p), f.Operator, f.Value, driver, p)
@@ -123,6 +126,9 @@ func filterCond(model *ModelMeta, f *FilterExpr, driver DriverType, p Placeholde
 		return falsePredicate
 	}
 	col := Quote(model.TableName) + "." + Quote(fm.Tags.DBName)
+	if sqlOp, ok := fieldComparisonOp(f.Operator); ok {
+		return fieldCond(model, col, sqlOp, f.ValueField)
+	}
 	return filterPredicate(col, f.Operator, NormalizeFilterValue(fm, f.Operator, f.Value), driver, p)
 }
 
@@ -141,6 +147,48 @@ func filterColumn(model *ModelMeta, f *FilterExpr, driver DriverType, p Placehol
 		return "json_extract(" + col + ", " + p.Add("$."+f.LocaleKey) + ")"
 	}
 	return Quote(f.RelationKey) + "." + Quote(f.NestedField)
+}
+
+// fieldComparisonOp maps a *_field operator onto its SQL comparison, and reports
+// whether op is one at all. It is the single place that knows the six, so the
+// parser and the renderer cannot disagree about the set.
+func fieldComparisonOp(op FilterOperator) (string, bool) {
+	switch op {
+	case OpEqField:
+		return "=", true
+	case OpNeqField:
+		return "!=", true
+	case OpGtField:
+		return ">", true
+	case OpGteField:
+		return ">=", true
+	case OpLtField:
+		return "<", true
+	case OpLteField:
+		return "<=", true
+	}
+	return "", false
+}
+
+// fieldCond renders a column-to-column comparison, binding no parameter at all.
+//
+// Binding nothing is safe only because the right-hand column is resolved through
+// the model exactly as the left one is: what reaches the SQL text is a DB name
+// the registry vouches for, never the string a client sent. That is the same
+// property the sealed Expr/Col type has on the aggregate side, and it is the
+// whole argument for why an identifier may be concatenated here when a value
+// never may be.
+//
+// An unresolvable name fails closed, for the reason filterPredicate gives at
+// length: a comparison that cannot be built must match nothing, because the
+// alternative deletes the filter — and a deleted filter on a forced scope is not
+// a wider scope, it is no scope.
+func fieldCond(model *ModelMeta, col, sqlOp, valueField string) string {
+	rhs := model.ResolveFilterField(valueField)
+	if rhs == nil {
+		return falsePredicate
+	}
+	return col + " " + sqlOp + " " + Quote(model.TableName) + "." + Quote(rhs.Tags.DBName)
 }
 
 // filterPredicate renders one operator against an already-rendered column.

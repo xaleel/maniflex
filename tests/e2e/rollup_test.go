@@ -37,6 +37,14 @@ func rollupServer(t *testing.T) *testutil.Server {
 				Parent: "Order", ParentField: "top_payment", Op: maniflex.AggMax,
 				Child: "OrderPayment", ChildField: "amount", On: "order_id",
 			})
+			// Same children, narrowed: only the captured ones count.
+			s.MustRegisterRollup(maniflex.Rollup{
+				Parent: "Order", ParentField: "captured_amount", Op: maniflex.AggSum,
+				Child: "OrderPayment", ChildField: "amount", On: "order_id",
+				Where: []*maniflex.FilterExpr{
+					{Field: "status", Operator: maniflex.OpEq, Value: "captured"},
+				},
+			})
 		},
 	})
 }
@@ -51,6 +59,15 @@ func newOrder(t *testing.T, srv *testutil.Server, ref string) string {
 func addPayment(t *testing.T, srv *testutil.Server, orderID string, amount int) string {
 	t.Helper()
 	resp := srv.POST("/order_payments", map[string]any{"order_id": orderID, "amount": amount})
+	resp.AssertStatus(http.StatusCreated)
+	return resp.ID()
+}
+
+func addPaymentWithStatus(t *testing.T, srv *testutil.Server, orderID string, amount int, status string) string {
+	t.Helper()
+	resp := srv.POST("/order_payments", map[string]any{
+		"order_id": orderID, "amount": amount, "status": status,
+	})
 	resp.AssertStatus(http.StatusCreated)
 	return resp.ID()
 }
@@ -141,6 +158,92 @@ func TestRollup_ExcludesSoftDeletedChildren(t *testing.T) {
 	if got := intField(t, srv, o, "paid_amount"); got != 5 {
 		t.Errorf("paid_amount after soft-deleting the 50 payment: got %d, want 5 "+
 			"(a soft-deleted child must not count)", got)
+	}
+}
+
+// ── Where: only the matching children count ─────────────────────────────────
+
+func TestRollup_WhereNarrowsTheAggregate(t *testing.T) {
+	t.Parallel()
+	srv := rollupServer(t)
+	o := newOrder(t, srv, "O-w1")
+	addPaymentWithStatus(t, srv, o, 60, "captured")
+	addPaymentWithStatus(t, srv, o, 25, "pending")
+
+	if got := intField(t, srv, o, "paid_amount"); got != 85 {
+		t.Errorf("unfiltered rollup: got %d, want 85 (both payments)", got)
+	}
+	if got := intField(t, srv, o, "captured_amount"); got != 60 {
+		t.Errorf("filtered rollup: got %d, want 60 (the captured payment only)", got)
+	}
+}
+
+// The claim that makes Where safe: recomputing from scratch means a child
+// leaving the filtered set moves the total exactly as a delete would — no
+// delta bookkeeping, nothing to drift.
+func TestRollup_WhereChildLeavingTheSetDropsOut(t *testing.T) {
+	t.Parallel()
+	srv := rollupServer(t)
+	o := newOrder(t, srv, "O-w2")
+	p := addPaymentWithStatus(t, srv, o, 60, "captured")
+	addPaymentWithStatus(t, srv, o, 10, "captured")
+
+	if got := intField(t, srv, o, "captured_amount"); got != 70 {
+		t.Fatalf("setup: got %d, want 70", got)
+	}
+
+	srv.PATCH("/order_payments/"+p, map[string]any{"status": "refunded"}, nil).
+		AssertStatus(http.StatusOK)
+
+	if got := intField(t, srv, o, "captured_amount"); got != 10 {
+		t.Errorf("captured_amount after the 60 payment was refunded: got %d, want 10", got)
+	}
+	// The row is still there, so the unfiltered rollup is unmoved.
+	if got := intField(t, srv, o, "paid_amount"); got != 70 {
+		t.Errorf("paid_amount must not move on a status change: got %d, want 70", got)
+	}
+}
+
+func TestRollup_WhereChildEnteringTheSetIsAdded(t *testing.T) {
+	t.Parallel()
+	srv := rollupServer(t)
+	o := newOrder(t, srv, "O-w3")
+	p := addPaymentWithStatus(t, srv, o, 45, "pending")
+
+	if got := intField(t, srv, o, "captured_amount"); got != 0 {
+		t.Fatalf("setup: a pending payment must not count, got %d", got)
+	}
+
+	srv.PATCH("/order_payments/"+p, map[string]any{"status": "captured"}, nil).
+		AssertStatus(http.StatusOK)
+
+	if got := intField(t, srv, o, "captured_amount"); got != 45 {
+		t.Errorf("captured_amount once the payment was captured: got %d, want 45", got)
+	}
+}
+
+// Backfill discovers parents from the unfiltered child rows on purpose. An order
+// whose every payment fails the filter still has to be driven back to 0 — narrow
+// the discovery scan and it would be skipped, keeping the stale total.
+func TestRollup_WhereBackfillClearsParentWithNoMatchingChildren(t *testing.T) {
+	t.Parallel()
+	srv := rollupServer(t)
+	o := newOrder(t, srv, "O-w4")
+	addPaymentWithStatus(t, srv, o, 30, "pending")
+
+	// Corrupt the maintained column out of band.
+	srv.PATCH("/orders/"+o, map[string]any{"captured_amount": 999}, nil).
+		AssertStatus(http.StatusOK)
+
+	if err := srv.ManiflexServer().BackfillRollups(context.Background()); err != nil {
+		t.Fatalf("BackfillRollups: %v", err)
+	}
+
+	if got := intField(t, srv, o, "captured_amount"); got != 0 {
+		t.Errorf("captured_amount after backfill: got %d, want 0 (no captured payments)", got)
+	}
+	if got := intField(t, srv, o, "paid_amount"); got != 30 {
+		t.Errorf("paid_amount after backfill: got %d, want 30", got)
 	}
 }
 

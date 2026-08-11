@@ -18,6 +18,8 @@ type RollupChildT struct {
 	BaseModel
 	ParentID string `json:"parent_id" db:"parent_id" mfx:"required,filterable"`
 	Amount   int    `json:"amount"    db:"amount"    mfx:"required"`
+	Status   string `json:"status"    db:"status"    mfx:"filterable"`
+	Cap      int    `json:"cap"       db:"cap"`
 }
 
 func rollupTestServer(t *testing.T) *Server {
@@ -121,6 +123,95 @@ func TestRollup_MustRegisterPanicsOnBadConfig(t *testing.T) {
 	r := validRollup()
 	r.ParentField = "totl"
 	s.MustRegisterRollup(r)
+}
+
+// ── Where: the child filter ─────────────────────────────────────────────────
+
+func TestRollup_WhereRegisters(t *testing.T) {
+	s := rollupTestServer(t)
+	r := validRollup()
+	r.Where = []*FilterExpr{
+		{Field: "status", Operator: OpEq, Value: "captured"}, // json name
+		{Field: "amount", Operator: OpGt, Value: 0},          // db name
+		{Field: "amount", Operator: OpLteField, ValueField: "cap"},
+	}
+	if err := s.RegisterRollup(r); err != nil {
+		t.Fatalf("a valid Where must register: %v", err)
+	}
+}
+
+// The same promise the field names make: a typo is a startup error naming it,
+// not a filter that fails closed and holds the column at 0 forever.
+func TestRollup_WhereRejectsUnknownField(t *testing.T) {
+	s := rollupTestServer(t)
+	r := validRollup()
+	r.Where = []*FilterExpr{{Field: "staus", Operator: OpEq, Value: "captured"}}
+	assertRollupErr(t, s.RegisterRollup(r), "staus")
+}
+
+func TestRollup_WhereRejectsUnknownValueField(t *testing.T) {
+	s := rollupTestServer(t)
+	r := validRollup()
+	r.Where = []*FilterExpr{{Field: "amount", Operator: OpLteField, ValueField: "capp"}}
+	assertRollupErr(t, s.RegisterRollup(r), "capp")
+}
+
+func TestRollup_WhereRejectsUnknownOperator(t *testing.T) {
+	s := rollupTestServer(t)
+	r := validRollup()
+	r.Where = []*FilterExpr{{Field: "status", Operator: "equals", Value: "captured"}}
+	assertRollupErr(t, s.RegisterRollup(r), "equals")
+}
+
+// Nested and locale filters resolve against a joined table or a JSON key; the
+// recompute aggregates the child table alone, so both are refused up front
+// rather than surfacing as a 500 on whichever child write runs first.
+func TestRollup_WhereRejectsNestedFilter(t *testing.T) {
+	s := rollupTestServer(t)
+	r := validRollup()
+	r.Where = []*FilterExpr{{
+		Field: "owner.status", Operator: OpEq, Value: "active",
+		IsNested: true, RelationKey: "owner", NestedField: "status",
+	}}
+	assertRollupErr(t, s.RegisterRollup(r), "nested-relation")
+}
+
+func TestRollup_WhereRejectsLocaleFilter(t *testing.T) {
+	s := rollupTestServer(t)
+	r := validRollup()
+	r.Where = []*FilterExpr{{
+		Field: "status.ar", Operator: OpEq, Value: "مسدد",
+		IsLocale: true, LocaleKey: "ar",
+	}}
+	assertRollupErr(t, s.RegisterRollup(r), "locale")
+}
+
+func TestRollup_WhereRejectsNilFilter(t *testing.T) {
+	s := rollupTestServer(t)
+	r := validRollup()
+	r.Where = []*FilterExpr{nil}
+	assertRollupErr(t, s.RegisterRollup(r), "nil filter")
+}
+
+// The compiled rollup holds its own array. A caller reusing their slice — the
+// same one filled in again for a second rollup — must not rewrite what an
+// already-registered one aggregates.
+func TestRollup_WhereIsCopiedAtRegistration(t *testing.T) {
+	s := rollupTestServer(t)
+	r := validRollup()
+	filters := []*FilterExpr{{Field: "status", Operator: OpEq, Value: "captured"}}
+	r.Where = filters
+	if err := s.RegisterRollup(r); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+
+	// Reusing the slot: without the copy this is the compiled filter too.
+	filters[0] = &FilterExpr{Field: "amount", Operator: OpGt, Value: 1000}
+
+	if got := s.rollups[0].where[0].Field; got != "status" {
+		t.Errorf("compiled Where field: got %q, want %q (the caller's slice was reused after "+
+			"registration and must not reach the compiled rollup)", got, "status")
+	}
 }
 
 func assertRollupErr(t *testing.T, err error, mustName string) {

@@ -51,6 +51,9 @@ type Order struct {
 	PaidAmount   int    `json:"paid_amount"   db:"paid_amount"   mfx:"filterable,sortable,default:0"`
 	PaymentCount int    `json:"payment_count" db:"payment_count" mfx:"filterable,default:0"`
 	TopPayment   *int   `json:"top_payment"   db:"top_payment"`
+	// CapturedAmount is maintained by a rollup with a Where, so it sums only the
+	// captured payments while PaidAmount sums them all.
+	CapturedAmount int `json:"captured_amount" db:"captured_amount" mfx:"filterable,default:0"`
 }
 
 // OrderPayment is a payment against an Order. Soft-deletable, so a rollup must
@@ -60,6 +63,8 @@ type OrderPayment struct {
 	maniflex.WithDeletedAt
 	OrderID string `json:"order_id" db:"order_id" mfx:"required,filterable,relation"`
 	Amount  int    `json:"amount"   db:"amount"   mfx:"required,filterable"`
+	// Status lets a rollup filter the children it sums.
+	Status string `json:"status" db:"status" mfx:"filterable,default:captured"`
 }
 
 // Tag exercises soft-delete via WithIsDeleted (bool style).

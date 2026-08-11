@@ -49,6 +49,24 @@ type Rollup struct {
 	ChildField string
 	// On is the JSON name of the foreign key on Child that points to Parent's id.
 	On string
+	// Where narrows the children the aggregate covers: SUM(amount) over the
+	// captured payments rather than over every payment row. The filters AND onto
+	// the foreign-key match and the soft-delete guard the rollup always applies
+	// (filters sharing a Group >= 1 OR among themselves, as everywhere else).
+	//
+	// The narrowing costs nothing in correctness. Every child write recomputes
+	// its parent from scratch, so a child leaving the filtered set — a payment
+	// going captured to refunded — moves the total exactly as a delete would,
+	// with no delta bookkeeping to get wrong.
+	//
+	// Only flat filters on Child's own columns are accepted. A nested-relation
+	// filter reads a column on a joined table and a locale filter a key inside a
+	// JSON document; the recompute aggregates the child table alone, so neither
+	// has anything to resolve against. Both are refused at registration.
+	//
+	// Fields take the DB column name or the json name, and — like every other
+	// name here — are resolved and validated at registration.
+	Where []*FilterExpr
 }
 
 // compiledRollup is a Rollup with its names resolved to DB columns and its
@@ -59,6 +77,10 @@ type compiledRollup struct {
 	childFieldDB  string
 	onDB          string
 	onJSON        string
+	// where holds the configured child filters, copied at registration so a
+	// caller who reuses or appends to their slice afterwards cannot change what
+	// the rollup aggregates.
+	where []*FilterExpr
 	// softDelete, when non-nil, excludes soft-deleted children from the recompute.
 	softDelete *FilterExpr
 }
@@ -152,10 +174,48 @@ func (s *Server) compileRollup(r Rollup) (compiledRollup, error) {
 		}
 		cr.childFieldDB = childField.Tags.DBName
 	}
+	if err := validateRollupWhere(child, r.Where); err != nil {
+		return compiledRollup{}, err
+	}
+	cr.where = append([]*FilterExpr(nil), r.Where...)
 	if sd := child.SoftDelete; sd.Enabled {
 		cr.softDelete = softDeleteFilter(sd)
 	}
 	return cr, nil
+}
+
+// validateRollupWhere checks a Rollup's child filters at registration, holding
+// the same line the field names do: a mistake is a startup error naming it, not
+// a total that quietly summarises the wrong rows.
+//
+// Left to the runtime, each mistake fails differently and none of them says so.
+// A misspelt field fails closed at the adapter, so the parent column reads 0
+// forever; an unknown operator renders nothing; a nested filter reaches
+// ctx.Aggregate, which refuses it — as a 500 ROLLUP_ERROR on whichever child
+// write happened to run first, naming a config the caller wrote at startup.
+func validateRollupWhere(child *ModelMeta, fs []*FilterExpr) error {
+	for _, f := range fs {
+		if f == nil {
+			return fmt.Errorf("maniflex: Rollup.Where contains a nil filter")
+		}
+		kind := ""
+		switch {
+		case f.IsNested:
+			kind = "nested-relation"
+		case f.IsLocale:
+			kind = "locale"
+		default:
+			continue
+		}
+		return fmt.Errorf(
+			"maniflex: Rollup.Where filter on %q is a %s filter; a rollup recomputes by "+
+				"aggregating %s's own table, so only flat filters on its columns are supported",
+			f.Field, kind, child.Name)
+	}
+	if err := validateFilterOperators(fs); err != nil {
+		return err
+	}
+	return validateFilterFields(child, fs)
 }
 
 // softDeleteFilter builds the FilterExpr that keeps only live rows for a
@@ -237,10 +297,12 @@ func addParentID(set map[string]struct{}, v any) {
 // recompute recomputes the aggregate over parentID's live children and writes it
 // to the parent's rollup column, through ctx.Tx when one is active.
 func (cr compiledRollup) recompute(ctx *ServerContext, parentID string) error {
-	where := []*FilterExpr{{Field: cr.onDB, Operator: OpEq, Value: parentID}}
+	where := make([]*FilterExpr, 0, 2+len(cr.where))
+	where = append(where, &FilterExpr{Field: cr.onDB, Operator: OpEq, Value: parentID})
 	if cr.softDelete != nil {
 		where = append(where, cr.softDelete)
 	}
+	where = append(where, cr.where...)
 	rows, err := ctx.Aggregate(cr.cfg.Child, AggregateQuery{
 		Select: []AggregateField{{Op: cr.cfg.Op, Field: cr.childFieldDB, As: "v"}},
 		Where:  where,
@@ -301,6 +363,12 @@ func (cr compiledRollup) backfill(ctx *ServerContext) error {
 	}
 	// DISTINCT over the FK column: the identifiers are validated DB names from
 	// the registry, so the statement is not client-influenced.
+	//
+	// A configured Where deliberately does not narrow this scan. It selects which
+	// children the aggregate counts, not which parents have one — a parent whose
+	// every child fails the filter still needs its column driven to the empty
+	// value, and filtering here would skip it and leave the stale total behind.
+	// recompute applies the filter, which is where it belongs.
 	q := fmt.Sprintf("SELECT DISTINCT %s AS pid FROM %s", cr.onDB, child.TableName)
 	rows, err := ctx.rawQuery(q)
 	if err != nil {

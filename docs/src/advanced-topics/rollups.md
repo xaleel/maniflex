@@ -37,6 +37,7 @@ srv.Pipeline.Service.Register(
 | `Child` | model whose rows are aggregated |
 | `ChildField` | JSON name of the aggregated column (omit only for `AggCount`) |
 | `On` | JSON name of the foreign key on `Child` pointing to `Parent`'s id |
+| `Where` | optional `[]*FilterExpr` narrowing which children the aggregate covers |
 
 Field names are resolved and **validated at registration** — a typo is a startup
 error naming the field, not a silently drifted total. This is the whole reason
@@ -46,6 +47,43 @@ the worst possible way.
 
 `RegisterRollup` returns an error; `MustRegisterRollup` panics. Both must be
 called before `Start()`/`Handler()`.
+
+## Filtering the children
+
+`Where` narrows the rows the aggregate covers — the captured payments rather than
+every payment row:
+
+```go
+srv.MustRegisterRollup(maniflex.Rollup{
+    Parent: "Order", ParentField: "captured_amount", Op: maniflex.AggSum,
+    Child:  "OrderPayment", ChildField: "amount", On: "order_id",
+    Where: []*maniflex.FilterExpr{
+        {Field: "status", Operator: maniflex.OpEq, Value: "captured"},
+    },
+})
+```
+
+The filters AND onto the foreign-key match and the soft-delete guard a rollup
+always applies; filters sharing a `Group >= 1` OR among themselves, as
+everywhere else. Fields take the DB column name or the json name and are
+validated at registration alongside the rest of the config.
+
+Narrowing costs nothing in correctness. Because every child write recomputes its
+parent from scratch, a child that **leaves** the filtered set — a payment going
+`captured` → `refunded` — moves the total exactly as a delete would, and one
+that enters it is added. There is no delta to keep in step.
+
+Only **flat filters on the child's own columns** are accepted. A nested-relation
+filter (`author.status`) reads a column on a joined table and a locale filter
+(`name.ar`) a key inside a JSON document; the recompute aggregates the child
+table alone, so neither has anything to resolve against. Both are refused at
+`RegisterRollup`, not at the first child write.
+
+`BackfillRollups` deliberately does **not** apply `Where` when it discovers which
+parents to visit. The filter says which children count, not which parents have
+one: an order whose every payment fails the filter still has to be driven back to
+`0`, and narrowing the discovery scan would skip it and leave the stale total in
+place.
 
 ## How it stays correct
 

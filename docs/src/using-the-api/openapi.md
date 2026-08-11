@@ -36,6 +36,23 @@ For every registered model, the spec includes:
   `GET /<table>/{id}/<file_field>` with `application/octet-stream` (plus any
   MIME types from the field's `accept:` list). See
   [Per-model attachment routes](../defining-your-api/files.md#per-model-attachment-routes).
+- **Every opt-in route the model actually mounts**, and only those — each
+  appears when the `ModelConfig` flag that mounts it is set, and is absent
+  otherwise:
+
+  | Path | Mounted when |
+  |---|---|
+  | `GET /<table>/export` | `ExportEnabled` |
+  | `GET /<table>/aggregate` | `AggregateEnabled` |
+  | `POST /<table>/{id}/restore` | `RestoreEnabled` **and** the model soft-deletes |
+  | `GET /<table>/{id}/history` | `Versioned` |
+  | `POST /<table>/<file_field>/upload-url` | the field is `mfx:"file,upload:presigned"` and storage is configured |
+
+  The condition is the same one the router checks, and
+  `TestOpenAPIRouteParity` walks the mounted routes to prove it: a route the
+  spec omits and a path the spec invents both fail the build. That guard exists
+  because four of these routes shipped mounted-but-undocumented, so a generated
+  client could not reach an endpoint that had worked for releases.
 - **Three schemas** — a full response shape, a create body shape, and an
   update (patch) body shape. The three differ by which fields are visible: the
   create shape drops `readonly` fields; the update shape additionally drops

@@ -256,6 +256,12 @@ failures return a redacted 500, and cancellation/deadline failures return 504.
 These HTTP safeguards do not change programmatic `ctx.Aggregate` calls, whose
 `AggregateQuery.Limit` remains explicit.
 
+The route appears in the [OpenAPI spec](../using-the-api/openapi.md) once the
+model opts in, and the `?aggregate=` parameter's description carries the shape of
+the JSON document along with this model's aggregatable fields and exposed
+expressions — the spec is the only place a client can learn them, since the
+aggregation is a JSON value inside a query string rather than a typed body.
+
 ## Tree traversal: `ctx.RecursiveQuery`
 
 For self-referential models — categories, org charts, threaded comments, bill of
@@ -405,13 +411,13 @@ maniflex has **no** SQL-backed "query model" — a struct cannot be registered w
 a SQL body. For a stable, repeatable read endpoint over computed data you have two
 real building blocks:
 
-- **The auto-generated aggregate endpoint.** Every model already exposes
-  `GET /{model}/aggregate` (see
+- **The auto-generated aggregate endpoint.** Opt a model in with
+  `ModelConfig.AggregateEnabled` and it exposes `GET /{model}/aggregate` (see
   [Auto-generated aggregate endpoint](#auto-generated-aggregate-endpoint)),
   driven by [`ctx.Aggregate`](#structured-aggregation-ctxaggregate). Grouping,
-  counts, sums/averages, and the standard `?filter=` all apply, and it is in the
-  OpenAPI spec — reach for it first for counts/sums/averages over a registered
-  model.
+  counts, sums/averages, and the standard `?filter=` all apply, and the route is
+  in the OpenAPI spec — reach for it first for counts/sums/averages over a
+  registered model.
 - **A custom action running raw SQL.** For a shape the aggregate endpoint cannot
   express (a multi-table join, a window function), mount a
   [custom action](actions.md) whose handler runs `ctx.RawQuery` and returns the

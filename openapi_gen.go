@@ -349,10 +349,29 @@ func buildModelPaths(spec *OpenAPISpec, m *ModelMeta, cfg *Config) {
 		},
 	}
 
+	// ── Opt-in collection routes ──────────────────────────────────────────────
+	// Each mirrors a branch in mountModel; the condition must match it exactly,
+	// or the spec describes an endpoint that 404s (or omits one that works).
+	// TestOpenAPIRouteParity walks the router and fails on either.
+
+	if m.Config.ExportEnabled {
+		buildExportPath(spec, m, collectionPath, tag)
+	}
+
+	if m.Config.AggregateEnabled {
+		buildAggregatePath(spec, m, cfg, collectionPath, tag)
+	}
+
 	// Per-model attachment routes (3B.3a): one path per mfx:"file" field,
 	// mounted only when storage is configured (matches router.go behaviour).
 	if cfg.FilesConfig.Storage != nil {
 		for _, ff := range m.FileFields() {
+			// Presigned-upload mint route (R5). It hangs off the collection, not
+			// the item: the record need not exist yet, which is what lets a
+			// create-time file field use it at all.
+			if ff.Tags.PresignedUpload {
+				buildPresignUploadPath(spec, m, ff, collectionPath, tag)
+			}
 			if ff.IsFileList() {
 				continue // no attachment route is mounted for a key list
 			}
@@ -386,6 +405,13 @@ func buildModelPaths(spec *OpenAPISpec, m *ModelMeta, cfg *Config) {
 				},
 			}
 		}
+	}
+
+	// Soft-delete restore (5.19). Both halves of the router's condition matter:
+	// a hard-delete model leaves nothing to restore and mounts no route, however
+	// its RestoreEnabled is set.
+	if m.Config.RestoreEnabled && m.SoftDelete.Enabled {
+		buildRestorePath(spec, m, itemPath, tag, idParam)
 	}
 
 	// Per-record version history (audit MS-4). The history model itself is
@@ -459,6 +485,344 @@ func buildSingletonPaths(spec *OpenAPISpec, m *ModelMeta, collectionPath, tag st
 			},
 		},
 	}
+}
+
+// ── Opt-in route documentation ────────────────────────────────────────────────
+//
+// Each builder documents one branch of mountModel. They were absent for four
+// releases: the routes mounted, worked, and were described nowhere, so a client
+// generated from the spec could not call them and the docs' claim that the
+// aggregate endpoint "is in the OpenAPI spec" was simply untrue.
+
+// buildExportPath documents GET /{table}/export (ModelConfig.ExportEnabled).
+//
+// The export reuses the list query path, so it takes the same ?filter=, ?sort=,
+// ?q= and ?include= — but not ?page=/?limit=: an export is deliberately
+// unpaginated and capped at ModelConfig.MaxExportRows instead, so advertising
+// pagination would advertise a knob that does nothing.
+func buildExportPath(spec *OpenAPISpec, m *ModelMeta, collectionPath, tag string) {
+	params := []OASParameter{
+		{
+			Name: "format", In: "query",
+			Description: "Output format. Defaults to csv; any other value is a 400.",
+			Schema: &OASSchema{
+				Type: "string",
+				Enum: stringsToAny([]string{string(ExportFormatCSV), string(ExportFormatXLSX)}),
+			},
+		},
+	}
+	params = append(params, exportQueryParameters(m)...)
+
+	maxRows := m.Config.MaxExportRows
+	if maxRows <= 0 {
+		maxRows = DefaultMaxExportRows
+	}
+
+	spec.Paths[collectionPath+"/export"] = PathItem{
+		Get: &OASOperation{
+			OperationID: "export" + m.Name,
+			Summary:     "Export " + m.Name + " records as CSV or XLSX",
+			Description: fmt.Sprintf(
+				"Streams the filtered result set as a file attachment. Runs the same Auth "+
+					"pipeline as GET %s, so tenancy and row-isolation middleware apply "+
+					"unchanged. Hidden and writeonly fields are excluded from the output. "+
+					"The result is not paginated: it is capped at %d rows, and an export that "+
+					"would exceed the cap is refused with 413 rather than silently truncated.",
+				collectionPath, maxRows),
+			Tags:       []string{tag},
+			Parameters: params,
+			Responses: map[string]OASResponse{
+				"200": {
+					Description: "The export file, with a Content-Disposition attachment filename.",
+					Content: map[string]OASMediaType{
+						"text/csv": {Schema: &OASSchema{Type: "string"}},
+						"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {
+							Schema: &OASSchema{Type: "string", Format: "binary"},
+						},
+					},
+				},
+				"400": errResponse("Invalid ?format= or query parameters"),
+				"413": errResponse(fmt.Sprintf(
+					"Export exceeds the %d-row cap — tighten the filters", maxRows)),
+				"503": errResponse("Too many concurrent exports; retry after the Retry-After interval"),
+			},
+		},
+	}
+}
+
+// exportQueryParameters is listParameters minus the pagination controls, which
+// the export path overrides. Filtering by name rather than slicing keeps this
+// correct when listParameters gains or reorders a parameter.
+func exportQueryParameters(m *ModelMeta) []OASParameter {
+	var out []OASParameter
+	for _, p := range listParameters(m) {
+		switch p.Name {
+		case "page", "limit", "cursor":
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// buildAggregatePath documents GET /{table}/aggregate
+// (ModelConfig.AggregateEnabled).
+//
+// The whole aggregation travels in ?aggregate= as URL-encoded JSON, so the
+// parameter's description carries the shape of that document — there is nowhere
+// else in an OpenAPI operation to put the schema of a JSON-in-a-query-string
+// value, and a client that does not know the shape cannot call the endpoint at
+// all.
+func buildAggregatePath(spec *OpenAPISpec, m *ModelMeta, cfg *Config, collectionPath, tag string) {
+	limits := m.Config.QueryLimits
+	if limits.DefaultAggregateRows == 0 {
+		limits.DefaultAggregateRows = cfg.QueryLimits.DefaultAggregateRows
+	}
+	if limits.MaxAggregateRows == 0 {
+		limits.MaxAggregateRows = cfg.QueryLimits.MaxAggregateRows
+	}
+
+	// Only filterable/sortable columns may be aggregated — the same allow-list
+	// aggregateAllowedColumns enforces at request time. Naming them here is what
+	// stops a client discovering the rule one 400 at a time.
+	aggregatable := filterableFields(m, func(f FieldMeta) bool {
+		return f.Tags.Filterable || f.Tags.Sortable
+	})
+
+	desc := "The aggregation, as a URL-encoded JSON document. Shape: " +
+		`{"select": [{"op": "...", "field": "...", "as": "..."}], "group_by": ["..."], ` +
+		`"where": [{"field": "...", "operator": "...", "value": ...}], ` +
+		`"having": [{"alias": "...", "operator": "...", "value": ...}], ` +
+		`"order_by": [{"field": "...", "direction": "asc|desc"}], "limit": 0}. ` +
+		"op is one of count, count_distinct, sum, avg, min, max; omit field on count " +
+		"for COUNT(*). where takes the same operators as ?filter=. order_by names a " +
+		"select alias or a group_by column. " +
+		"Aggregatable fields: " + strings.Join(aggregatable, ", ")
+	if exprs := exposedAggregateExprs(m); len(exprs) > 0 {
+		desc += ". Registered expressions usable in select.field: " + strings.Join(exprs, ", ")
+	}
+	if limits.DefaultAggregateRows > 0 {
+		desc += fmt.Sprintf(". limit defaults to %d", limits.DefaultAggregateRows)
+		if limits.MaxAggregateRows > 0 {
+			desc += fmt.Sprintf(" and is clamped to %d", limits.MaxAggregateRows)
+		}
+	}
+
+	// A group row is one flat object of aggregate aliases and group_by columns.
+	// Its keys come from the request, so the schema cannot name them.
+	groupRow := &OASSchema{
+		Type: "object",
+		Description: "One group. Keys are the group_by columns and the aggregate " +
+			"aliases requested in ?aggregate=. Numeric aggregates are JSON numbers " +
+			"on every driver.",
+	}
+
+	spec.Paths[collectionPath+"/aggregate"] = PathItem{
+		Get: &OASOperation{
+			OperationID: "aggregate" + m.Name,
+			Summary:     "Grouped aggregation over " + m.Name + " records",
+			Description: fmt.Sprintf(
+				"Runs a validated GROUP BY over %s and returns the group rows. It dispatches "+
+					"as the list operation, so any Auth or tenancy middleware registered for "+
+					"OpList applies unchanged, and request ?filter= conditions — including "+
+					"middleware-injected force-filters — are AND-ed into the aggregate WHERE. "+
+					"Every referenced field must be filterable or sortable, so the endpoint "+
+					"cannot aggregate a hidden column. The aggregation travels in the query "+
+					"string rather than a body because a GET body is dropped by many proxies "+
+					"and cannot be sent by fetch() at all; a request body is not read.",
+				m.TableName),
+			Tags: []string{tag},
+			Parameters: append([]OASParameter{
+				{
+					Name: "aggregate", In: "query", Required: true,
+					Description: desc,
+					Schema:      &OASSchema{Type: "string"},
+				},
+			}, aggregateFilterParameter(m)...),
+			Responses: map[string]OASResponse{
+				"200": {
+					Description: "The group rows.",
+					Content: jsonContent(&OASSchema{
+						Type: "object",
+						Properties: map[string]*OASSchema{
+							"data": {Type: "array", Items: groupRow},
+						},
+					}),
+				},
+				"400": errResponse(
+					"Malformed ?aggregate=, an unknown op or operator, a field that is not " +
+						"filterable/sortable, or a body sent instead of ?aggregate="),
+				"504": errResponse("The aggregate query exceeded the configured timeout"),
+			},
+		},
+	}
+}
+
+// aggregateFilterParameter reuses the list ?filter= parameter, whose conditions
+// the aggregate folds into its own WHERE. Taking it from listParameters rather
+// than restating it is deliberate: the two must describe the same thing, and
+// they do that by being the same thing.
+func aggregateFilterParameter(m *ModelMeta) []OASParameter {
+	for _, p := range listParameters(m) {
+		if p.Name == "filter" {
+			p.Description = "Additional filter conditions, AND-ed into the aggregate " +
+				"WHERE alongside the spec's own `where`. " + p.Description
+			return []OASParameter{p}
+		}
+	}
+	return nil
+}
+
+// exposedAggregateExprs lists the registered expressions a client may name,
+// which is the Exposed ones alone — an unexposed expression is server-side only
+// and naming it here would advertise a 400.
+func exposedAggregateExprs(m *ModelMeta) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var out []string
+	for name, ce := range m.aggExprs {
+		if ce.exposed {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// buildRestorePath documents POST /{table}/{id}/restore
+// (ModelConfig.RestoreEnabled on a soft-delete model).
+func buildRestorePath(spec *OpenAPISpec, m *ModelMeta, itemPath, tag string, idParam OASParameter) {
+	spec.Paths[itemPath+"/restore"] = PathItem{
+		Post: &OASOperation{
+			OperationID: "restore" + m.Name,
+			Summary:     "Restore a soft-deleted " + m.Name,
+			Description: "Clears the delete marker so the row is live again. It dispatches as " +
+				"the update operation, so middleware registered for OpUpdate — auth, tenancy, " +
+				"force filters, audit — governs it; use ctx.IsRestore() where the two must be " +
+				"told apart. The request carries no body, and only the delete marker is " +
+				"written: updated_at is left alone, so a restore does not masquerade as an " +
+				"edit. Cascade is not undone — restoring a parent does not bring back children " +
+				"an onDelete:cascade removed.",
+			Tags:       []string{tag},
+			Parameters: []OASParameter{idParam},
+			Responses: map[string]OASResponse{
+				"200": {
+					Description: "The restored " + m.Name,
+					Content:     jsonContent(ref(m.Name + "Response")),
+				},
+				"404": errResponse(m.Name + " not found, or not deleted — there is nothing to restore"),
+				"501": errResponse("The configured database adapter cannot restore (it does not implement Restorer)"),
+			},
+		},
+	}
+}
+
+// buildPresignUploadPath documents POST /{table}/{field}/upload-url, mounted for
+// each mfx:"file,upload:presigned" field when storage is configured (R5).
+//
+// The path carries no {id} on purpose: the record need not exist, which is what
+// lets a create-time file field use it. The response's `key` is what the
+// completing create or update writes into the field.
+func buildPresignUploadPath(spec *OpenAPISpec, m *ModelMeta, f FieldMeta, collectionPath, tag string) {
+	jn := f.Tags.JSONName
+
+	sizeDesc := "Byte count the client intends to send. Checked before anything is minted."
+	if f.Tags.MaxSize > 0 {
+		sizeDesc += fmt.Sprintf(" Must not exceed %s.", formatByteSize(f.Tags.MaxSize))
+	}
+	ctDesc := "Media type the client will send. It is bound into the signature, so the " +
+		"upload cannot declare one type to obtain the URL and send another."
+	if len(f.Tags.Accept) > 0 {
+		ctDesc += " Accepted: " + strings.Join(f.Tags.Accept, ", ") + "."
+	}
+
+	spec.Paths[collectionPath+"/"+jn+"/upload-url"] = PathItem{
+		Post: &OASOperation{
+			OperationID: "presign" + m.Name + capitalize(jn) + "Upload",
+			Summary:     "Mint a presigned upload for " + m.Name + "." + jn,
+			Description: "Returns a one-shot authorisation to write one object straight to " +
+				"storage, so the bytes never pass through the app. Complete the upload by " +
+				"sending the returned `key` in the " + jn + " field of a create or update. " +
+				"The client never chooses the key: one that could would be able to aim its " +
+				"upload at another record's object. The route carries no record id, so it " +
+				"serves a create-time field as well as an update.",
+			Tags: []string{tag},
+			RequestBody: &OASRequestBody{
+				Required:    true,
+				Description: "What the client is about to upload",
+				Content: jsonContent(&OASSchema{
+					Type: "object",
+					Properties: map[string]*OASSchema{
+						"filename": {
+							Type:        "string",
+							Description: "Original filename. Sanitised into the storage key.",
+						},
+						"content_type": {Type: "string", Description: ctDesc},
+						"size":         {Type: "integer", Format: "int64", Description: sizeDesc},
+					},
+					Required: []string{"filename", "content_type"},
+				}),
+			},
+			Responses: map[string]OASResponse{
+				"200": {
+					Description: "The presigned upload authorisation",
+					Content: jsonContent(&OASSchema{
+						Type:       "object",
+						Properties: map[string]*OASSchema{"data": presignedUploadSchema(spec)},
+					}),
+				},
+				"413": errResponse("Declared size exceeds the field's max_size"),
+				"415": errResponse("Declared content_type is not in the field's accept list"),
+				"422": errResponse("filename or content_type missing"),
+				"501": errResponse(
+					"No storage is configured, or the backend cannot presign uploads"),
+			},
+		},
+	}
+}
+
+// presignedUploadSchema returns the reusable PresignedUpload schema, registering
+// it in components on first call. It mirrors the PresignedUpload struct.
+func presignedUploadSchema(spec *OpenAPISpec) *OASSchema {
+	if _, exists := spec.Components.Schemas["PresignedUpload"]; !exists {
+		spec.Components.Schemas["PresignedUpload"] = &OASSchema{
+			Type: "object",
+			Properties: map[string]*OASSchema{
+				"url": {Type: "string", Description: "Where the client sends the upload"},
+				"method": {
+					Type: "string",
+					Description: "HTTP method to use — POST for an S3 POST-policy form, " +
+						"PUT for a presigned PUT",
+					Enum: stringsToAny([]string{"POST", "PUT"}),
+				},
+				"fields": {
+					Type:        "object",
+					Description: "POST-policy form values to send before the file, in order",
+				},
+				"headers": {
+					Type:        "object",
+					Description: "Headers the client must set verbatim (presigned PUT only)",
+				},
+				"key": {
+					Type: "string",
+					Description: "Storage key the object lands at — send this back in the " +
+						"record's file field to complete the upload",
+				},
+				"expires_at": {
+					Type: "string", Format: "date-time",
+					Description: "When the authorisation stops working",
+				},
+				"max_size": {
+					Type: "integer", Format: "int64",
+					Description: "Size cap the signature pins, so a too-large file can be " +
+						"failed before the upload is spent",
+				},
+			},
+			Required: []string{"url", "method", "key", "expires_at"},
+		}
+	}
+	return ref("PresignedUpload")
 }
 
 func capitalize(s string) string {

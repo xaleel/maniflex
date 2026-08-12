@@ -2,7 +2,7 @@ module github.com/xaleel/maniflex/events/kafka
 
 go 1.25.12
 
-require github.com/xaleel/maniflex v0.5.0
+require github.com/xaleel/maniflex v0.5.1
 
 require github.com/segmentio/kafka-go v0.4.51
 

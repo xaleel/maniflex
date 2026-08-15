@@ -3,6 +3,8 @@ package maniflex
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 )
 
 // Rollup declares a denormalised aggregate column on a parent model that the
@@ -252,7 +254,7 @@ func (cr compiledRollup) middleware() MiddlewareFunc {
 			return nil
 		}
 
-		for parentID := range affected {
+		for _, parentID := range affected {
 			if err := cr.recompute(ctx, parentID); err != nil {
 				ctx.Abort(500, "ROLLUP_ERROR",
 					fmt.Sprintf("failed to recompute rollup %s.%s: %v",
@@ -267,7 +269,14 @@ func (cr compiledRollup) middleware() MiddlewareFunc {
 // affectedParents returns the ids of the parents whose rollup this write can
 // change: the pre-write parent (update, delete) and the body's parent (create,
 // update). On a re-parenting update the two differ and both are returned.
-func (cr compiledRollup) affectedParents(ctx *ServerContext) map[string]struct{} {
+//
+// The ids come back sorted, and that is load-bearing rather than cosmetic.
+// recompute takes each parent's row lock, so a write touching two of them must
+// take those locks in an order every transaction agrees on: Go randomises map
+// iteration, which would leave two re-parenting updates moving children in
+// opposite directions free to grab the two rows in opposite orders and deadlock.
+// Sorting gives every transaction the same order, so one simply waits.
+func (cr compiledRollup) affectedParents(ctx *ServerContext) []string {
 	out := make(map[string]struct{}, 2)
 
 	if (ctx.Operation == OpUpdate || ctx.Operation == OpDelete) && ctx.ResourceID != "" {
@@ -280,7 +289,7 @@ func (cr compiledRollup) affectedParents(ctx *ServerContext) map[string]struct{}
 			addParentID(out, v)
 		}
 	}
-	return out
+	return slices.Sorted(maps.Keys(out))
 }
 
 // addParentID adds a non-empty parent id to the set.
@@ -296,7 +305,36 @@ func addParentID(set map[string]struct{}, v any) {
 
 // recompute recomputes the aggregate over parentID's live children and writes it
 // to the parent's rollup column, through ctx.Tx when one is active.
+//
+// The parent's row lock is taken first, and the order is the whole point. This
+// was a plain SELECT-then-UPDATE, which on Postgres (read committed) loses
+// updates: two concurrent child writes for the same parent each aggregate
+// without seeing the other's uncommitted row, then the second UPDATE blocks on
+// the parent row lock and, once the first commits, overwrites it with its own
+// stale total. Nothing errors, so the drift is permanent and silent — in exactly
+// the counter a rollup exists to keep correct (audit H3).
+//
+// Locking before the aggregate closes that window: the second transaction waits
+// at the lock rather than at the UPDATE, so by the time it aggregates the first
+// has committed and its child row is counted. Locking after would be no use at
+// all — the rival still commits in the gap between the two statements.
+//
+// SQLite needs none of this and pays nothing for it: FindByIDForUpdate is a
+// plain SELECT there, because the write lock is the transaction's own, taken at
+// BEGIN by the _txlock=immediate connections db/sqlite opens.
 func (cr compiledRollup) recompute(ctx *ServerContext, parentID string) error {
+	// BackfillRollups runs on a NewBackground context with no transaction, and
+	// is documented to reconcile rather than lock — each parent is recomputed
+	// against the child rows as they stand, and a concurrent write is picked up
+	// by that write's own rollup. There is also no transaction to hold a lock
+	// in. On the write path the middleware has already refused a missing
+	// transaction with ROLLUP_NO_TX, so this is always taken.
+	if ctx.Tx != nil {
+		if _, err := ctx.LockForUpdate(cr.cfg.Parent, parentID); err != nil {
+			return err
+		}
+	}
+
 	where := make([]*FilterExpr, 0, 2+len(cr.where))
 	where = append(where, &FilterExpr{Field: cr.onDB, Operator: OpEq, Value: parentID})
 	if cr.softDelete != nil {

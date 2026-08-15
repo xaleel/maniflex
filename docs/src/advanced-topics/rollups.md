@@ -105,6 +105,29 @@ construction:
 Empty sets follow SQL: a sum or count of no children is `0`; a min/max/avg of no
 children is `null`.
 
+### Concurrent writes
+
+Recomputing from scratch is only correct if the recompute sees every committed
+sibling, so the parent's row is **locked before the aggregate runs**, not after.
+Two concurrent child writes for the same parent therefore queue: the second waits
+at the lock, and by the time it aggregates the first has committed and its row is
+counted.
+
+Locking after the aggregate — or not at all — would leave a window that loses
+updates on Postgres under its default `READ COMMITTED`. Both transactions would
+aggregate without seeing the other's uncommitted row, the second `UPDATE` would
+block on the parent row and then overwrite the first with its own stale total,
+and nothing would error. That drift is permanent, in exactly the counter a rollup
+exists to keep correct.
+
+A write that touches two parents — a re-parenting update recomputes both — takes
+their locks in a fixed order, so two such writes moving children in opposite
+directions wait for each other rather than deadlocking.
+
+SQLite is unaffected either way and pays nothing for the lock: its write lock is
+the transaction's own, taken at `BEGIN`, because `db/sqlite` opens write
+connections with `_txlock=immediate`.
+
 ## Transactions are required
 
 A rollup refuses a child write that is not in a transaction, with
@@ -131,9 +154,11 @@ independently, and a concurrent live write is simply picked up by its own rollup
 
 ## Cost and limits
 
-- Each child write costs one extra aggregate query plus one parent update, inside
-  the transaction. Concurrent children of the **same** parent serialise on that
-  parent's row, which is what keeps the total consistent.
+- Each child write costs one parent row lock, one aggregate query and one parent
+  update, inside the transaction. Concurrent children of the **same** parent
+  serialise on that parent's row from the lock until the transaction commits,
+  which is what keeps the total consistent — so a very hot parent bounds how fast
+  its children can be written.
 - The rollup fires on the generated CRUD routes and any write that runs the DB
   step. A write that bypasses the pipeline (a raw `INSERT`, a direct adapter
   call) does not trigger it — run `BackfillRollups` after such a bulk load.

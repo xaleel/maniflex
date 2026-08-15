@@ -15,8 +15,10 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
+	"runtime/debug"
 	"time"
 
 	"github.com/xaleel/maniflex"
@@ -107,6 +109,19 @@ type Subscription struct {
 	// DLQ is the event Type published after MaxRetry exhaustion.
 	// Empty string disables dead-lettering.
 	DLQ string
+
+	// OnPanic is called when Handler panics, once per panicking attempt, after
+	// the panic has been logged and before it is converted into the error that
+	// drives retry and dead-lettering. It receives the event being delivered,
+	// the recovered value, and the stack captured at the top of the unwind.
+	//
+	// A panic is contained so one bad event type cannot kill the process, which
+	// means it is otherwise visible only as a log line. This is the hook for
+	// counting or alerting on it. When nil the panic is only logged.
+	//
+	// It runs on the delivery goroutine, so it must not block; a panic inside
+	// the hook is not recovered again.
+	OnPanic func(e Event, recovered any, stack []byte)
 }
 
 // TxPublisher is an optional interface implemented by outbox.Bus.
@@ -138,7 +153,7 @@ type SQLExecer interface {
 func DeliverWithRetry(ctx context.Context, pub Publisher, sub Subscription, e Event) {
 	var lastErr error
 	for attempt := 0; attempt <= sub.MaxRetry; attempt++ {
-		err := sub.Handler(ctx, e)
+		err := deliverOnce(ctx, sub, e)
 		if err == nil {
 			return
 		}
@@ -196,6 +211,46 @@ func DeliverWithRetry(ctx context.Context, pub Publisher, sub Subscription, e Ev
 			slog.Int("attempts", sub.MaxRetry+1),
 			slog.String("error", errStr))
 	}
+}
+
+// deliverOnce calls sub.Handler for one attempt, converting a panic into an
+// error so a bug in application code fails that attempt rather than killing the
+// process.
+//
+// The handler used to be called bare, and every broker dispatches it on a
+// goroutine of its own with no recover of its own, so a panic unwound into the
+// Go runtime and took the binary down — one bad event type ending every other
+// subscription and the HTTP server with it. Jobs already held this line;
+// jobs.Worker.runHandler recovers and nacks (audit H2).
+//
+// A panic is a failed delivery, so the error it becomes flows into exactly the
+// retry and dead-lettering path a returned error takes: a handler that panics
+// once and then succeeds has delivered its event, and one that panics every
+// time exhausts its attempts and dead-letters.
+//
+// It is reported at ERROR with its stack on every panicking attempt, whether or
+// not a later retry succeeds. A returned error says a delivery failed; a panic
+// says the handler is broken, and the stack is the only record of where.
+func deliverOnce(ctx context.Context, sub Subscription, e Event) (err error) {
+	defer func() {
+		rec := recover()
+		if rec == nil {
+			return
+		}
+		// Captured at the top of the unwind — the goroutine stack shrinks as it
+		// unwinds any further.
+		stack := debug.Stack()
+		slog.Default().Error("events: handler panicked",
+			slog.String("type", e.Type),
+			slog.String("id", e.ID),
+			slog.String("panic", fmt.Sprintf("%+v", rec)),
+			slog.String("stack", string(stack)))
+		if sub.OnPanic != nil {
+			sub.OnPanic(e, rec, stack)
+		}
+		err = fmt.Errorf("events: handler panicked: %+v", rec)
+	}()
+	return sub.Handler(ctx, e)
 }
 
 // NewID returns a fresh event identifier in the format Publish assigns. Exported

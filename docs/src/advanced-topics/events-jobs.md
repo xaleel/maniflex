@@ -162,6 +162,38 @@ retrying it — `Dedupe` logs a warning naming the store when you wrap one.
 > for `SQLDedupeStore`, prune `event_dedupe` on whatever window you can
 > tolerate replaying.
 
+### Handler panics
+
+A panic in a `Subscription.Handler` is recovered and turned into a failed
+attempt, so it flows into the same retry and dead-letter path as a returned
+error: a handler that panics once and then succeeds has delivered its event, and
+one that panics every time exhausts its attempts and dead-letters. Without that
+the panic unwound into the broker's delivery goroutine, where nothing recovered
+it, and the Go runtime killed the process — one bad event type ending every
+other subscription and the HTTP server with it.
+
+Each panicking attempt is logged at ERROR with the event type, its id, and the
+stack. That is deliberately louder than a returned error, which only WARNs until
+its attempts run out: an error says a delivery failed, a panic says the handler
+is broken.
+
+`Subscription.OnPanic` is the programmatic signal, for counting or alerting
+without parsing logs:
+
+```go
+events.Subscription{
+    Patterns: []string{"invoice.*"},
+    Handler:  handleInvoice,
+    OnPanic: func(e events.Event, recovered any, stack []byte) {
+        metrics.Inc("event_handler_panic", "type", e.Type)
+    },
+}
+```
+
+It fires once per panicking attempt — three times for a handler that panics
+through `MaxRetry: 2` — and runs on the delivery goroutine, so it must not
+block. A panic inside the hook is not recovered again.
+
 ### Dead-lettering
 
 Set `Subscription.DLQ` (or `RelayOptions.DLQType` on the outbox relayer) to

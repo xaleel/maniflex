@@ -148,6 +148,30 @@ Custom middleware can opt into the same lifecycle via
 independent of the request (which has already returned) but IS cancelled
 when shutdown's deadline hits.
 
+### Panics on background goroutines
+
+A panic in a `ctx.GoBackground` task or a `server.Go` loop is recovered, logged
+through `Config.PanicLogger` with its stack, and contained — it does not take
+the process down. Without that, a panic in one audit write killed a server that
+was otherwise healthy, which is worse than the request panic the framework
+already recovers.
+
+Containment has a cost worth naming: a `server.Go` loop that panics is **gone
+until the next restart** while the process keeps serving HTTP. The ERROR record
+is the only signal, so treat it as one. `Config.OnBackgroundPanic` is the hook
+for acting on it programmatically:
+
+```go
+cfg.OnBackgroundPanic = func(recovered any, stack []byte) {
+    metrics.Inc("background_panic")
+    os.Exit(1) // let the orchestrator restart a half-dead process
+}
+```
+
+It runs on the panicking goroutine after the log is written, so it must not
+block, and a panic inside the hook is not recovered again. Leave it `nil` and
+the panic is only logged.
+
 ## Supervised services & lifecycle hooks
 
 Applications often own long-lived background components — a poller, cache

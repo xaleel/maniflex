@@ -106,6 +106,10 @@ func New(cfg Config) *Server {
 	steps.maxUpload = cfg.FilesConfig.MaxUploadBytes
 	steps.maxUploadMem = cfg.FilesConfig.MaxUploadMemory
 	steps.queryLimits = cfg.QueryLimits
+	// ApplyDefaults has already fallen PanicLogger back to Logger, so a caller
+	// who set only Logger still sees background panics.
+	steps.bg.panicLogger = cfg.PanicLogger
+	steps.bg.onPanic = cfg.OnBackgroundPanic
 
 	srv := &Server{
 		cfg:       cfg,
@@ -240,7 +244,7 @@ func (c *Server) sealedLocked() bool {
 //	    }
 //	})
 func (c *Server) Go(fn func(context.Context)) {
-	c.lifecycle.goRoutine(fn)
+	c.lifecycle.goRoutine(&c.cfg, fn)
 }
 
 // Start performs auto-migration (if enabled), starts the HTTP server, and

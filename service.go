@@ -87,8 +87,15 @@ func (l *lifecycle) add(s Service) {
 // goRoutine schedules fn on an application-scoped goroutine drained by stop.
 // fn receives the lifecycle context, which is cancelled when shutdown begins
 // so long-running loops exit on their own.
-func (l *lifecycle) goRoutine(fn func(context.Context)) {
-	l.wg.Go(func() { fn(l.ctx) })
+//
+// A panic in fn is contained and reported rather than killing the process; see
+// recoverBackgroundPanic. The loop itself is gone until the next restart, so
+// the ERROR is the signal an operator has to act on.
+func (l *lifecycle) goRoutine(cfg *Config, fn func(context.Context)) {
+	l.wg.Go(func() {
+		defer recoverBackgroundPanic(cfg.PanicLogger, cfg.OnBackgroundPanic, "Server.Go")
+		fn(l.ctx)
+	})
 }
 
 // start runs the OnStart hook then every service's Start in registration order.

@@ -3,7 +3,6 @@ package maniflex
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -62,16 +61,10 @@ func PanicRecoverer(logger *slog.Logger) func(http.Handler) http.Handler {
 					// shrinks as we unwind so we must grab it here.
 					stack := debug.Stack()
 
-					// Derive a string description of the panic value.
-					var panicStr string
-					switch v := rec.(type) {
-					case error:
-						panicStr = v.Error()
-					case string:
-						panicStr = v
-					default:
-						panicStr = fmt.Sprintf("%+v", v)
-					}
+					// Derive a string description of the panic value. Shared
+					// with the background-goroutine recovery so the two report
+					// the same panic identically.
+					panicStr := panicString(rec)
 
 					// Read the request ID set by chi's RequestID middleware.
 					reqID := chiMiddleware.GetReqID(r.Context())

@@ -703,6 +703,30 @@ type Config struct {
 	// to a different sink than the rest of the framework logs.
 	PanicLogger *slog.Logger
 
+	// OnBackgroundPanic is called after a panic on a framework-owned background
+	// goroutine — a ctx.GoBackground task or a Server.Go loop — has been
+	// recovered and logged. It receives the recovered value and the stack trace
+	// captured at the top of the unwind.
+	//
+	// Recovering those panics keeps one bad task from killing the process, but
+	// that trades a loud crash for silent degradation: a Server.Go loop that
+	// panics is gone until the next restart while the process keeps serving
+	// HTTP. This hook is how an application notices — alert, increment a
+	// metric, or exit deliberately so an orchestrator restarts a half-dead
+	// process:
+	//
+	//	cfg.OnBackgroundPanic = func(rec any, stack []byte) {
+	//	    metrics.Inc("background_panic")
+	//	    os.Exit(1) // let the orchestrator restart us
+	//	}
+	//
+	// It runs on the panicking goroutine, so it must not block or panic itself;
+	// a panic here is not recovered again. When nil (the default) the panic is
+	// only logged through PanicLogger. It is not called for a ctx.GoBackground
+	// on a ServerContext synthesised without server wiring (NewBackground),
+	// which has no Config to consult.
+	OnBackgroundPanic func(recovered any, stack []byte)
+
 	// Trace configures pipeline tracing for debug purposes.
 	// Set Trace.Enabled to true to activate all standard trace output (step
 	// enter/exit, timings, and abort call sites). Individual sub-flags allow

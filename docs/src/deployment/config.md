@@ -124,10 +124,14 @@ must change.
 |---|---|---|
 | `Logger` | `slog.Default()` | logger used for lifecycle, per-request, and adapter messages |
 | `PanicLogger` | falls back to `Logger` | sink for the panic recoverer's structured panic records |
+| `OnBackgroundPanic` | `nil` | called after a recovered background-goroutine panic — see [Graceful Shutdown](shutdown.md#background-writes) |
 | `Trace` | zero (off) | pipeline tracing — see below |
 
 `Logger` is used by `ctx.Logger()`, which adds `request_id`, `trace_id`, and
 `service` attributes per request. Route it to a JSON handler in production.
+
+`PanicLogger` receives panics from both the request path and the background
+goroutines the framework runs on your behalf, so one sink sees all of them.
 
 ## Pipeline tracing
 

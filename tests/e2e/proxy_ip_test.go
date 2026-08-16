@@ -82,3 +82,94 @@ func TestTrustProxyHeaders_OnHonoursXFF(t *testing.T) {
 		spoof(ip).AssertStatus(http.StatusCreated)
 	}
 }
+
+// ── S1: TrustedProxies ────────────────────────────────────────────────────────
+
+// proxyTargetServer builds the rate-limited fixture with a caller-supplied proxy
+// configuration, using testutil's Config escape hatch rather than growing an
+// option per field.
+func proxyTargetServer(t *testing.T, cfg func(*maniflex.Config)) *testutil.Server {
+	t.Helper()
+	return testutil.NewServer(t, testutil.Options{
+		Models:     []any{ProxyTarget{}},
+		Config:     cfg,
+		Middleware: func(srv *maniflex.Server) { ipKeyRateLimit(srv, 3) },
+	})
+}
+
+// S1. With an allowlist configured, a caller that is not one of the declared
+// proxies gets no say in its own address. The test client connects from
+// 127.0.0.1, which this allowlist deliberately excludes, so every forged header
+// is ignored and the requests share one bucket.
+func TestTrustedProxies_UntrustedPeerCannotSpoof(t *testing.T) {
+	s := proxyTargetServer(t, func(c *maniflex.Config) {
+		c.TrustedProxies = []string{"10.0.0.0/8"} // not the test client
+	})
+
+	spoof := func(ip string) *testutil.Response {
+		return s.POST("/proxy_targets", map[string]any{"payload": "x"},
+			map[string]string{"X-Forwarded-For": ip})
+	}
+
+	spoof("203.0.113.1").AssertStatus(http.StatusCreated)
+	spoof("203.0.113.2").AssertStatus(http.StatusCreated)
+	spoof("203.0.113.3").AssertStatus(http.StatusCreated)
+	// A fourth forged address must still be limited: the peer was never entitled
+	// to speak for anyone, so all four requests keyed on the same real address.
+	spoof("203.0.113.4").AssertStatus(http.StatusTooManyRequests)
+}
+
+// S1, the headline. The peer *is* a declared proxy, so its X-Forwarded-For is
+// believed — but only from the right. A real proxy appends the address it saw,
+// so the rightmost entry is the truth and anything to its left is whatever the
+// original client chose to send. Holding the rightmost fixed means every request
+// is really the same client, however the forged prefix varies.
+func TestTrustedProxies_ForgedLeftmostSharesTheRealClientsBucket(t *testing.T) {
+	s := proxyTargetServer(t, func(c *maniflex.Config) {
+		c.TrustedProxies = []string{"127.0.0.1/32", "::1/128"} // the test client
+	})
+
+	forge := func(forged string) *testutil.Response {
+		return s.POST("/proxy_targets", map[string]any{"payload": "x"},
+			map[string]string{"X-Forwarded-For": forged + ", 203.0.113.99"})
+	}
+
+	forge("6.6.6.1").AssertStatus(http.StatusCreated)
+	forge("6.6.6.2").AssertStatus(http.StatusCreated)
+	forge("6.6.6.3").AssertStatus(http.StatusCreated)
+	// All four resolved to 203.0.113.99 — the address the trusted proxy vouched
+	// for — so rotating the forged prefix bought no extra quota.
+	forge("6.6.6.4").AssertStatus(http.StatusTooManyRequests)
+}
+
+// The other half of the contract: the address a trusted proxy did vouch for is
+// honoured, so genuinely distinct clients still get distinct buckets.
+func TestTrustedProxies_ForwardedClientIsHonoured(t *testing.T) {
+	s := proxyTargetServer(t, func(c *maniflex.Config) {
+		c.TrustedProxies = []string{"127.0.0.1/32", "::1/128"}
+	})
+
+	for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3", "203.0.113.4"} {
+		s.POST("/proxy_targets", map[string]any{"payload": "x"},
+			map[string]string{"X-Forwarded-For": ip}).AssertStatus(http.StatusCreated)
+	}
+}
+
+// The hazard TrustedProxies exists to remove, pinned so it cannot be mistaken
+// for a fixed behaviour: with the bare TrustProxyHeaders flag the leftmost entry
+// is believed, so the same forgery that bought nothing above buys a fresh bucket
+// per request. This is why the flag warns at startup and fails under Strict.
+func TestTrustProxyHeaders_LegacyModeStillTrustsTheForgedLeftmost(t *testing.T) {
+	s := proxyTargetServer(t, func(c *maniflex.Config) {
+		c.TrustProxyHeaders = true // no allowlist
+	})
+
+	forge := func(forged string) *testutil.Response {
+		return s.POST("/proxy_targets", map[string]any{"payload": "x"},
+			map[string]string{"X-Forwarded-For": forged + ", 203.0.113.99"})
+	}
+
+	for _, f := range []string{"6.6.6.1", "6.6.6.2", "6.6.6.3", "6.6.6.4", "6.6.6.5"} {
+		forge(f).AssertStatus(http.StatusCreated)
+	}
+}

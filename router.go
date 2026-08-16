@@ -51,10 +51,25 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 	}
 
 	// Resolve the client address from proxy headers only when the operator has
-	// explicitly opted in. The proxy must replace both accepted headers; otherwise
-	// a client could spoof its address and defeat IP-keyed controls (SEC-5).
-	if cfg.TrustProxyHeaders {
-		r.Use(trustedProxyHeaders)
+	// explicitly opted in — with an allowlist (TrustedProxies), or with the bare
+	// flag, which trusts any peer and is warned about below (SEC-5 / audit S1).
+	if cfg.TrustProxyHeaders || len(cfg.TrustedProxies) > 0 {
+		resolver, err := newProxyResolver(cfg.TrustedProxies)
+		if err != nil {
+			// Unreachable: collectRouterIssues rejects an unparseable allowlist
+			// before the router is built. Panicking rather than falling back to
+			// the allowlist-free mode, which would silently downgrade the
+			// security control the operator asked for.
+			panic(fmt.Sprintf("maniflex: Config.TrustedProxies: %v", err))
+		}
+		if !resolver.enabled() {
+			l.Warn("Config.TrustProxyHeaders is set without Config.TrustedProxies, so "+
+				"X-Forwarded-For is believed from any peer; a client connecting directly "+
+				"can forge its own address, defeating per-IP rate limiting and poisoning "+
+				"audit records",
+				slog.String("hint", `set Config.TrustedProxies to your load balancer's CIDRs, e.g. []string{"10.0.0.0/8"}`))
+		}
+		r.Use(trustedProxyHeaders(resolver))
 	}
 	for i, mw := range cfg.HTTPMiddlewares {
 		if mw == nil {
@@ -153,8 +168,23 @@ func staticPrefix(cfg *Config) string {
 }
 
 func collectRouterIssues(cfg *Config, issues *issueList) {
+	// Not Strict-gated: an allowlist entry that does not parse is unambiguously a
+	// mistake, and one that is silently dropped narrows what is trusted — failing
+	// open on exactly the requests the entry was written to cover.
+	if _, err := newProxyResolver(cfg.TrustedProxies); err != nil {
+		issues.add("proxy", "Config.TrustedProxies: %s", err.Error())
+	}
+
 	if !cfg.Strict {
 		return
+	}
+	if cfg.TrustProxyHeaders && len(cfg.TrustedProxies) == 0 {
+		issues.addStrict("proxy",
+			"Config.TrustProxyHeaders is set without Config.TrustedProxies, so the leftmost "+
+				"X-Forwarded-For entry is believed from any peer — and that entry is the one a "+
+				"client controls, so a directly-connected caller can forge its address and "+
+				"escape per-IP rate limiting. Set Config.TrustedProxies to the CIDRs of the "+
+				"proxies in front of this server")
 	}
 	if cfg.FilesConfig.MountEndpoints &&
 		len(cfg.FilesConfig.BeforeMiddlewares) == 0 &&

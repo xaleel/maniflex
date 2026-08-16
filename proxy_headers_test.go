@@ -6,6 +6,9 @@ import (
 	"testing"
 )
 
+// The allowlist-free mode Config.TrustProxyHeaders has on its own. These are the
+// behaviours enabling that flag has always had, and audit S1 kept them: adding
+// Config.TrustedProxies must not change what an existing deployment does.
 func TestTrustedProxyHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -69,9 +72,11 @@ func TestTrustedProxyHeaders(t *testing.T) {
 			req.RemoteAddr = tc.remoteAddr
 
 			var got string
-			trustedProxyHeaders(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-				got = r.RemoteAddr
-			})).ServeHTTP(httptest.NewRecorder(), req)
+			// An empty resolver is the allowlist-free mode.
+			trustedProxyHeaders(proxyResolver{})(
+				http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+					got = r.RemoteAddr
+				})).ServeHTTP(httptest.NewRecorder(), req)
 
 			if got != tc.want {
 				t.Errorf("RemoteAddr = %q, want %q", got, tc.want)

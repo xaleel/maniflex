@@ -59,6 +59,30 @@ whole-request deadlines rather than idle deadlines:
 Set them when you know your request sizes and have no streaming endpoints. The
 header phase stays bounded by `ReadHeaderTimeout` either way.
 
+## Client address behind a proxy
+
+| Field | Default | Purpose |
+|---|---|---|
+| `TrustedProxies` | none | CIDRs or bare IPs whose forwarding headers may be believed; a non-empty list enables resolution on its own |
+| `TrustProxyHeaders` | `false` | legacy allowlist-free mode — believes the leftmost `X-Forwarded-For` from any peer |
+
+Off by default, the client address is the direct TCP peer, which a caller cannot
+forge. `db.RateLimit`, idempotency scoping, and read-audit records all key on it.
+
+```go
+Config{TrustedProxies: []string{"10.0.0.0/8"}}
+```
+
+Headers are believed only from those peers, and the `X-Forwarded-For` chain is
+walked **right-to-left** past them: a proxy appends the address it saw, so the
+rightmost entries come from infrastructure and the leftmost is whatever the
+client chose to send. A malformed entry anywhere in the chain fails closed —
+the request keeps its TCP peer — rather than being skipped past. An entry that
+does not parse is a startup error.
+
+`TrustProxyHeaders: true` with no list keeps the old behaviour for compatibility.
+It warns at startup and fails under `Strict`; prefer the allowlist.
+
 ## Limits
 
 | Field | Default | Purpose |

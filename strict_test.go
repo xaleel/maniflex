@@ -107,6 +107,60 @@ func TestCollectRouterIssues_StrictReportsBoth(t *testing.T) {
 	}
 }
 
+// Audit S1. TrustProxyHeaders on its own believes the leftmost X-Forwarded-For
+// entry from any peer, and that entry is the one a client controls. Defensible
+// behind a proxy that strips inbound headers, so it stays a warning by default
+// and Strict makes it fatal — the same treatment the open /files mount gets.
+func TestCollectRouterIssues_TrustProxyHeadersWithoutAllowlistIsStrictIssue(t *testing.T) {
+	cfg := Config{Strict: true, TrustProxyHeaders: true}
+	var issues issueList
+	collectRouterIssues(&cfg, &issues)
+
+	err := issues.err()
+	if err == nil {
+		t.Fatal("an allowlist-free TrustProxyHeaders must be reported under Strict")
+	}
+	if !strings.Contains(err.Error(), "TrustedProxies") {
+		t.Errorf("the issue should name the fix: %q", err.Error())
+	}
+}
+
+// Declaring the proxies is the fix, so it must silence the check.
+func TestCollectRouterIssues_TrustedProxiesSatisfiesTheStrictCheck(t *testing.T) {
+	for _, cfg := range []Config{
+		{Strict: true, TrustProxyHeaders: true, TrustedProxies: []string{"10.0.0.0/8"}},
+		// The list alone enables resolution; and with neither, it is off entirely.
+		{Strict: true, TrustedProxies: []string{"10.0.0.0/8"}},
+		{Strict: true},
+	} {
+		var issues issueList
+		collectRouterIssues(&cfg, &issues)
+		if err := issues.err(); err != nil {
+			t.Errorf("cfg %+v should be silent, got: %v", cfg, err)
+		}
+	}
+}
+
+// Not Strict-gated: an entry that does not parse is unambiguously a mistake, and
+// dropping it silently would narrow what is trusted — failing open on exactly
+// the requests it was written to cover.
+func TestCollectRouterIssues_InvalidTrustedProxyIsAlwaysAnError(t *testing.T) {
+	for _, bad := range []string{"not-an-ip", "10.0.0.0/99", ""} {
+		cfg := Config{TrustedProxies: []string{bad}} // Strict deliberately off
+		var issues issueList
+		collectRouterIssues(&cfg, &issues)
+
+		err := issues.err()
+		if err == nil {
+			t.Errorf("TrustedProxies %q must fail startup even without Strict", bad)
+			continue
+		}
+		if !strings.Contains(err.Error(), "TrustedProxies") {
+			t.Errorf("the issue should name the field: %q", err.Error())
+		}
+	}
+}
+
 // The /files check is about the standalone endpoints. A server that never
 // mounts them cannot have left them open.
 func TestCollectRouterIssues_UnmountedFilesIsNotAnIssue(t *testing.T) {

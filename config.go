@@ -625,7 +625,39 @@ type Config struct {
 	// inbound X-Forwarded-For and X-Real-IP values sent by the client. Turning it on
 	// while directly internet-facing lets an attacker spoof its address, defeating
 	// per-IP rate limits and poisoning audit logs (SEC-5).
+	//
+	// Prefer TrustedProxies, which enforces (b) for you instead of requiring the
+	// proxy to be configured for it. This flag on its own trusts the leftmost
+	// X-Forwarded-For entry from any peer, and that entry is the one a client
+	// controls; it is kept for compatibility and warned about at startup.
 	TrustProxyHeaders bool
+
+	// TrustedProxies lists the reverse proxies whose forwarding headers may be
+	// believed, as CIDRs or bare IP addresses:
+	//
+	//	TrustedProxies: []string{"10.0.0.0/8", "192.168.1.5"}
+	//
+	// A non-empty list turns proxy-header resolution on by itself —
+	// TrustProxyHeaders is not also required, so an allowlist can never be
+	// configured and silently ignored.
+	//
+	// It closes the hole TrustProxyHeaders leaves open on its own. Headers are
+	// honoured only when the TCP peer is one of these proxies, so a client
+	// connecting directly cannot forge its address at all. When it is, the
+	// X-Forwarded-For chain is walked right-to-left past the hops named here and
+	// the first address no trusted proxy vouched for is taken as the client.
+	// Direction is the whole point: a proxy appends the address it saw, so the
+	// rightmost entries come from infrastructure and the leftmost is whatever the
+	// original client chose to send.
+	//
+	// A malformed entry anywhere in the chain fails the request closed — it keeps
+	// its TCP peer as the client address — rather than being skipped over, which
+	// would let a client push the walk back onto its own forgery.
+	//
+	// An entry that does not parse is a startup error: a typo in a security
+	// allowlist would otherwise narrow what is trusted and fail open on exactly
+	// the requests it was written to cover.
+	TrustedProxies []string
 
 	// ServiceName identifies this service in logs, audit records, and outgoing
 	// requests. When set:

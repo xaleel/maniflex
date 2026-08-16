@@ -40,10 +40,14 @@ Framework outbound calls made through `integration.Caller` already have bounded
 timeout, retry, and response-size defaults. The validator cannot inspect
 arbitrary `http.Client` instances created by application code.
 
-`TrustProxyHeaders` remains off by default, which is safe. Setting it to true is
-the explicit assertion that the service is behind a trusted proxy which replaces
-client-supplied forwarding headers; production validation cannot inspect network
-topology.
+Proxy-header resolution remains off by default, which is safe. `TrustedProxies`
+names the peers whose forwarding headers may be believed, and the validator can
+check that the entries parse but not that they describe your actual topology.
+
+`TrustProxyHeaders: true` with no `TrustedProxies` is the legacy allowlist-free
+mode — the explicit assertion that the service sits behind a proxy which replaces
+client-supplied forwarding headers itself. It warns at startup and, because
+`Config.Strict` is required for production validation to pass, fails there.
 
 ## Declaring public model operations
 

@@ -105,13 +105,28 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
 
 - **Terminate TLS at the load balancer or reverse proxy**, not in the maniflex
   process. The framework is HTTP/1.1 + HTTP/2 ready.
-- **Set `Config.TrustProxyHeaders: true` only when behind a trusted proxy.**
-  It is **off by default**: the client IP is the direct TCP peer, so a caller
-  cannot forge it. When on, the IP is read from `X-Forwarded-For` / `X-Real-IP`,
-  which is only safe if the proxy strips both inbound headers and supplies its own
-  trusted value. Every IP-keyed feature — `db.RateLimit`, idempotency scoping, and
-  read-audit records — depends on this being correct; leaving it off while
-  directly internet-facing keeps per-IP limits and audit logs honest.
+- **Name your proxies in `Config.TrustedProxies`, not just `TrustProxyHeaders`.**
+  Proxy-header resolution is **off by default**: the client IP is the direct TCP
+  peer, so a caller cannot forge it. Every IP-keyed feature — `db.RateLimit`,
+  idempotency scoping, and read-audit records — depends on that address, so how
+  you turn resolution on matters:
+
+  ```go
+  Config{TrustedProxies: []string{"10.0.0.0/8"}} // your LB's CIDRs
+  ```
+
+  Headers are then believed only from those peers, and the `X-Forwarded-For`
+  chain is walked right-to-left past them — so the first address no trusted proxy
+  vouched for wins. A client connecting directly cannot forge its address at all,
+  and one behind the proxy cannot forge it either: a proxy *appends* the address
+  it saw, so anything the client wrote sits to the left of the truth and is
+  skipped. A non-empty list enables resolution on its own; `TrustProxyHeaders` is
+  not also required.
+
+  `TrustProxyHeaders: true` **without** a list is the legacy mode: the leftmost
+  `X-Forwarded-For` entry, from any peer — which is the entry a client controls.
+  It is safe only if the proxy strips both inbound headers itself. It warns at
+  startup and fails under `Config.Strict`.
 - **Set `Config.PathPrefix` to a non-default value** if the proxy mounts the
   API at a custom path. Don't rewrite paths inside the application.
 

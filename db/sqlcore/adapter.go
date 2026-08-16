@@ -2310,7 +2310,8 @@ func forcedScope(qp *maniflex.QueryParams) []*maniflex.FilterExpr {
 }
 
 // includeScopeCond renders the part of a request's scope that also applies to an
-// included model: every forced filter whose column that model actually has.
+// included model: every forced filter whose column that model actually has,
+// under either the DB or the json spelling.
 //
 // Includes used to be fetched with the soft-delete condition and nothing else,
 // so a tenancy filter constrained the primary read and stopped at the relation
@@ -2341,7 +2342,14 @@ func includeScopeCond(relMeta *maniflex.ModelMeta, scope []*maniflex.FilterExpr,
 		if f.IsNested || f.IsLocale {
 			continue
 		}
-		if relMeta.FieldByDBName(f.Field) == nil {
+		// ResolveFilterField, not FieldByDBName: filterCond resolves a filter's
+		// field by either spelling, so gating on the DB name alone dropped a
+		// scope written with the json one — it constrained the primary read and
+		// silently stopped at the relation boundary, reopening MS-9 for that
+		// spelling (audit O2). db.Tenancy hands its field to ctx.SetField, whose
+		// parameter is the json name, so the json spelling is not an unusual way
+		// to declare the scope that leaked.
+		if relMeta.ResolveFilterField(f.Field) == nil {
 			continue
 		}
 		applicable = append(applicable, f)

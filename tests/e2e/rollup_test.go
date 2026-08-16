@@ -7,7 +7,9 @@ package e2e
 import (
 	"context"
 	"net/http"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/xaleel/maniflex"
 	"github.com/xaleel/maniflex/tests/e2e/testutil"
@@ -88,6 +90,136 @@ func intField(t *testing.T, srv *testutil.Server, orderID, field string) int {
 		t.Fatalf("%s is not numeric: %#v", field, v)
 	}
 	return int(f)
+}
+
+// ── concurrency ─────────────────────────────────────────────────────────────
+
+// rendezvous releases every participant once n of them have arrived, or after
+// timeout if they never all do (so a failed request cannot hang the suite).
+type rendezvous struct {
+	mu      sync.Mutex
+	arrived int
+	n       int
+	release chan struct{}
+}
+
+func newRendezvous(n int) *rendezvous {
+	return &rendezvous{n: n, release: make(chan struct{})}
+}
+
+func (r *rendezvous) wait(timeout time.Duration) {
+	r.mu.Lock()
+	r.arrived++
+	if r.arrived == r.n {
+		close(r.release)
+	}
+	r.mu.Unlock()
+	select {
+	case <-r.release:
+	case <-time.After(timeout):
+	}
+}
+
+// concurrentRollupServer is rollupServer plus a DB-step middleware that holds
+// every child write open until `writers` of them have inserted their row.
+//
+// That barrier is what makes the race deterministic instead of a matter of
+// timing. It is registered *after* the rollups, so it runs inside their next():
+// the child INSERT has happened, the transaction has not committed, and the
+// recompute has not started. Releasing both writers there puts them in exactly
+// the interleaving the audit describes — two uncommitted sibling rows, about to
+// be aggregated by transactions that cannot see each other's.
+func concurrentRollupServer(t *testing.T, rv *rendezvous) *testutil.Server {
+	t.Helper()
+	return testutil.NewServer(t, testutil.Options{
+		Models: []any{testutil.Order{}, testutil.OrderPayment{}},
+		Middleware: func(s *maniflex.Server) {
+			s.Pipeline.Service.Register(
+				maniflex.WithTransaction(nil),
+				maniflex.ForModel("OrderPayment"),
+				maniflex.ForOperation(maniflex.OpCreate),
+			)
+			s.MustRegisterRollup(maniflex.Rollup{
+				Parent: "Order", ParentField: "paid_amount", Op: maniflex.AggSum,
+				Child: "OrderPayment", ChildField: "amount", On: "order_id",
+			})
+			s.MustRegisterRollup(maniflex.Rollup{
+				Parent: "Order", ParentField: "payment_count", Op: maniflex.AggCount,
+				Child: "OrderPayment", On: "order_id",
+			})
+			s.Pipeline.DB.Register(
+				func(ctx *maniflex.ServerContext, next func() error) error {
+					if err := next(); err != nil {
+						return err
+					}
+					rv.wait(10 * time.Second)
+					return nil
+				},
+				maniflex.ForModel("OrderPayment"),
+				maniflex.ForOperation(maniflex.OpCreate),
+			)
+		},
+	})
+}
+
+// H3. The recompute was a SELECT-then-UPDATE inside the child write's
+// transaction. On Postgres under its default READ COMMITTED that loses updates:
+// concurrent children of one parent each aggregate without seeing the others'
+// uncommitted rows, and the last UPDATE to land overwrites the rest with its own
+// stale total. Nothing errors, so the drift is permanent and silent.
+//
+// Locking the parent row before the aggregate is what closes it — each writer
+// waits at the lock, so by the time it aggregates its predecessor has committed
+// and that row is counted.
+//
+// Postgres-only by nature: SQLite serialises write transactions at BEGIN, since
+// db/sqlite opens write connections with _txlock=immediate, so there is no
+// window there to lose an update in.
+func TestRollup_ConcurrentChildWritesDoNotLoseUpdates(t *testing.T) {
+	if !testutil.IsPostgres() {
+		t.Skip("the lost-update race is specific to Postgres READ COMMITTED; " +
+			"SQLite serialises write transactions at BEGIN")
+	}
+
+	const (
+		writers = 2
+		amount  = 10
+	)
+
+	rv := newRendezvous(writers)
+	srv := concurrentRollupServer(t, rv)
+	orderID := newOrder(t, srv, "concurrent-payments")
+
+	var wg sync.WaitGroup
+	statuses := make([]int, writers)
+	bodies := make([][]byte, writers)
+
+	for i := range writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			resp := srv.POST("/order_payments", map[string]any{
+				"order_id": orderID, "amount": amount,
+			})
+			statuses[i], bodies[i] = resp.Status, resp.Body
+		}()
+	}
+	wg.Wait()
+
+	for i, st := range statuses {
+		if st != http.StatusCreated {
+			t.Fatalf("writer %d: status %d, want 201\nbody: %s", i, st, bodies[i])
+		}
+	}
+
+	if got, want := intField(t, srv, orderID, "paid_amount"), writers*amount; got != want {
+		t.Errorf("paid_amount = %d, want %d — %d concurrent write(s) were lost from the "+
+			"rollup, which is the silent drift it exists to prevent", got, want, (want-got)/amount)
+	}
+	if got := intField(t, srv, orderID, "payment_count"); got != writers {
+		t.Errorf("payment_count = %d, want %d — the count rollup lost concurrent writes",
+			got, writers)
+	}
 }
 
 // ── maintenance on child writes ─────────────────────────────────────────────

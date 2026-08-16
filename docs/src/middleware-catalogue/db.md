@@ -41,10 +41,24 @@ That read is the only cost, and only a request carrying a forced filter pays it:
 a write with nothing scoped goes straight to the adapter as before. A client's
 own `?filter=` never constrains a write — only filters the server imposed do.
 
+The field takes **either spelling** — the DB column name or the json name — and
+resolves to the same column on every path the scope reaches: the query, the
+write-back read, the value stamped onto the row, and the relation includes. Pick
+one and stay with it; a scope that resolved on some paths and not others would be
+a scope with a hole in it, which is what audit O2 found when the include gate
+accepted only the DB spelling.
+
 If you build a `maniflex.FilterExpr` by hand and it expresses **who may touch the
 row** rather than **which rows were asked for**, set `Forced: true` on it; that is
 what carries it onto updates and deletes. `ForceFilter` and `Tenancy` set it for
 you.
+
+Forced filters also travel into `?include=`: a related model carrying the scope
+column is fetched through it, so a child a caller planted under another tenant's
+parent by setting its foreign key does not surface in that tenant's include. A
+related model with no such column — a shared lookup table like currencies or
+categories — is deliberately left unscoped, since it is not partitioned and has
+nothing to scope by.
 
 `Forced: true` also lets a scope be imposed **before** the DB step. The
 Deserialize step rebuilds `ctx.Query` from the request, which discards a plain

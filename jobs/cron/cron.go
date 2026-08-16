@@ -71,6 +71,7 @@ type Scheduler struct {
 	locker  Locker
 
 	mu      sync.Mutex
+	started bool
 	stopped bool
 	cancel  context.CancelFunc
 	wg      sync.WaitGroup
@@ -95,12 +96,20 @@ func (s *Scheduler) Add(e Entry) {
 
 // Start launches one ticker goroutine per entry. It returns immediately;
 // use Stop to halt all tickers.
+//
+// Start is idempotent: a second call while the Scheduler is already running (or
+// after Stop) is a no-op, as scheduled.Runner.Start is. Without the guard a
+// second call would spawn a duplicate ticker per entry — every job firing twice
+// per interval — and overwrite the first generation's cancel func. Stop would
+// then cancel only the second generation and block forever on the WaitGroup
+// waiting for the first: a shutdown hang, not merely a leak.
 func (s *Scheduler) Start(ctx context.Context) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.stopped {
+	if s.started || s.stopped {
 		return
 	}
+	s.started = true
 	tickCtx, cancel := context.WithCancel(ctx)
 	s.cancel = cancel
 

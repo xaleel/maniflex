@@ -300,6 +300,89 @@ func (l *denyLocker) count() int {
 	return l.n
 }
 
+// ── idempotent Start ──────────────────────────────────────────────────────────
+
+// A second Start used to overwrite s.cancel, leaving the first generation of
+// tickers with no reachable cancel func. Stop then cancelled only the second
+// generation and blocked forever on the WaitGroup waiting for the first — a
+// shutdown hang, not just a leak. The hour-long interval never fires, so this
+// measures lifecycle alone.
+func TestScheduler_StopReturnsAfterASecondStart(t *testing.T) {
+	q := &recordQueue{}
+	s := New(q, quietLogger())
+	s.Add(Entry{Every: time.Hour, Job: jobs.Job{Type: "report"}})
+
+	s.Start(context.Background())
+	s.Start(context.Background())
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		s.Stop()
+	}()
+
+	select {
+	case <-stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Stop never returned: a second Start orphaned the first generation of tickers")
+	}
+}
+
+// The second Start must spawn nothing of its own. Starting under a second
+// context makes that observable: cancelling the context the Scheduler was
+// actually started with has to silence it completely. A generation running
+// under some other context would keep firing forever.
+func TestScheduler_SecondStartSpawnsNoTickersOfItsOwn(t *testing.T) {
+	q := &recordQueue{}
+	s := New(q, quietLogger())
+	s.Add(Entry{Every: 2 * time.Millisecond, Job: jobs.Job{Type: "report"}})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	s.Start(ctx)
+	s.Start(context.Background()) // must be a no-op
+
+	time.Sleep(40 * time.Millisecond)
+	if q.count() == 0 {
+		t.Fatal("the scheduler never fired — the test would pass against a dead ticker")
+	}
+
+	cancel()
+	time.Sleep(20 * time.Millisecond) // let anything mid-tick land
+	settled := q.count()
+	time.Sleep(60 * time.Millisecond) // ~30 further intervals
+
+	if got := q.count(); got != settled {
+		t.Fatalf("fired %d more times after the started context was cancelled; "+
+			"a second Start left a generation running under another context", got-settled)
+	}
+	s.Stop()
+}
+
+// Restart after Stop stays refused: the stopped flag is terminal, so a Scheduler
+// is not reusable. Pinning it here alongside the double-Start guard keeps the
+// whole Start contract in one place.
+func TestScheduler_StartAfterStopStaysStopped(t *testing.T) {
+	q := &recordQueue{}
+	s := New(q, quietLogger())
+	s.Add(Entry{Every: 2 * time.Millisecond, Job: jobs.Job{Type: "report"}})
+
+	s.Start(context.Background())
+	time.Sleep(30 * time.Millisecond)
+	s.Stop()
+
+	before := q.count()
+	if before == 0 {
+		t.Fatal("the scheduler never fired before Stop — the test would pass against a dead ticker")
+	}
+
+	s.Start(context.Background())
+	time.Sleep(60 * time.Millisecond)
+
+	if got := q.count(); got != before {
+		t.Fatalf("fired %d more times after being restarted post-Stop", got-before)
+	}
+}
+
 var (
 	_ jobs.Queue = (*recordQueue)(nil)
 	_ Locker     = (*memLocker)(nil)

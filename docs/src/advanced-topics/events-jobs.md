@@ -777,6 +777,10 @@ cr.Add(cron.Entry{
 cr.Start(ctx) // returns immediately; cr.Stop() halts the tickers
 ```
 
+`Start` is idempotent — a duplicate call is a safe no-op, never a second set of
+tickers. `Add` must come before it: entries registered after `Start` are not
+scheduled. A `Scheduler` is not reusable, so `Start` after `Stop` stays stopped.
+
 #### Running cron on more than one replica
 
 A `Scheduler` ticks in its own process and knows nothing about its peers, so

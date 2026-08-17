@@ -50,9 +50,8 @@ type Post struct {
 
 func main() {
 	server := maniflex.New(maniflex.Config{
-		Port:        8080,
-		PathPrefix:  "/api",
-		AutoMigrate: true,
+		Port:       8080,
+		PathPrefix: "/api",
 	})
 
 	// Register models before opening the DB - the adapter needs the registry
@@ -71,6 +70,10 @@ func main() {
 	log.Fatal(server.Start())
 }
 ```
+
+`Start` creates the table for each registered model; set `DisableAutoMigrate:
+true` when migrations are managed out of band. This example is compiled as
+[`examples/quickstart`](examples/quickstart/main.go) — edit the two together.
 
 `Post{}` now has a full set of routes under `/api`:
 

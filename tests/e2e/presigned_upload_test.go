@@ -1,7 +1,9 @@
 package e2e
 
-// R5 — mfx:"file,upload:presigned" mints a one-shot authorisation so a client
-// uploads straight to storage, and the record then names only the key.
+// R5 — mfx:"file,upload:presigned" mints a short-lived authorisation so a
+// client uploads straight to storage, and the record then names only the key.
+// It covers one key rather than one write: nothing spends a signature, so the
+// holder may rewrite that object until it expires (audit S6).
 //
 // Two halves, and the second one already existed:
 //

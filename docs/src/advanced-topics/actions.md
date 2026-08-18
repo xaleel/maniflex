@@ -125,6 +125,35 @@ func refundOrder(ctx *maniflex.ServerContext) error {
 `ctx.BindJSON` enforces the same 4 MB body limit as the default Deserialize
 step. `ctx.URLParam` and `ctx.QueryParam` read URL and query parameters.
 
+**Unknown fields are ignored, not rejected.** `BindJSON` is `encoding/json`, so a
+key your struct has no field for is silently dropped — the stdlib default, and
+the same thing every Go HTTP handler does. It is worth knowing because the model
+write path is *not* like this: a create or update against a registered model
+knows the full column set, so `Config.Strict` can reject a body naming a field
+that does not exist, and `body.StripUnknownFields()` can drop them deliberately.
+An action's request struct is ordinary Go with no registry behind it, so neither
+applies and a client typo — `{"amonut": 500}` — arrives as a zero value rather
+than an error.
+
+Where that matters, decode strictly yourself:
+
+```go
+raw, err := ctx.EnsureRawBody()
+if err != nil {
+    return nil // EnsureRawBody already called ctx.Abort
+}
+dec := json.NewDecoder(bytes.NewReader(raw))
+dec.DisallowUnknownFields()
+if err := dec.Decode(&req); err != nil {
+    ctx.Abort(http.StatusBadRequest, "INVALID_JSON", err.Error())
+    return nil
+}
+```
+
+`EnsureRawBody` reads under the same size limit, caches on `ctx.RawBody`, and
+restores the request body — so it replaces `BindJSON` here rather than following
+it.
+
 > **Multipart uploads:** `ctx.Files` is populated by the Deserialize step, which
 > actions skip — so it is **always empty** inside an action. To accept a file
 > upload in an action, parse the request yourself:

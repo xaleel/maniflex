@@ -409,6 +409,12 @@ checked first on unsafe methods. Failures abort with a `403` carrying one of
 From a login Action, hand the token to the SPA with `auth.IssueCSRFCookie(w,
 opts)` (double-submit) or `auth.SignedCSRFToken(sessionID, secret)` (signed mode).
 
+> **The admin panel does not use this middleware.** It ships its own
+> always-on double-submit check over its own forms — see
+> [Admin Panel → CSRF protection](../deployment/admin.md#csrf-protection).
+> Registering `auth.CSRF` neither configures nor disables it, and leaving
+> `auth.CSRF` off does not leave the panel unprotected.
+
 ## `ReadAudit`
 
 Writes a structured audit record after every successful read or list — the

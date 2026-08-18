@@ -159,6 +159,11 @@ API. The cookie is `HttpOnly` and `SameSite=Lax`, and is marked `Secure` when th
 panel is served over TLS — directly or behind a proxy that sets
 `X-Forwarded-Proto: https`. There is nothing to configure — it is always on.
 
+This is the panel's own check, over the panel's own forms. It is separate from
+the [`auth.CSRF` middleware](../middleware-catalogue/auth.md#csrf), which guards
+your API's routes and is what you reach for when browsers authenticate to the
+API with cookies. Neither one configures the other.
+
 ## Model whitelist
 
 To show only a subset of registered models:

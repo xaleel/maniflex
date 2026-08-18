@@ -36,6 +36,10 @@ func main() {
 	server := maniflex.New(maniflex.Config{
 		Port:       8080,
 		PathPrefix: "/api",
+		// The spec is always generated; serving it is an explicit choice, so
+		// its zero value mounts nothing. Public is right for a local
+		// quickstart — put Middleware in front of it anywhere else.
+		Documentation: maniflex.DocumentationConfig{Public: true},
 	})
 
 	// Register models before opening the DB - the adapter needs the registry

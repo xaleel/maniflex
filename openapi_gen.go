@@ -741,8 +741,10 @@ func buildPresignUploadPath(spec *OpenAPISpec, m *ModelMeta, f FieldMeta, collec
 		Post: &OASOperation{
 			OperationID: "presign" + m.Name + capitalize(jn) + "Upload",
 			Summary:     "Mint a presigned upload for " + m.Name + "." + jn,
-			Description: "Returns a one-shot authorisation to write one object straight to " +
-				"storage, so the bytes never pass through the app. Complete the upload by " +
+			Description: "Returns a short-lived authorisation to write one object straight to " +
+				"storage, so the bytes never pass through the app. The authorisation covers " +
+				"one key rather than one write: it stays valid until it expires, so treat " +
+				"the object as rewritable by whoever holds it until then. Complete the upload by " +
 				"sending the returned `key` in the " + jn + " field of a create or update. " +
 				"The client never chooses the key: one that could would be able to aim its " +
 				"upload at another record's object. The route carries no record id, so it " +

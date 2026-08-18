@@ -496,6 +496,26 @@ backend enforces, and the record is what makes an object real.
 and returned in the response. A client that could name the key could aim its
 upload at another record's object.
 
+**The authorisation covers one key, not one write.** It is short-lived, not
+one-shot. Neither an S3 POST policy nor a presigned PUT can be *spent* — the
+storage backend verifies a signature, and a signature that verifies once
+verifies every time until it expires. So whoever holds the response from ① may
+repeat ② as often as they like inside the window — including after ③ has stored
+the key, overwriting the bytes a record already points at. No backend can close
+this; it is a property of signed URLs rather than of this framework.
+
+Three things bound it. The key is minted server-side, so a replay can only
+rewrite *that* object and cannot reach another. The mint route is authenticated,
+so the window opens only for callers you already trust with the write. And
+`expires_at` in the response is the hard edge — set by `FilesConfig.SignedURLTTL`,
+default **1 hour**.
+
+An hour is generous for a capability that stays live after the upload finishes.
+Shorten it if your clients upload promptly — but note the same knob bounds signed
+*downloads*, so the two cannot be tuned apart; pick the shorter requirement. If
+the bytes must be immutable once written, verify them at ③ and copy the object to
+a key the client was never authorised for.
+
 **Auth applies.** The mint route runs `Auth → handler → Response`, so whatever
 gates the model gates the minting — granting the right to write an object is not
 something to leave unauthenticated. Note the operation is

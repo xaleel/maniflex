@@ -348,9 +348,40 @@ broker load doesn't scale with connection count.
 `Hub.Shutdown(ctx)` stops accepting connections, signals every client to close
 (a `1001 Going Away` frame to WebSocket clients), and waits for every connection
 goroutine — both WebSocket pumps **and** SSE handlers — to drain, until `ctx`
-expires. It then cancels the bus subscription. Call it alongside
-`*http.Server.Shutdown` from the same signal handler — the hub is mounted by
-your code, so it isn't part of `server.Shutdown`.
+expires. It then cancels the bus subscription.
+
+The hub is mounted by your code, so it is not part of `server.Shutdown` by
+itself. Rather than calling it from your own signal handler, hand it to
+`Server.AddService` and let the server's lifecycle own it:
+
+```go
+// hubService folds Hub.Shutdown into the server's own drain.
+type hubService struct{ hub *realtime.Hub }
+
+// Start is a no-op: the hub is already serving by the time it is registered.
+func (s hubService) Start(context.Context) error { return nil }
+
+func (s hubService) Stop(ctx context.Context) error { return s.hub.Shutdown(ctx) }
+```
+
+Then register it before starting the server:
+
+```go
+server.AddService(hubService{hub})
+```
+
+Services stop in reverse registration order after the HTTP listener has drained,
+and `Stop` receives what remains of the one shutdown budget — so the hub's drain
+is bounded by the same deadline as everything else, instead of racing it from a
+separate goroutine.
+
+> **Do not use `maniflex.ServiceFunc` for this.** Its `Stop` is a deliberate
+> no-op — it adapts a function that winds itself down on `ctx` cancellation — so
+> the hub would never be told to shut down, and connections would be cut by
+> process exit rather than a `1001 Going Away`. The hub needs a `Stop`, so it
+> needs the full interface.
+
+`AddService` must be called before `Start`.
 
 Every SSE write carries a bounded deadline, so a client that has stopped reading
 cannot pin its handler goroutine — and therefore cannot hold `Shutdown` open —

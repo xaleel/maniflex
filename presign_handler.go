@@ -7,8 +7,12 @@ package maniflex
 // handler runs, and the in-memory buffer defaults to the same 32 MB as the body
 // cap, so nothing spools to disk either. A 60 MB video therefore costs 60 MB of
 // server memory and two hops of bandwidth to store one object. Adding
-// upload:presigned to the field mints a one-shot authorisation instead, and the
-// bytes go straight to the bucket.
+// upload:presigned to the field mints a short-lived authorisation instead, and
+// the bytes go straight to the bucket.
+//
+// Short-lived, not one-shot: neither an S3 POST policy nor a presigned PUT can
+// be spent, so the authorisation stays usable until it expires and whoever holds
+// it may write that key more than once. presignTTL is the whole of the bound.
 //
 // The route carries no record id, deliberately. The obvious shape —
 // POST /{model}/{id}/{field}/upload-url — cannot serve a create-time file field

@@ -9,7 +9,7 @@ pagination, relations, soft-delete, and a composable middleware pipeline, all de
 at runtime by reflection. No code generation.
 
 Define a struct, register it, point it at a database. You get CRUD routes, query
-parsing, validation, an OpenAPI spec, and relation loading for free.
+parsing, validation, relation loading, and a generated OpenAPI spec for free.
 
 ## Features
 
@@ -52,6 +52,8 @@ func main() {
 	server := maniflex.New(maniflex.Config{
 		Port:       8080,
 		PathPrefix: "/api",
+		// The spec is always generated, this config enables serving it
+		Documentation: maniflex.DocumentationConfig{Public: true},
 	})
 
 	// Register models before opening the DB - the adapter needs the registry
@@ -80,6 +82,7 @@ true` when migrations are managed out of band. This example is compiled as
 ```bash
 curl -X POST localhost:8080/api/posts -d '{"title":"Hello","body":"...","status":"draft"}'
 curl 'localhost:8080/api/posts?filter=status:eq:published&sort=created_at:desc&page=1&limit=10'
+curl localhost:8080/api/openapi.json
 ```
 
 ## Documentation

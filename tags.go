@@ -22,8 +22,9 @@ const (
 // value-carrying option rather than a bare "presigned" so the tag says what it
 // configures, and so each upload strategy has its own spelling.
 //
-//   - presigned: mint a one-shot URL; bytes go client→storage, never touching
-//     the app process.
+//   - presigned: mint a short-lived URL; bytes go client→storage, never
+//     touching the app process. It authorises one key rather than one write —
+//     see PresignedUpload.
 //   - stream: multipart through the app, but piped straight to storage as it
 //     arrives rather than buffered to disk first.
 const (

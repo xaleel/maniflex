@@ -162,6 +162,50 @@ if errors.As(err, &ec) {
 }
 ```
 
+## Every exported sentinel
+
+`ErrNotFound` and `ErrConstraint` above are the two you match in a handler. The
+rest are listed here because they are part of the compatibility contract: a
+sentinel keeps its identity for all of v1, so `errors.Is` against any of them
+goes on working. Match on these values, never on message text — the text is
+explicitly **not** covered (see
+[Stability & Compatibility](../reference/compatibility.md)).
+
+Core module, `github.com/xaleel/maniflex`:
+
+| Sentinel | Returned when |
+|---|---|
+| `ErrNotFound` | the row does not exist, or is soft-deleted |
+| `*ErrConstraint` | a unique or check constraint was violated — a type, not a value; use `errors.As` |
+| `ErrNoAdapter` | `BeginTx` is called with no database adapter configured |
+| `ErrRawNotSupportedInTx` | `RawQuery`/`RawExec` run inside a transaction whose `Tx` cannot execute raw SQL. Refused rather than silently run outside the transaction |
+| `ErrIncrementOutOfBounds` | `Increment` would take a column past its `mfx:"min:"`/`"max:"` bound. Distinct from `ErrNotFound`: only this one may succeed on a retry |
+| `ErrIncrementNotSupported` | the adapter does not implement `Incrementer` |
+| `ErrFileNotFound` | `FileStorage.Retrieve` is given a key that does not exist |
+| `ErrPresignUnsupported` | the storage backend cannot mint a presigned upload; the upload-url route answers `501` |
+| `ErrAlreadyStarted` | a start method is called while the server already has an active startup owner |
+| `ErrStopped` | a start method is called after the server stopped or failed. A server is not restartable — build a new one |
+| `ErrRegistrationClosed` | a route or spec contributor is registered after `Start`/`Handler` sealed the server |
+
+Subpackages:
+
+| Sentinel | Package | Returned when |
+|---|---|---|
+| `ErrBusClosed` | `events/inproc` | `Publish` after `Close` — the event was never accepted |
+| `ErrQueueFull` | `events/inproc` | a matching subscription's queue is full. The bus is behind; the caller still holds the event |
+| `ErrDrainIncomplete` | `events/inproc` | `Close` gave up with deliveries still running |
+| `ErrUnauthorized` | `realtime` | an `Authenticator` rejected a connection — a type, carrying `Reason` |
+| `ErrResponseTooLarge` | `pkg/integration` | an upstream response exceeded `MaxResponseBytes` |
+| `ErrCrossOriginRedirect` | `pkg/integration` | the redirect policy refused to forward the request, and its headers, to another origin |
+| `ErrHTTPStatus` | `pkg/integration` | the upstream answered non-2xx — a type, carrying the status and decoded body |
+| `ErrWebhookReplay` | `pkg/integration` | a signed webhook was already accepted; the receiver maps it to `409` |
+| `ErrImbalanced` | `pkg/ledger` | debits do not equal credits for some currency in the entry |
+| `ErrNoLines` | `pkg/ledger` | `Post` was called with fewer than two lines |
+| `ErrCurrencyMismatch` | `pkg/money` | `Add`/`Sub` were given amounts in different currencies |
+
+`TestErrorsDocListsEveryExportedSentinel` fails when an exported `Err*`
+identifier is missing from this page, so a new one cannot ship undocumented.
+
 ## Errors and transactions
 
 When a request runs inside a transaction (see [Transactions](transactions.md))

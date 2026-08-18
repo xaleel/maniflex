@@ -129,6 +129,14 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
   startup and fails under `Config.Strict`.
 - **Set `Config.PathPrefix` to a non-default value** if the proxy mounts the
   API at a custom path. Don't rewrite paths inside the application.
+- **Register `auth.CSRF` if — and only if — browsers authenticate with
+  cookies.** A bearer token read from JavaScript is not an ambient credential, so
+  a token-authenticated API is not CSRF-vulnerable and the middleware exempts
+  bearer requests by default. Cookie-borne sessions are the case that needs it.
+  See [CSRF](../middleware-catalogue/auth.md#csrf) for both modes. The admin
+  panel carries its own, unconditionally — see
+  [Admin Panel](../deployment/admin.md#csrf-protection) — and configuring one
+  does not affect the other.
 
 ## Operations
 

@@ -10,6 +10,26 @@ server := maniflex.New(maniflex.Config{
 })
 ```
 
+## Reading the boolean flags
+
+`Config` mixes positive and negative flag names — `Strict` and `Public` alongside
+`DisableAutoMigrate`, `StaticDisabled`, `ProbeConfig.Disabled`. That is one rule
+rather than two conventions:
+
+> **Every boolean is named so its zero value is the behaviour you want if you say
+> nothing.**
+
+A feature that is *off* until asked for gets a positive name, so leaving it unset
+leaves it off — `Strict`, `TrustProxyHeaders`, `Documentation.Public`. A feature
+that is *on* by default gets a negative one, so leaving it unset leaves it
+working — `DisableAutoMigrate`, `StaticDisabled`. Naming them all positively
+would mean `AutoMigrate: false` silently turning migration off for anyone who
+never set it, which is the failure the negative spelling exists to prevent.
+
+So an empty `Config{}` is always the intended default, and every field you set is
+a deliberate departure from it. Read a negative name as evidence the feature is
+on by default.
+
 ## Server
 
 | Field | Default | Purpose |
@@ -265,6 +285,25 @@ of its contract — and a failing check is logged through `Config.Logger` either
 way, so a `503` is never undiagnosable. `GET {prefix}/health` is unaffected: its
 `db` key is a name the framework owns rather than one you chose, so it describes
 no topology.
+
+In full, that endpoint answers:
+
+| `HealthCheckDB` | Database | Response |
+|---|---|---|
+| off | not checked | `200 {"status":"ok"}` |
+| on | reachable | `200 {"status":"ok","db":"ok"}` |
+| on | unreachable | `503 {"status":"degraded","db":"error"}` |
+
+`db` also reads `unknown` — not a failure — when the adapter implements no
+`Ping`, or none is configured yet.
+
+What that discloses to an unauthenticated caller is one bit: whether this
+service's database is reachable. The `503` carries the same bit on its own,
+since with `HealthCheckDB` on the database is the only thing `/health` checks,
+so the key adds no disclosure over the status line. The raw driver error is
+logged rather than written, so no DSN fragment reaches the wire. Where even that
+bit should not be public, `Probes.Health.Middleware` puts the endpoint behind
+your own check and `Probes.Health.Disabled` takes it off the router.
 
 A check reads `unknown` — which is not a failure — when the framework has no way
 to test it: an adapter that does not implement `Ping`, or no adapter configured

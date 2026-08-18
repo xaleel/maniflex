@@ -258,8 +258,12 @@ type FileStorage interface {
 	// cost the path was created to avoid.
 	Stat(ctx context.Context, key string) (FileMeta, error)
 
-	// PresignUpload returns a one-shot authorisation for a client to write one
+	// PresignUpload returns a short-lived authorisation for a client to write one
 	// object directly to storage at key, bypassing the app process entirely.
+	//
+	// Implementations are not expected to make it single-use, because the storage
+	// protocols cannot: a signature is verified, never spent. Bound it by expiry
+	// and treat the object as rewritable by the holder until then.
 	//
 	// Return ErrPresignUnsupported when the backend cannot mint one. Do NOT return
 	// an unauthenticated URL instead: a presigned upload that degrades to an open
@@ -359,8 +363,12 @@ type PresignUploadOptions struct {
 	Filename string
 }
 
-// PresignedUpload is a one-shot authorisation for a client to write one object
-// directly to storage. It is what the upload-url route returns.
+// PresignedUpload is a short-lived authorisation for a client to write one
+// object directly to storage. It is what the upload-url route returns.
+//
+// It authorises one key, not one write. Nothing spends it, so until ExpiresAt
+// passes its holder can write that key again — overwriting bytes a record
+// already points at. FilesConfig.SignedURLTTL is what shortens that window.
 type PresignedUpload struct {
 	// URL is where the client sends the upload.
 	URL string `json:"url"`

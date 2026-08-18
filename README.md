@@ -93,6 +93,13 @@ satellite module isolates one heavy dependency so you pull only what you import 
 `db/postgres`, `db/sqlite`, `events/{kafka,nats,rabbitmq,redis}`, `jobs/redis`,
 `middleware/service/bcrypt`, `storage/s3`, `pkg/otel`, and more.
 
+## Stability
+
+maniflex is v0.x: any minor release may break. The compatibility contract that
+takes effect at v1.0.0 — what is covered, how deprecation works, and which
+modules are held back — is documented in
+[Stability & Compatibility](https://docs.maniflex.dev/reference/compatibility.html).
+
 ## Requirements
 
 Go 1.25.12 or newer.

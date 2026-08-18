@@ -95,6 +95,7 @@
 
 # Reference
 
+- [Stability & Compatibility](reference/compatibility.md)
 - [Testing Applications](reference/testing.md)
 - [Production Validation](reference/production-validation.md)
 - [Startup Validation & Strict Mode](reference/strict-mode.md)

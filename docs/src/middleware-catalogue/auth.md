@@ -91,6 +91,17 @@ server.Pipeline.Auth.Register(auth.APIKeyAuth("X-API-Key",
 `AuthMethod` on `ctx.Auth` is set to `"api_key"`. Combine with `JWTAuth` on
 the same step to accept either credential — the first match wins.
 
+Keys are indexed by their SHA-256 digest rather than by the key itself, so
+lookup timing is a function of the digest and not of the secret, and the raw
+keys are not retained in the index. Lookup stays O(1) — comparing every entry
+with `subtle.ConstantTimeCompare` would close the same gap but scan every
+configured key on every authenticated request.
+
+These are *static* keys held in memory: they are as good as the deployment's
+secret handling, they cannot be revoked without a restart, and they do not
+expire. For rotation, revocation, or per-user credentials, use `JWTAuth` with an
+[`auth.Revoker`](#token-revocation-and-logout).
+
 ## `RequireRole`
 
 Rejects the request unless `ctx.Auth.Roles` contains the named role. Typically

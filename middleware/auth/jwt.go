@@ -429,9 +429,25 @@ type APIKeyEntry struct {
 //	    auth.APIKeyEntry{Key: "xyz789", Auth: maniflex.AuthInfo{UserID: "svc-2", Roles: []string{"reader"}}},
 //	))
 func APIKeyAuth(header string, entries ...APIKeyEntry) maniflex.MiddlewareFunc {
-	index := make(map[string]maniflex.AuthInfo, len(entries))
+	// Keyed by digest, not by the key itself. A Go map lookup is not
+	// constant-time — it hashes, then compares candidates in a bucket — so
+	// indexing by the secret makes the lookup's timing a function of the secret,
+	// the one thing every other credential path here already avoids (the JWT and
+	// webhook paths use hmac.Equal, CSRF uses subtle.ConstantTimeCompare).
+	//
+	// Hashing first is what keeps the lookup O(1). Comparing every entry with
+	// subtle.ConstantTimeCompare would also close it, but at a linear scan of
+	// every configured key on every authenticated request. SHA-256 runs in time
+	// determined by input length alone, and an attacker cannot steer a digest
+	// toward a target without a preimage, so what remains observable says nothing
+	// about the key.
+	//
+	// A digest collision would be a break of SHA-256 preimage resistance, so no
+	// second comparison against the raw key is kept — which also means the raw
+	// keys are not retained in this map at all.
+	index := make(map[[sha256.Size]byte]maniflex.AuthInfo, len(entries))
 	for _, e := range entries {
-		index[e.Key] = e.Auth
+		index[sha256.Sum256([]byte(e.Key))] = e.Auth
 	}
 	return func(ctx *maniflex.ServerContext, next func() error) error {
 		key := ctx.Request.Header.Get(header)
@@ -440,7 +456,7 @@ func APIKeyAuth(header string, entries ...APIKeyEntry) maniflex.MiddlewareFunc {
 				fmt.Sprintf("missing %s header", header))
 			return nil
 		}
-		info, ok := index[key]
+		info, ok := index[sha256.Sum256([]byte(key))]
 		if !ok {
 			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED", "invalid API key")
 			return nil

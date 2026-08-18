@@ -264,3 +264,70 @@ func TestAuthInfo_NoAuthReturns401(t *testing.T) {
 
 	s.GET("/minimal_models").AssertStatus(http.StatusUnauthorized)
 }
+
+// The API-key index is keyed by a digest of the key rather than the key itself
+// (audit S8), so the risk the change introduces is a lookup that no longer
+// discriminates — a truncated digest, or hashing the wrong bytes. These two
+// tests exist to catch that: they pass against the plain-map implementation and
+// against a correct digest one, and fail against a broken digest.
+
+// Two distinct keys whose SHA-256 digests share a two-byte prefix must still
+// resolve to their own identities. The pair is chosen, not arbitrary: any
+// implementation that indexes on a truncated digest rather than the whole of it
+// collides on exactly this input and hands one service the other's identity.
+// Random keys would not catch that — a one-byte truncation collides for only
+// 1 pair in 256, so the first version of this test passed against a deliberately
+// broken implementation.
+func TestAPIKeyAuth_DigestPrefixCollisionDoesNotConfuseKeys(t *testing.T) {
+	for _, tc := range []struct{ key, wantUser string }{
+		{"key-000062", "svc-a"}, // sha256 8e9684b7…
+		{"key-000068", "svc-b"}, // sha256 8e96bfc1…
+	} {
+		var mu sync.Mutex
+		var captured *maniflex.AuthInfo
+
+		s := testutil.NewServer(t, testutil.Options{
+			Models: []any{minimalModel{}},
+			Middleware: func(srv *maniflex.Server) {
+				srv.Pipeline.Auth.Register(auth.APIKeyAuth("X-API-Key",
+					auth.APIKeyEntry{Key: "key-000062", Auth: maniflex.AuthInfo{UserID: "svc-a"}},
+					auth.APIKeyEntry{Key: "key-000068", Auth: maniflex.AuthInfo{UserID: "svc-b"}},
+				))
+				srv.Pipeline.DB.Register(
+					captureAuthMiddleware(&mu, &captured),
+					maniflex.AtPosition(maniflex.Before),
+				)
+			},
+		})
+
+		s.GET("/minimal_models", map[string]string{"X-API-Key": tc.key})
+
+		mu.Lock()
+		got := captured
+		mu.Unlock()
+
+		if got == nil {
+			t.Fatalf("key %q did not authenticate", tc.key)
+		}
+		if got.UserID != tc.wantUser {
+			t.Errorf("key %q resolved to %q, want %q", tc.key, got.UserID, tc.wantUser)
+		}
+	}
+}
+
+// A key differing from a valid one only in its final byte must be refused. A
+// lookup comparing a prefix, or a digest short enough to collide, would let it
+// through.
+func TestAPIKeyAuth_NearMissKeyIsRejected(t *testing.T) {
+	s := testutil.NewServer(t, testutil.Options{
+		Models: []any{minimalModel{}},
+		Middleware: func(srv *maniflex.Server) {
+			srv.Pipeline.Auth.Register(auth.APIKeyAuth("X-API-Key",
+				auth.APIKeyEntry{Key: "secret-key-value-1", Auth: maniflex.AuthInfo{UserID: "svc"}},
+			))
+		},
+	})
+
+	s.GET("/minimal_models", map[string]string{"X-API-Key": "secret-key-value-2"}).
+		AssertStatus(http.StatusUnauthorized)
+}

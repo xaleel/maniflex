@@ -81,6 +81,8 @@ These stay warnings by default because each has a legitimate reading:
 | `mfx:"relation"` whose target model is not registered | The field may be a plain foreign id that wants no relation tag. The FK column works either way. |
 | The standalone `/files` endpoints mounted with no auth middleware | A deliberately public upload endpoint is conceivable, if rarely wise. |
 | `Config.StaticDir` names a directory that does not exist | Static serving degrades to 404s. Failing the boot would let a missing frontend asset bundle take down a working API. |
+| `Config.TrustProxyHeaders` set with no `Config.TrustedProxies` | The service may genuinely sit behind a proxy that replaces client-supplied forwarding headers itself. |
+| Encrypted unique fields with no blind-index key on the `KeyProvider` | It is the documented legacy behaviour, and an application that never rotates its encryption keys never pays for it. |
 
 **Turn it on in CI and staging**, where a boot failure costs a re-run rather
 than an outage. Leave it off in production if you would rather serve a degraded

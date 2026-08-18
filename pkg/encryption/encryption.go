@@ -63,6 +63,13 @@ type EnvKeyProvider struct {
 
 	// IndexKeyID names a dedicated HMAC key for encrypted fields carrying a
 	// UNIQUE constraint. It must not be rotated with field-encryption keys.
+	//
+	// Leaving it empty is the legacy path: the field's own encryption key is
+	// used for the blind index, so the same 32 bytes serve AES-256-GCM and
+	// HMAC-SHA256, and RotateEncryptionKey later refuses any model with
+	// encrypted unique fields. maniflex warns about this at boot and, under
+	// Config.Strict, refuses to start. Set it before the first such row is
+	// written: changing it invalidates every digest already stored.
 	IndexKeyID string
 }
 

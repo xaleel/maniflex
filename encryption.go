@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 )
@@ -522,4 +523,97 @@ func scanEncryptionRotation(
 func abortEncryptionNotConfigured(ctx *ServerContext, fieldName string) {
 	ctx.Abort(http.StatusInternalServerError, "ENCRYPTION_NOT_CONFIGURED",
 		fmt.Sprintf("field %q requires encryption but no KeyProvider is configured on the server", fieldName))
+}
+
+// collectEncryptionIssues reports encrypted-field configuration that is legal
+// but will cost the operator later.
+//
+// The one rule it applies: an encrypted+unique field writes a blind-index
+// digest, and without a dedicated index key that digest is HMAC'd under the
+// field's own encryption key. Writes succeed, so nothing surfaces until the
+// first RotateEncryptionKey — which refuses the model, because rotating the
+// encryption key would move every digest and silently void the UNIQUE
+// constraint the column exists to enforce. By then the table is full of
+// digests that cannot be re-derived, so the cheap moment to hear this is boot.
+//
+// The same setting is what separates the two algorithms' key material.
+// IndexKeyID resolves to a different key, so AES-GCM and HMAC-SHA256 stop
+// sharing bytes; the fallback is the only path on which they do.
+//
+// Strict-gated, because the fallback is the documented legacy behaviour and
+// promoting it to a hard error would refuse to boot every application already
+// relying on it. Boot warns regardless — see warnBlindIndexFallback.
+func collectEncryptionIssues(reg *Registry, kp KeyProvider, strict bool, issues *issueList) {
+	if !strict {
+		return
+	}
+	for _, model := range blindIndexFallbackModels(reg, kp) {
+		issues.addStrict("encryption",
+			"%s has encrypted unique field(s) %s but the KeyProvider names no blind-index "+
+				"key, so their uniqueness digests are HMAC'd under the field encryption key "+
+				"— RotateEncryptionKey will refuse this model, and the digests cannot be "+
+				"re-derived once rows exist. Set IndexKeyID on the provider (and populate "+
+				"its key) before writing data",
+			model.name, strings.Join(model.fields, ", "))
+	}
+}
+
+// blindIndexModel names one model that would write fallback digests, and the
+// encrypted unique fields that would do it.
+type blindIndexModel struct {
+	name   string
+	fields []string
+}
+
+// blindIndexFallbackModels returns the models whose encrypted unique fields
+// would be indexed under the fallback key, in registry order. Empty when no
+// KeyProvider is configured (encryption is not in use), or when the provider
+// advertises a stable blind-index key.
+func blindIndexFallbackModels(reg *Registry, kp KeyProvider) []blindIndexModel {
+	if kp == nil || reg == nil {
+		return nil
+	}
+	var out []blindIndexModel
+	for _, model := range reg.All() {
+		var fields []string
+		for _, f := range model.EncryptedFields() {
+			if !f.Tags.Unique {
+				continue
+			}
+			keyID := f.Tags.EncryptionKey
+			if keyID == "" {
+				keyID = defaultEncryptionKey
+			}
+			if _, stable := blindIndexKeyID(kp, keyID); !stable {
+				fields = append(fields, f.Tags.DBName)
+			}
+		}
+		if len(fields) > 0 {
+			out = append(out, blindIndexModel{name: model.Name, fields: fields})
+		}
+	}
+	return out
+}
+
+// warnBlindIndexFallback logs once at boot when encrypted unique fields would
+// be indexed under the fallback key.
+//
+// collectEncryptionIssues covers this too, but only under Config.Strict, and
+// the applications most likely to be on the fallback are the ones that never
+// turned Strict on. The cost of the fallback is paid at the first rotation,
+// long after the rows that make it expensive were written, so the warning has
+// to reach everyone — the same two-tier posture the /files and proxy-header
+// checks take.
+func warnBlindIndexFallback(reg *Registry, cfg *Config, l *slog.Logger) {
+	if cfg.Strict {
+		return // already a startup error; a warning as well is just noise
+	}
+	for _, model := range blindIndexFallbackModels(reg, cfg.KeyProvider) {
+		l.Warn("encrypted unique fields are indexed under the field encryption key "+
+			"because the KeyProvider names no blind-index key; RotateEncryptionKey "+
+			"will refuse this model, and existing digests cannot be re-derived",
+			slog.String("model", model.name),
+			slog.String("fields", strings.Join(model.fields, ", ")),
+			slog.String("hint", "set IndexKeyID on the KeyProvider before writing data"))
+	}
 }

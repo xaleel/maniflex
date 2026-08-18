@@ -1,6 +1,8 @@
 package maniflex
 
 import (
+	"bytes"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -356,5 +358,191 @@ func TestFieldRequirement_NoDeclarationIsNotChecked(t *testing.T) {
 	p.collectFieldRequirementIssues(fieldReqRegistry(t), &issues)
 	if err := issues.err(); err != nil {
 		t.Errorf("a middleware declaring nothing must not be checked, got: %v", err)
+	}
+}
+
+// ── blind-index key separation (audit S3) ─────────────────────────────────────
+
+// blindIndexRegistry builds a registry whose Patient.SSN is encrypted+unique —
+// the only shape that writes a blind-index digest and so the only one the key
+// separation question applies to.
+func blindIndexRegistry(t *testing.T, unique bool) *Registry {
+	t.Helper()
+	reg := NewRegistry()
+	if err := reg.AddForTest(&ModelMeta{
+		Name: "Patient",
+		Fields: []FieldMeta{{
+			Name: "SSN",
+			Tags: FieldTags{
+				JSONName: "ssn", DBName: "ssn",
+				Encrypted: true, Unique: unique,
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
+// fixedIndexProvider advertises a dedicated blind-index key, which is what
+// EnvKeyProvider does once IndexKeyID is set.
+type fixedIndexProvider struct{ KeyProvider }
+
+func (fixedIndexProvider) BlindIndexKeyID() string { return "blind-index" }
+
+// bareProvider implements no BlindIndexKeyProvider at all, so blindIndexKeyID
+// falls back to the field's own encryption key.
+type bareProvider struct{ KeyProvider }
+
+// Without a dedicated index key the uniqueness digest is HMAC'd under the field
+// encryption key. Nothing breaks on write, which is the problem: the bill
+// arrives at the first RotateEncryptionKey, which refuses the model outright —
+// by which time the table is full of digests nobody can re-derive.
+func TestCollectEncryptionIssues_FallbackBlindIndexIsAStrictIssue(t *testing.T) {
+	var issues issueList
+	collectEncryptionIssues(blindIndexRegistry(t, true), &bareProvider{}, true, &issues)
+
+	err := issues.err()
+	if err == nil {
+		t.Fatal("an encrypted+unique field with no dedicated blind-index key must be a strict issue")
+	}
+	msg := err.Error()
+	for _, want := range []string{"Patient", "ssn", "RotateEncryptionKey", "IndexKeyID", "Config.Strict"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("issue missing %q: %q", want, msg)
+		}
+	}
+}
+
+// Setting IndexKeyID resolves it: the HMAC key is then a different env var
+// holding different bytes, so the digest no longer moves when the encryption
+// key rotates — and the two algorithms stop sharing key material.
+func TestCollectEncryptionIssues_DedicatedIndexKeyIsSilent(t *testing.T) {
+	var issues issueList
+	collectEncryptionIssues(blindIndexRegistry(t, true), &fixedIndexProvider{}, true, &issues)
+
+	if len(issues) != 0 {
+		t.Fatalf("a configured blind-index key must be silent, got: %v", issues.err())
+	}
+}
+
+// An encrypted field with no UNIQUE constraint writes no digest, so the
+// blind-index key is irrelevant to it.
+func TestCollectEncryptionIssues_EncryptedButNotUniqueIsSilent(t *testing.T) {
+	var issues issueList
+	collectEncryptionIssues(blindIndexRegistry(t, false), &bareProvider{}, true, &issues)
+
+	if len(issues) != 0 {
+		t.Fatalf("a non-unique encrypted field needs no blind-index key, got: %v", issues.err())
+	}
+}
+
+// No KeyProvider means encryption is not in use; the check has nothing to say.
+func TestCollectEncryptionIssues_NoProviderIsSilent(t *testing.T) {
+	var issues issueList
+	collectEncryptionIssues(blindIndexRegistry(t, true), nil, true, &issues)
+
+	if len(issues) != 0 {
+		t.Fatalf("no KeyProvider configured must be silent, got: %v", issues.err())
+	}
+}
+
+// Legal by default: existing applications on the fallback keep booting. Strict
+// is what promotes it, exactly as the /files and proxy-header checks do.
+func TestCollectEncryptionIssues_SilentWithoutStrict(t *testing.T) {
+	var issues issueList
+	collectEncryptionIssues(blindIndexRegistry(t, true), &bareProvider{}, false, &issues)
+
+	if len(issues) != 0 {
+		t.Fatalf("the fallback is legal without Strict, got: %v", issues.err())
+	}
+}
+
+// The applications most likely to be on the fallback are the ones that never
+// turned Strict on, so the boot warning is what actually reaches them.
+func TestWarnBlindIndexFallback_WarnsWithoutStrict(t *testing.T) {
+	var buf bytes.Buffer
+	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	warnBlindIndexFallback(blindIndexRegistry(t, true),
+		&Config{KeyProvider: &bareProvider{}}, l)
+
+	out := buf.String()
+	if out == "" {
+		t.Fatal("no warning logged for the blind-index fallback")
+	}
+	for _, want := range []string{"Patient", "ssn", "RotateEncryptionKey", "IndexKeyID"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("warning missing %q: %s", want, out)
+		}
+	}
+}
+
+// Under Strict the same condition is already a boot failure; logging it as well
+// would have the operator fix a warning that was never the reason they crashed.
+func TestWarnBlindIndexFallback_SilentUnderStrictWhereItIsAlreadyFatal(t *testing.T) {
+	var buf bytes.Buffer
+	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	warnBlindIndexFallback(blindIndexRegistry(t, true),
+		&Config{Strict: true, KeyProvider: &bareProvider{}}, l)
+
+	if out := buf.String(); out != "" {
+		t.Errorf("Strict already fails the boot; the warning is redundant: %s", out)
+	}
+}
+
+// A configured index key is the fix, so it must silence the warning too.
+func TestWarnBlindIndexFallback_DedicatedIndexKeyIsSilent(t *testing.T) {
+	var buf bytes.Buffer
+	l := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+
+	warnBlindIndexFallback(blindIndexRegistry(t, true),
+		&Config{KeyProvider: &fixedIndexProvider{}}, l)
+
+	if out := buf.String(); out != "" {
+		t.Errorf("a configured blind-index key must be silent: %s", out)
+	}
+}
+
+// encBlindModel carries the one field shape the check is about.
+type encBlindModel struct {
+	BaseModel
+	SSN string `json:"ssn" mfx:"encrypted,unique"`
+}
+
+// The warning is worth nothing unless boot actually emits it. This is the wiring
+// test: a real server, assembled the way an application assembles one.
+func TestServerBoot_WarnsAboutTheBlindIndexFallback(t *testing.T) {
+	var buf bytes.Buffer
+	srv := New(Config{
+		Logger:      slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})),
+		KeyProvider: &bareProvider{},
+	})
+	srv.MustRegister(encBlindModel{})
+
+	if _, err := srv.handler(); err != nil {
+		t.Fatalf("handler(): %v", err)
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "IndexKeyID") || !strings.Contains(out, "ssn") {
+		t.Errorf("boot did not warn about the blind-index fallback: %s", out)
+	}
+}
+
+// Under Strict the same configuration must refuse to boot rather than warn.
+func TestServerBoot_StrictRefusesTheBlindIndexFallback(t *testing.T) {
+	srv := New(Config{Strict: true, KeyProvider: &bareProvider{}})
+	srv.MustRegister(encBlindModel{})
+
+	_, err := srv.handler()
+	if err == nil {
+		t.Fatal("Strict must refuse a model whose blind index falls back to the encryption key")
+	}
+	for _, want := range []string{"encryption", "ssn", "IndexKeyID"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("boot error missing %q: %v", want, err)
+		}
 	}
 }

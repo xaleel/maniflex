@@ -196,6 +196,28 @@ such row is written. For an existing table, quiesce writes and backfill the
 companion digests under the dedicated key before attempting online rotation;
 the rotation preflight rejects any legacy digest.
 
+Setting it also separates key material between the two algorithms. On the
+fallback the same 32 bytes are the AES-GCM key and the HMAC-SHA256 key; with
+`IndexKeyID` set they resolve to different env vars — or different Transit keys
+— holding different secrets. There is no known attack that combines the two, so
+this is hygiene rather than an exposure, but it is hygiene that costs one
+environment variable and cannot be retrofitted: changing the index key changes
+every digest it has already produced.
+
+Because the bill arrives late — writes succeed, and the refusal comes at the
+first rotation, once the table is full of digests nobody can re-derive — the
+framework says so at boot:
+
+```text
+WARN encrypted unique fields are indexed under the field encryption key because
+     the KeyProvider names no blind-index key; RotateEncryptionKey will refuse
+     this model, and existing digests cannot be re-derived
+     model=Patient fields=ssn hint="set IndexKeyID on the KeyProvider before writing data"
+```
+
+`Config.Strict` promotes that warning to a startup error, so a production
+deployment cannot reach its first write on the fallback by accident.
+
 Reads strip the HMAC column from responses automatically; clients see only
 the decrypted plaintext on `email` and never the digest.
 

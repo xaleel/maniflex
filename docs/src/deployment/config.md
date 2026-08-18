@@ -38,6 +38,7 @@ deadlines by default. These are the ones it sets on your behalf:
 |---|---|---|
 | `ReadHeaderTimeout` | `10s` | how long a connection may take to send its request headers |
 | `IdleTimeout` | `120s` | how long a keep-alive connection may sit idle between requests |
+| `BodyReadTimeout` | `30s` | time to wait for the **next chunk** of a request body, refreshed on every read |
 | `ReadTimeout` | `0` (unbounded) | time to read an entire request, headers **and body** |
 | `WriteTimeout` | `0` (unbounded) | time to write a response |
 
@@ -58,6 +59,25 @@ whole-request deadlines rather than idle deadlines:
 
 Set them when you know your request sizes and have no streaming endpoints. The
 header phase stays bounded by `ReadHeaderTimeout` either way.
+
+That left the **body** phase unbounded, which neither of the other defences
+covers: `ReadHeaderTimeout` is satisfied the moment the headers are complete, and
+the body size cap counts bytes rather than seconds. A client could announce a
+`Content-Length` well inside the limit, send none of it, and hold a connection, a
+goroutine and a file descriptor for as long as it liked.
+
+`BodyReadTimeout` closes that. It is an **idle** bound — the wait for the next
+chunk, refreshed on every read — which is what makes it safe on by default where
+`ReadTimeout` is not: an upload that keeps making progress never trips it,
+however slow the link or however large the file. These are the semantics of
+nginx's `client_body_timeout`. No deadline outlives the read, so a handler that
+consumes its body and then streams for minutes is unaffected.
+
+It does **not** bound total upload time. A client that sends one byte just inside
+the timeout, forever, is still holding a connection; bounding that means
+`ReadTimeout`, with the trade-off above. Setting `ReadTimeout` disengages
+`BodyReadTimeout` entirely, since the whole-request deadline is the stricter of
+the two. A negative value disables it, as with the other timeouts.
 
 ## Client address behind a proxy
 

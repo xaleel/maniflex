@@ -50,6 +50,13 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 		})
 	}
 
+	// Bound the body phase. ReadHeaderTimeout stops at the headers and the size
+	// cap counts bytes, so without this a client could announce a legal
+	// Content-Length and then go silent, holding the connection (audit S4).
+	if d := effectiveBodyReadTimeout(cfg); d > 0 {
+		r.Use(bodyReadDeadline(d))
+	}
+
 	// Resolve the client address from proxy headers only when the operator has
 	// explicitly opted in — with an allowlist (TrustedProxies), or with the bare
 	// flag, which trusts any peer and is warned about below (SEC-5 / audit S1).

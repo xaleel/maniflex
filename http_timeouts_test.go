@@ -76,3 +76,35 @@ func TestNewHTTPServer_NegativeDisables(t *testing.T) {
 		t.Errorf("IdleTimeout = %v, want 0 (disabled)", srv.IdleTimeout)
 	}
 }
+
+// The body phase was the gap: ReadHeaderTimeout ends at the headers, and the
+// size cap does not bound time, so a client could announce a legal
+// Content-Length and then go silent holding the connection. This is nginx's
+// client_body_timeout — the wait for the *next* chunk, not for the whole upload.
+func TestApplyDefaults_BodyReadTimeoutIsBounded(t *testing.T) {
+	cfg := Config{}
+	cfg.ApplyDefaults()
+
+	if cfg.BodyReadTimeout != 30*time.Second {
+		t.Errorf("BodyReadTimeout = %v, want 30s", cfg.BodyReadTimeout)
+	}
+}
+
+func TestApplyDefaults_BodyReadTimeoutRespectsExplicitValues(t *testing.T) {
+	cfg := Config{BodyReadTimeout: 5 * time.Second}
+	cfg.ApplyDefaults()
+
+	if cfg.BodyReadTimeout != 5*time.Second {
+		t.Errorf("BodyReadTimeout = %v, want the configured 5s", cfg.BodyReadTimeout)
+	}
+}
+
+// Negative disables, the same convention ReadHeaderTimeout and IdleTimeout use.
+func TestApplyDefaults_BodyReadTimeoutNegativeIsLeftAlone(t *testing.T) {
+	cfg := Config{BodyReadTimeout: -1}
+	cfg.ApplyDefaults()
+
+	if cfg.BodyReadTimeout != -1 {
+		t.Errorf("BodyReadTimeout = %v, want -1 preserved as 'disabled'", cfg.BodyReadTimeout)
+	}
+}

@@ -709,6 +709,30 @@ type Config struct {
 	// covered by ReadHeaderTimeout regardless.
 	ReadTimeout time.Duration
 
+	// BodyReadTimeout bounds how long the server waits for the *next* chunk of a
+	// request body, refreshed on every read. Default: 30s; set a negative value
+	// to disable.
+	//
+	// This is the body-phase counterpart to ReadHeaderTimeout, and it exists
+	// because neither of the other bounds covers that phase: ReadHeaderTimeout
+	// ends once the headers are in, and the body size cap bounds bytes rather
+	// than time. Without it a client could announce a Content-Length well inside
+	// the limit and then simply stop sending, holding a connection, a goroutine
+	// and a file descriptor for as long as it liked.
+	//
+	// It is an idle bound rather than a whole-request one, which is what makes it
+	// safe to switch on by default where ReadTimeout is not: a slow upload that
+	// keeps making progress refreshes the deadline and is never cut off. The
+	// semantics are nginx's client_body_timeout.
+	//
+	// It is ignored when ReadTimeout is set, since that is a stricter bound the
+	// caller chose deliberately.
+	//
+	// What it does not stop is a client that dribbles a byte just inside the
+	// timeout forever; bounding total upload time means ReadTimeout, with the
+	// upload trade-off described there.
+	BodyReadTimeout time.Duration
+
 	// WriteTimeout bounds the time taken to write a response. Zero (the default)
 	// means unbounded, deliberately: the deadline covers the whole response, so
 	// any value at all would sever a long-lived stream — realtime.SSEHandler,
@@ -974,6 +998,11 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.IdleTimeout == 0 {
 		c.IdleTimeout = 120 * time.Second
+	}
+	// Safe to default because it bounds silence, not the upload: every read that
+	// makes progress pushes it out again.
+	if c.BodyReadTimeout == 0 {
+		c.BodyReadTimeout = 30 * time.Second
 	}
 	// PanicLogger falls back to Logger so callers only need to set one field.
 	if c.PanicLogger == nil {

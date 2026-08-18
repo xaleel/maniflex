@@ -83,6 +83,7 @@ These stay warnings by default because each has a legitimate reading:
 | `Config.StaticDir` names a directory that does not exist | Static serving degrades to 404s. Failing the boot would let a missing frontend asset bundle take down a working API. |
 | `Config.TrustProxyHeaders` set with no `Config.TrustedProxies` | The service may genuinely sit behind a proxy that replaces client-supplied forwarding headers itself. |
 | Encrypted unique fields with no blind-index key on the `KeyProvider` | It is the documented legacy behaviour, and an application that never rotates its encryption keys never pays for it. |
+| `mfx:"file_acl:signed"` against a `FileStorage` that cannot sign | `LocalStorage` in development is the common case, where a permanent path costs nothing. |
 
 **Turn it on in CI and staging**, where a boot failure costs a re-run rather
 than an outage. Leave it off in production if you would rather serve a degraded

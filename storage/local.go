@@ -262,8 +262,19 @@ func (s *LocalStorage) PresignUpload(_ context.Context, _ string,
 	return nil, maniflex.ErrPresignUnsupported
 }
 
+// SupportsSignedURL implements maniflex.SignedURLCapable. It reports false: URL
+// ignores PresignURLOptions.Expiry and hands back the same /files/<key> path
+// whatever is asked of it.
+//
+// Declaring it is what lets the framework say so at startup. A field tagged
+// mfx:"file_acl:signed" against this backend asked for time-limited access and
+// received permanent access, and until now nothing anywhere reported the
+// difference — not this method, not the response, not the boot (audit S7).
+func (s *LocalStorage) SupportsSignedURL() bool { return false }
+
 // Compile-time interface check.
 var _ maniflex.FileStorage = (*LocalStorage)(nil)
+var _ maniflex.SignedURLCapable = (*LocalStorage)(nil)
 var _ io.Closer = (*LocalStorage)(nil)
 
 // metaSuffix is the sibling-file extension for the JSON metadata sidecar

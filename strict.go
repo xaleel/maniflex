@@ -110,4 +110,5 @@ func (c *Server) collectRegistryIssues(issues *issueList) {
 	c.Pipeline.collectFieldRequirementIssues(c.registry, issues)
 	collectRouterIssues(&c.cfg, issues)
 	collectEncryptionIssues(c.registry, c.cfg.KeyProvider, c.cfg.Strict, issues)
+	collectFileACLIssues(c.registry, c.cfg.FilesConfig.Storage, c.cfg.Strict, issues)
 }

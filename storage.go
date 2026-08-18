@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"mime"
 	"mime/multipart"
+	"strings"
 	"time"
 )
 
@@ -496,4 +498,102 @@ type UploadedFile struct {
 	ContentType string
 	Size        int64
 	Reader      io.ReadCloser
+}
+
+// SignedURLCapable is an optional FileStorage capability. A backend whose URL
+// cannot be time-limited implements it and reports false, so the framework can
+// say so at startup instead of letting a mfx:"file_acl:signed" field quietly
+// resolve to a permanent one.
+//
+// Not implementing it means "yes": every backend that genuinely signs — S3 and
+// anything like it — needs to do nothing, and no existing implementation
+// changes behaviour by staying silent.
+type SignedURLCapable interface {
+	// SupportsSignedURL reports whether URL honours PresignURLOptions.Expiry.
+	SupportsSignedURL() bool
+}
+
+// storageSignsURLs reports whether fs can mint a time-limited URL, assuming yes
+// for any backend that does not declare otherwise.
+func storageSignsURLs(fs FileStorage) bool {
+	if c, ok := fs.(SignedURLCapable); ok {
+		return c.SupportsSignedURL()
+	}
+	return true
+}
+
+// collectFileACLIssues reports mfx:"file_acl:signed" fields configured against a
+// backend that cannot sign.
+//
+// FileACLSigned is documented as requiring URL() support, and nothing checked
+// it. LocalStorage returns /files/<key> whatever the options — a permanent path,
+// served by a route whose auth is the operator's to arrange — so a field marked
+// as needing time-limited access silently got unlimited access instead. The
+// developer stated the security property they wanted and the response quietly
+// carried a weaker one, with no error at any layer.
+//
+// Only the signed mode is a downgrade: public asks for a permanent URL and gets
+// exactly that, and private never calls URL at all — its downloads go through
+// the attachment route, which enforces the parent record's own auth.
+//
+// Strict-gated, because this is long-standing behaviour and failing the boot
+// would refuse to start applications already relying on it. Boot warns
+// regardless — see warnUnsignedFileACL.
+func collectFileACLIssues(reg *Registry, fs FileStorage, strict bool, issues *issueList) {
+	if !strict {
+		return
+	}
+	for _, m := range unsignedFileACLModels(reg, fs) {
+		issues.addStrict("storage",
+			"%s has mfx:\"file_acl:signed\" field(s) %s but the configured FileStorage "+
+				"cannot mint a time-limited URL, so each resolves to a permanent path "+
+				"instead — unlimited access where limited was asked for. Use a backend "+
+				"that signs, or mark the field file_acl:private so downloads go through "+
+				"the attachment route and inherit the record's own auth",
+			m.name, strings.Join(m.fields, ", "))
+	}
+}
+
+// unsignedFileACLModel names one model whose signed file fields cannot be signed.
+type unsignedFileACLModel struct {
+	name   string
+	fields []string
+}
+
+// unsignedFileACLModels returns the affected models in registry order. Empty
+// when no storage is configured, or when the backend can sign.
+func unsignedFileACLModels(reg *Registry, fs FileStorage) []unsignedFileACLModel {
+	if fs == nil || reg == nil || storageSignsURLs(fs) {
+		return nil
+	}
+	var out []unsignedFileACLModel
+	for _, m := range reg.All() {
+		var fields []string
+		for _, f := range m.Fields {
+			if f.Tags.File && f.Tags.FileACL == FileACLSigned {
+				fields = append(fields, f.Tags.JSONName)
+			}
+		}
+		if len(fields) > 0 {
+			out = append(out, unsignedFileACLModel{name: m.Name, fields: fields})
+		}
+	}
+	return out
+}
+
+// warnUnsignedFileACL logs once at boot for the same condition, because the
+// applications most likely to hit it are the ones that never turned Strict on —
+// LocalStorage is the development default.
+func warnUnsignedFileACL(reg *Registry, cfg *Config, l *slog.Logger) {
+	if cfg.Strict {
+		return // already a startup error
+	}
+	for _, m := range unsignedFileACLModels(reg, cfg.FilesConfig.Storage) {
+		l.Warn("file_acl:signed resolves to a permanent URL: the configured FileStorage "+
+			"cannot mint a time-limited one, so these fields are served without the "+
+			"expiry they ask for",
+			slog.String("model", m.name),
+			slog.String("fields", strings.Join(m.fields, ", ")),
+			slog.String("hint", "use a signing backend, or mark the field file_acl:private"))
+	}
 }

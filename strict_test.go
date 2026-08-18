@@ -546,3 +546,148 @@ func TestServerBoot_StrictRefusesTheBlindIndexFallback(t *testing.T) {
 		}
 	}
 }
+
+// ── file_acl:signed vs a backend that cannot sign (audit S7) ──────────────────
+
+// fileACLRegistry builds a registry whose Doc.Scan carries the given ACL.
+func fileACLRegistry(t *testing.T, acl FileACLMode) *Registry {
+	t.Helper()
+	reg := NewRegistry()
+	if err := reg.AddForTest(&ModelMeta{
+		Name: "Doc",
+		Fields: []FieldMeta{{
+			Name: "Scan",
+			Tags: FieldTags{JSONName: "scan", DBName: "scan", File: true, FileACL: acl},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return reg
+}
+
+// unsignedStorage is a backend that cannot mint a time-limited URL — what
+// LocalStorage reports.
+type unsignedStorage struct{ FileStorage }
+
+func (unsignedStorage) SupportsSignedURL() bool { return false }
+
+// signingStorage declares the capability explicitly.
+type signingStorage struct{ FileStorage }
+
+func (signingStorage) SupportsSignedURL() bool { return true }
+
+// silentStorage says nothing, which is how every backend that can sign behaves —
+// S3Storage implements no capability method and must not be warned about.
+type silentStorage struct{ FileStorage }
+
+// A field asking for time-limited access, against a backend that answers with a
+// permanent path, is the whole finding: the developer asked for one security
+// property and silently received a weaker one.
+func TestCollectFileACLIssues_SignedFieldOnUnsigningBackendIsAStrictIssue(t *testing.T) {
+	var issues issueList
+	collectFileACLIssues(fileACLRegistry(t, FileACLSigned), unsignedStorage{}, true, &issues)
+
+	err := issues.err()
+	if err == nil {
+		t.Fatal("file_acl:signed against a backend that cannot sign must be a strict issue")
+	}
+	msg := err.Error()
+	for _, want := range []string{"Doc", "scan", "signed", "Config.Strict"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("issue missing %q: %q", want, msg)
+		}
+	}
+}
+
+// A backend that says nothing is assumed capable, so S3 and every third-party
+// signer stay silent without implementing anything.
+func TestCollectFileACLIssues_BackendThatDeclaresNothingIsAssumedCapable(t *testing.T) {
+	var issues issueList
+	collectFileACLIssues(fileACLRegistry(t, FileACLSigned), silentStorage{}, true, &issues)
+
+	if len(issues) != 0 {
+		t.Fatalf("a backend declaring no capability must be assumed to sign, got: %v", issues.err())
+	}
+}
+
+func TestCollectFileACLIssues_DeclaredCapableIsSilent(t *testing.T) {
+	var issues issueList
+	collectFileACLIssues(fileACLRegistry(t, FileACLSigned), signingStorage{}, true, &issues)
+
+	if len(issues) != 0 {
+		t.Fatalf("a backend declaring it can sign must be silent, got: %v", issues.err())
+	}
+}
+
+// public asks for a permanent URL, which is exactly what the backend returns —
+// no downgrade, nothing to warn about. private never calls URL at all.
+func TestCollectFileACLIssues_PublicAndPrivateAreSilent(t *testing.T) {
+	for _, acl := range []FileACLMode{FileACLPublic, FileACLPrivate, ""} {
+		var issues issueList
+		collectFileACLIssues(fileACLRegistry(t, acl), unsignedStorage{}, true, &issues)
+		if len(issues) != 0 {
+			t.Errorf("acl %q must be silent, got: %v", acl, issues.err())
+		}
+	}
+}
+
+func TestCollectFileACLIssues_NoStorageIsSilent(t *testing.T) {
+	var issues issueList
+	collectFileACLIssues(fileACLRegistry(t, FileACLSigned), nil, true, &issues)
+
+	if len(issues) != 0 {
+		t.Fatalf("no storage configured must be silent, got: %v", issues.err())
+	}
+}
+
+// Legal by default: this is long-standing behaviour, so Strict is what promotes
+// it — the posture S1, S3 and the /files check all take.
+func TestCollectFileACLIssues_SilentWithoutStrict(t *testing.T) {
+	var issues issueList
+	collectFileACLIssues(fileACLRegistry(t, FileACLSigned), unsignedStorage{}, false, &issues)
+
+	if len(issues) != 0 {
+		t.Fatalf("legal without Strict, got: %v", issues.err())
+	}
+}
+
+// fileACLModel is the shape the check is about, registered the ordinary way.
+type fileACLModel struct {
+	BaseModel
+	Scan string `json:"scan" mfx:"file,file_acl:signed"`
+}
+
+// The check is worth nothing unless boot runs it.
+func TestServerBoot_WarnsAboutUnsignableFileACL(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := Config{Logger: slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))}
+	cfg.FilesConfig.Storage = unsignedStorage{}
+	srv := New(cfg)
+	srv.MustRegister(fileACLModel{})
+
+	if _, err := srv.handler(); err != nil {
+		t.Fatalf("handler(): %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "file_acl") || !strings.Contains(out, "scan") {
+		t.Errorf("boot did not warn about the unsignable file_acl:signed field: %s", out)
+	}
+}
+
+// Under Strict the same configuration refuses to boot.
+func TestServerBoot_StrictRefusesUnsignableFileACL(t *testing.T) {
+	cfg := Config{Strict: true}
+	cfg.FilesConfig.Storage = unsignedStorage{}
+	srv := New(cfg)
+	srv.MustRegister(fileACLModel{})
+
+	_, err := srv.handler()
+	if err == nil {
+		t.Fatal("Strict must refuse file_acl:signed against a backend that cannot sign")
+	}
+	for _, want := range []string{"storage", "scan", "file_acl:private"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("boot error missing %q: %v", want, err)
+		}
+	}
+}

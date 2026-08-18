@@ -191,10 +191,25 @@ maniflex.New(maniflex.Config{
 })
 ```
 
-`LocalStorage.URL` returns the server-relative `/files/<key>` for both signed
-and public modes (no real signing — bring an HMAC layer if you need it).
 `S3Storage.URL` uses `awss3.NewPresignClient`; `ttl=0` (public mode) maps to
 the AWS 7-day maximum.
+
+> **`LocalStorage` cannot sign.** `URL` returns the server-relative
+> `/files/<key>` for both signed and public modes, ignoring the TTL entirely — so
+> `file_acl:signed` against it yields a **permanent** path where a time-limited
+> one was asked for, and how exposed that path is depends on whatever guards
+> `GET /files/*`. That is a weaker guarantee than the tag requests, so the
+> framework no longer lets it pass unremarked: it warns at boot, naming the model
+> and fields, and `Config.Strict` makes it a startup error.
+>
+> Use a signing backend, or mark the field `file_acl:private` — its downloads go
+> through the per-model attachment route, which enforces the same auth as reading
+> the parent record. Bring an HMAC layer only if you need signed URLs *and* local
+> disk.
+>
+> A backend declares this by implementing `maniflex.SignedURLCapable`. Not
+> implementing it means "I can sign", so `S3Storage` and any third-party signer
+> need do nothing.
 
 ## Configuring storage
 

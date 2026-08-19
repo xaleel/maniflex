@@ -70,6 +70,22 @@ type Config struct {
 	// Intended for local development only — never set this in production.
 	AllowUnauthenticated bool
 
+	// Secure overrides the Secure attribute on the panel's CSRF cookie. Nil —
+	// the default — means Secure, which is correct for every panel reachable
+	// over TLS and harmless on http://localhost, a secure context in current
+	// Chrome and Firefox.
+	//
+	// Set it to false only for a panel deliberately served over plaintext on a
+	// host browsers do not treat as secure — a LAN hostname, say. That is worth
+	// hesitating over: a Secure cookie the browser refuses to return breaks the
+	// panel visibly, whereas turning this off means an admin session and its
+	// CSRF token travel in the clear.
+	//
+	// It is a *bool rather than a bool so that "not set" and "explicitly off"
+	// stay distinguishable; a plain bool would make the zero value the unsafe
+	// one, which is the opposite of how every other flag here reads.
+	Secure *bool
+
 	// Logger receives private server-side diagnostics. Defaults to slog.Default.
 	// Error pages never render those diagnostics for 5xx responses.
 	Logger *slog.Logger

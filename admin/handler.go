@@ -359,7 +359,7 @@ func (a *admin) handleDetail(w http.ResponseWriter, r *http.Request, meta *manif
 	if !a.cfg.ReadOnly {
 		dd.EditHref = a.cfg.PathPrefix + "/" + meta.TableName + "/" + id + "/edit"
 		dd.DelHref = a.cfg.PathPrefix + "/" + meta.TableName + "/" + id + "/delete"
-		dd.CSRF = ensureCSRF(w, r)
+		dd.CSRF = ensureCSRF(w, r, a.cfg.Secure)
 	}
 
 	vd := a.base(meta.TableName)
@@ -408,7 +408,7 @@ func (a *admin) renderForm(w http.ResponseWriter, r *http.Request, meta *manifle
 		IsEdit:    id != "",
 		HasFiles:  meta.HasFileFields(),
 		Action:    action,
-		CSRF:      ensureCSRF(w, r),
+		CSRF:      ensureCSRF(w, r, a.cfg.Secure),
 		Fields:    fields,
 		FormError: formErr,
 	}

@@ -155,9 +155,26 @@ page's Delete button).
 The panel uses **double-submit cookies**. On first form load a random 32-byte
 hex token is written to the CSRF cookie and mirrored in a hidden `_csrf` form
 field. Every mutating `POST` verifies that both match before forwarding to the
-API. The cookie is `HttpOnly` and `SameSite=Lax`, and is marked `Secure` when the
-panel is served over TLS — directly or behind a proxy that sets
-`X-Forwarded-Proto: https`. There is nothing to configure — it is always on.
+API. The check itself has nothing to configure — it is always on.
+
+The cookie is `HttpOnly`, `SameSite=Lax`, and **`Secure` by default**. It used to
+infer that per request from `r.TLS` and `X-Forwarded-Proto`, which failed quietly
+in the wrong direction: a panel served over plaintext in production issued a
+non-`Secure` cookie and nothing said so. A fixed default fails in the open
+instead — the browser refuses to return the cookie and the panel visibly stops
+working, which is worth knowing, because an admin panel on plaintext is exposing
+a great deal more than a CSRF token.
+
+`http://localhost` is a secure context in current Chrome and Firefox, so local
+development is unaffected. For a panel deliberately served over plaintext on a
+host that is *not* — a LAN hostname, say — opt out explicitly:
+
+```go
+insecure := false
+admin.Mount(server, admin.Config{
+    Secure: &insecure, // admin session and CSRF token now travel in the clear
+})
+```
 
 This is the panel's own check, over the panel's own forms. It is separate from
 the [`auth.CSRF` middleware](../middleware-catalogue/auth.md#csrf), which guards

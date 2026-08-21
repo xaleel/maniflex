@@ -912,10 +912,21 @@ Storage backends are also expected to:
 
 - honour `ctx` cancellation in `Store` — long uploads must abort when the
   request deadline elapses or the server is shutting down,
-- reject keys ending in `.meta.json` in both `Store` and `Retrieve` if the
-  backend uses sibling JSON files as a metadata layout (LocalStorage's case),
-  so the framework's internal layout is never reachable through the file
-  handler.
+- refuse keys that name the backend's own bookkeeping, if it keeps that
+  bookkeeping in the same key namespace as the objects — sibling `.meta.json`
+  files, as `LocalStorage` does. Two rules make the difference between a guard
+  and the appearance of one:
+
+  **Put the check in whatever function turns a key into a path**, not in each
+  method. `LocalStorage` had it in `Store` and `Retrieve` and was missing it in
+  `Stat`, `Exists` and `Delete`, so a client could delete the sidecar of any
+  file it could name; the file kept serving, permanently stripped of its
+  content type and download filename.
+
+  **Compare the way the storage layer compares.** Windows and macOS match
+  filenames case-insensitively, and Windows ignores trailing dots and spaces, so
+  `x.META.JSON`, `x.meta.json.` and `x.meta.json ` all open `x.meta.json`
+  there. An exact suffix match reads as airtight and holds only on Linux.
 
 Filenames flowing through the framework-generated key are sanitised to the
 charset `[A-Za-z0-9._-]` (other runes become `_`), leading dots are stripped,

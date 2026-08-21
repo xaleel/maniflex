@@ -8,18 +8,30 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/storage"
 	"github.com/xaleel/maniflex/tests/e2e/testutil"
 )
 
 // 11C.1 — `.meta.json` sidecars must not be reachable through the file
 // handler. Pre-fix the framework's own metadata layout was a public surface.
+//
+// This runs against a real LocalStorage, not MemoryStorage. The guard lives in
+// the backend that has sidecars, and MemoryStorage has none — so every
+// assertion below passed against it on the key-is-not-in-the-map path, with no
+// guard involved. The test read as coverage of a rule the framework does not
+// enforce centrally, while Delete in fact had no such rule at all (audit S10).
 func TestPhase11C_MetaJSONNotServable(t *testing.T) {
 	t.Parallel()
-	store := testutil.NewMemoryStorage()
+	store, err := storage.NewLocalStorage(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalStorage: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
 	srv := testutil.NewServer(t, testutil.Options{
 		Models:      testutil.FileModels(),
 		FileStorage: store,
@@ -32,11 +44,27 @@ func TestPhase11C_MetaJSONNotServable(t *testing.T) {
 	resp.AssertStatus(http.StatusCreated)
 	key := testutil.Field(t, resp.Data(), "key")
 
-	// Direct fetch of the would-be sidecar must 404. MemoryStorage doesn't
-	// have sidecars at all but the file handler should still refuse keys
-	// ending in .meta.json so an attacker cannot probe internals on a
-	// backend that does.
-	srv.GETRaw("/files/" + key + ".meta.json").AssertStatus(http.StatusNotFound)
+	// The sidecar now exists on disk beside the upload. Neither reading nor
+	// deleting it may succeed, and the case- and trailing-dot spellings must not
+	// slip past on a filesystem that folds them to the same file (Windows,
+	// macOS).
+	for _, suffix := range []string{".meta.json", ".META.JSON", ".meta.json."} {
+		srv.GETRaw("/files/" + key + suffix).AssertStatus(http.StatusNotFound)
+		srv.DELETE("/files/" + key + suffix).AssertStatus(http.StatusNotFound)
+	}
+
+	// Having been asked to delete the sidecar three different ways, the upload is
+	// still served with the metadata the sidecar holds — the failure mode was a
+	// 204 that left the file readable but anonymous.
+	//
+	// Asserted on Content-Disposition rather than Content-Type: with the sidecar
+	// destroyed the handler sets no Content-Type, net/http sniffs the bytes, and
+	// a text upload comes back as text/plain either way. The download filename
+	// exists nowhere but the sidecar, so it is the header that can tell.
+	served := srv.GETRaw("/files/" + key).AssertStatus(http.StatusOK)
+	if cd := served.Header.Get("Content-Disposition"); !strings.Contains(cd, "report.txt") {
+		t.Errorf("Content-Disposition = %q, want a report.txt filename — the metadata sidecar is gone", cd)
+	}
 }
 
 // 11C.2 sanitizeFilename coverage lives next to the function itself in

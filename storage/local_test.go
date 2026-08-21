@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -396,5 +397,117 @@ func TestNewLocalStorageCreatesDir(t *testing.T) {
 	}
 	if !info.IsDir() {
 		t.Error("base path is not a directory")
+	}
+}
+
+// The metadata sidecar shares its key namespace with stored files, so every
+// operation that resolves a key has to refuse the sidecar's name. isMetaKey
+// makes that call, and it is judging a string against what the filesystem will
+// actually do with it (audit S10).
+//
+// Windows and macOS fold case, and Windows additionally strips trailing dots
+// and spaces from a path component. Verified against os.Root on Windows: with
+// a.meta.json on disk, ReadFile returned it for "a.META.JSON", "a.meta.json."
+// and "a.meta.json " alike. An exact case-sensitive suffix match classifies all
+// three as ordinary keys and hands the sidecar over.
+//
+// Folding uniformly on every platform is deliberate: the set of valid keys
+// should not depend on the filesystem the app is deployed to.
+func TestIsMetaKeyFoldsFilesystemEquivalentNames(t *testing.T) {
+	reserved := []string{
+		"a.meta.json",
+		"a.META.JSON",
+		"a.Meta.Json",
+		"a.meta.json.",
+		"a.meta.json ",
+		"a.meta.json. . ",
+		"uploads/1234/report.txt.META.JSON",
+	}
+	for _, key := range reserved {
+		if !isMetaKey(key) {
+			t.Errorf("isMetaKey(%q) = false, want true — the filesystem resolves this to the sidecar", key)
+		}
+	}
+
+	ordinary := []string{
+		"a.json",
+		"a.meta.jsonx",
+		"meta.json.txt",
+		"a.meta.json/b.txt",
+		"notes.txt",
+	}
+	for _, key := range ordinary {
+		if isMetaKey(key) {
+			t.Errorf("isMetaKey(%q) = true, want false — this is an ordinary key", key)
+		}
+	}
+}
+
+// Every method that resolves a key must refuse the reserved namespace, not only
+// the two that remembered to. Store and Retrieve carried the check; Delete,
+// Exists and Stat did not (audit S10).
+//
+// The file is stored first so the sidecar genuinely exists — probing a reserved
+// key against empty storage would pass on the not-found path without the guard
+// ever running.
+func TestLocalStorageReservedKeysRefusedByEveryOperation(t *testing.T) {
+	ctx := context.Background()
+	const key = "report.txt"
+	for _, sidecar := range []string{
+		key + metaSuffix,
+		key + ".META.JSON",
+		key + metaSuffix + ".",
+	} {
+		t.Run(sidecar, func(t *testing.T) {
+			s := tempStorage(t)
+			if err := s.Store(ctx, key, bytes.NewReader([]byte("report")),
+				maniflex.FileMeta{Key: key, ContentType: "text/plain", Filename: "report.txt"}); err != nil {
+				t.Fatalf("Store: %v", err)
+			}
+
+			if err := s.Store(ctx, sidecar, bytes.NewReader([]byte("x")), maniflex.FileMeta{}); err == nil {
+				t.Error("Store accepted a reserved key")
+			}
+			if rc, _, err := s.Retrieve(ctx, sidecar); err == nil {
+				rc.Close()
+				t.Error("Retrieve served the metadata sidecar")
+			}
+			if _, err := s.Stat(ctx, sidecar); !errors.Is(err, maniflex.ErrFileNotFound) {
+				t.Errorf("Stat error = %v, want ErrFileNotFound", err)
+			}
+			if ok, err := s.Exists(ctx, sidecar); ok || err == nil {
+				t.Errorf("Exists = (%v, %v), want (false, non-nil error)", ok, err)
+			}
+			if err := s.Delete(ctx, sidecar); !errors.Is(err, maniflex.ErrFileNotFound) {
+				t.Errorf("Delete error = %v, want ErrFileNotFound", err)
+			}
+		})
+	}
+}
+
+// The concrete, platform-independent half of S10: Delete resolved a key to a
+// path with no reserved-namespace check at all, so DELETE /files/<key>.meta.json
+// removed the sidecar of a live file and answered 204. The file kept serving,
+// permanently stripped of its content type and download filename.
+func TestLocalStorageDeleteCannotStripMetadataFromALiveFile(t *testing.T) {
+	s := tempStorage(t)
+	ctx := context.Background()
+	const key = "uploads/report.txt"
+	if err := s.Store(ctx, key, bytes.NewReader([]byte("report")),
+		maniflex.FileMeta{Key: key, ContentType: "text/plain", Filename: "report.txt"}); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	if err := s.Delete(ctx, key+metaSuffix); !errors.Is(err, maniflex.ErrFileNotFound) {
+		t.Errorf("Delete(sidecar) error = %v, want ErrFileNotFound", err)
+	}
+
+	rc, got, err := s.Retrieve(ctx, key)
+	if err != nil {
+		t.Fatalf("Retrieve after attempted sidecar delete: %v", err)
+	}
+	defer rc.Close()
+	if got.ContentType != "text/plain" || got.Filename != "report.txt" {
+		t.Errorf("file lost its metadata: ContentType=%q Filename=%q", got.ContentType, got.Filename)
 	}
 }

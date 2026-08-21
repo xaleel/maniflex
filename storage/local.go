@@ -96,8 +96,9 @@ func (s *LocalStorage) Store(ctx context.Context, key string, r io.Reader, meta 
 }
 
 // Retrieve returns a ReadCloser for the file at key, along with its metadata.
-// Keys that end with `.meta.json` are rejected so the sidecar metadata file
-// cannot be served as if it were stored content.
+// Keys naming the metadata sidecar resolve to ErrFileNotFound rather than
+// serving the sidecar as if it were stored content — see isMetaKey for what
+// counts as naming it.
 func (s *LocalStorage) Retrieve(_ context.Context, key string) (io.ReadCloser, maniflex.FileMeta, error) {
 	return s.open(key)
 }
@@ -122,9 +123,6 @@ func (s *LocalStorage) RetrieveRange(_ context.Context, key string, offset, leng
 // open resolves a key to an open file plus its sidecar metadata. Shared by
 // Retrieve and RetrieveRange, which differ only in what they read from it.
 func (s *LocalStorage) open(key string) (*os.File, maniflex.FileMeta, error) {
-	if isMetaKey(key) {
-		return nil, maniflex.FileMeta{}, maniflex.ErrFileNotFound
-	}
 	name, err := relativeKey(key)
 	if err != nil {
 		return nil, maniflex.FileMeta{}, err
@@ -281,11 +279,30 @@ var _ io.Closer = (*LocalStorage)(nil)
 // written next to each stored file.
 const metaSuffix = ".meta.json"
 
-// isMetaKey reports whether key targets the internal metadata sidecar. We
-// reject these keys from Store / Retrieve so clients cannot read or overwrite
-// the framework's storage internals through the file handler.
+// isMetaKey reports whether key targets the internal metadata sidecar. Store
+// rejects these outright and every other operation resolves them to
+// ErrFileNotFound, so a client cannot read, overwrite or delete the framework's
+// own bookkeeping through the file handler.
+//
+// The comparison folds case and trailing dots and spaces, because the check is
+// only as good as the filesystem's own idea of when two names are the same
+// name. Windows and macOS match case-insensitively, and Windows strips trailing
+// dots and spaces from a path component, so "x.META.JSON", "x.meta.json." and
+// "x.meta.json " all open x.meta.json there — verified against os.Root, which
+// blocks alternate data streams but not these. An exact suffix match classified
+// all three as ordinary keys and served the sidecar (audit S10).
+//
+// The folding is unconditional rather than build-tagged to the platforms that
+// need it: which keys an application may use should not change when it moves
+// from Linux to Windows.
+//
+// Not covered: Windows 8.3 short-name aliases, which are not derived from the
+// long name by any transformation of the string, so no string test can catch
+// them. Leave 8.3 generation disabled — the default on non-system volumes since
+// Windows Server 2008 R2.
 func isMetaKey(key string) bool {
-	return strings.HasSuffix(key, metaSuffix)
+	// Trailing punctuation first, so "x.meta.json. " folds the same as "x.meta.json.".
+	return strings.HasSuffix(strings.ToLower(strings.TrimRight(key, ". ")), metaSuffix)
 }
 
 // ctxReader bridges a context.Context into an io.Reader so io.Copy stops
@@ -310,6 +327,21 @@ func (c ctxReader) Read(p []byte) (int, error) {
 func relativeKey(key string) (string, error) {
 	if key == "" {
 		return "", fmt.Errorf("storage: key must not be empty")
+	}
+	// The reserved-namespace check lives here rather than in each method,
+	// because this is the one function every filesystem operation already calls
+	// to resolve a key. Store, Retrieve, Delete, Exists and Stat each had to
+	// remember the guard independently and three of them did not, so a client
+	// could Stat, probe and delete the sidecar of any file it could name
+	// (audit S10). Anything added here later inherits the check.
+	//
+	// ErrFileNotFound rather than a descriptive error: to a caller the sidecar
+	// has to be indistinguishable from a key that was never stored, on reads and
+	// deletes alike. Store checks before calling this and reports the reserved
+	// key plainly, because on a write the operator is looking at their own KeyGen
+	// rather than at somebody else's file.
+	if isMetaKey(key) {
+		return "", maniflex.ErrFileNotFound
 	}
 
 	cleaned := filepath.FromSlash(filepath.Clean("/" + key))

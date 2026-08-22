@@ -2,7 +2,7 @@ module github.com/xaleel/maniflex/pkg/otel
 
 go 1.25.12
 
-require github.com/xaleel/maniflex v0.5.1
+require github.com/xaleel/maniflex v0.6.0
 
 require (
 	go.opentelemetry.io/otel v1.44.0

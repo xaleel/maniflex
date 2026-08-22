@@ -1816,7 +1816,10 @@ func buildJoins(model *maniflex.ModelMeta, filters []*maniflex.FilterExpr, sorts
 		))
 	}
 	for _, f := range filters {
-		if !f.IsNested {
+		// A nil is refused at the framework boundary with a diagnosis naming it
+		// (audit O1). Skipped rather than dereferenced here too, so an adapter
+		// called directly cannot be brought down by one.
+		if f == nil || !f.IsNested {
 			continue
 		}
 		addJoin(f.RelationKey, f.RelationTable, f.RelationFK)
@@ -2339,7 +2342,7 @@ func includeScopeCond(relMeta *maniflex.ModelMeta, scope []*maniflex.FilterExpr,
 	}
 	applicable := make([]*maniflex.FilterExpr, 0, len(scope))
 	for _, f := range scope {
-		if f.IsNested || f.IsLocale {
+		if f == nil || f.IsNested || f.IsLocale {
 			continue
 		}
 		// ResolveFilterField, not FieldByDBName: filterCond resolves a filter's

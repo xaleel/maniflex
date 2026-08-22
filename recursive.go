@@ -160,6 +160,9 @@ func rqValidate(c *ServerContext, modelName string, q RecursiveQuery) (*ModelMet
 	if meta.FieldByDBName(q.ParentField) == nil {
 		return nil, fmt.Errorf("maniflex: ParentField %q does not exist on model %q", q.ParentField, modelName)
 	}
+	if err := rejectNilFilters(q.Where, "RecursiveQuery.Where"); err != nil {
+		return nil, err
+	}
 	for _, f := range q.Where {
 		if !f.IsNested && meta.FieldByDBName(f.Field) == nil {
 			return nil, fmt.Errorf("maniflex: Where filter references unknown column %q", f.Field)

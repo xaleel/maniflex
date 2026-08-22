@@ -147,6 +147,9 @@ func (c *ServerContext) Aggregate(modelName string, agg AggregateQuery) ([]Row, 
 	// clean error rather than a SQL fault. Either spelling resolves, matching
 	// the list path; aggBuildWhere fails an unresolvable filter closed, so this
 	// is the layer that can say why rather than the one holding the line.
+	if err := rejectNilFilters(agg.Where, "AggregateQuery.Where"); err != nil {
+		return nil, aggregateQueryError(err)
+	}
 	for _, f := range agg.Where {
 		if !f.IsNested && meta.ResolveFilterField(f.Field) == nil {
 			return nil, aggregateQueryErrorf("maniflex: Where filter references unknown column %q", f.Field)

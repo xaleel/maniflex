@@ -196,10 +196,10 @@ func (s *Server) compileRollup(r Rollup) (compiledRollup, error) {
 // ctx.Aggregate, which refuses it — as a 500 ROLLUP_ERROR on whichever child
 // write happened to run first, naming a config the caller wrote at startup.
 func validateRollupWhere(child *ModelMeta, fs []*FilterExpr) error {
+	if err := rejectNilFilters(fs, "Rollup.Where"); err != nil {
+		return err
+	}
 	for _, f := range fs {
-		if f == nil {
-			return fmt.Errorf("maniflex: Rollup.Where contains a nil filter")
-		}
 		kind := ""
 		switch {
 		case f.IsNested:

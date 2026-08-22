@@ -1661,6 +1661,13 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 	// implements used to be dropped from the WHERE clause, which for a forced
 	// filter meant the scope silently did not exist — see validateFilterOperators.
 	if ctx.Query != nil {
+		// Nil first: the two checks below skip nils rather than tripping over
+		// them, so without this the entry survives to the adapter's join builder
+		// and panics there — recovered as a 500 whose body says only "PANIC".
+		if err := rejectNilFilters(ctx.Query.Filters, "ctx.Query.Filters"); err != nil {
+			ctx.Abort(http.StatusInternalServerError, "INVALID_FILTER", err.Error())
+			return nil
+		}
 		if err := validateFilterOperators(ctx.Query.Filters); err != nil {
 			ctx.Abort(http.StatusInternalServerError, "INVALID_FILTER", err.Error())
 			return nil
@@ -2950,7 +2957,7 @@ func enrichLocaleQueryParams(q *QueryParams, ctx *ServerContext, model *ModelMet
 		}
 	}
 	for _, f := range q.Filters {
-		if f.IsLocale || f.IsNested {
+		if f == nil || f.IsLocale || f.IsNested {
 			continue // already has locale targeting or is a relation filter
 		}
 		field := model.FieldByDBName(f.Field)

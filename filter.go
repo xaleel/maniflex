@@ -103,6 +103,33 @@ func validateFilterOperators(fs []*FilterExpr) error {
 	return nil
 }
 
+// rejectNilFilters reports a nil *FilterExpr in fs, naming where it came from.
+//
+// A nil is reachable only from Go — the URL parser never produces one — but it
+// is easy to produce there, and it is refused rather than skipped. ViaFilter
+// returns (nil, error) on every failure path and says in its own doc that
+// skipping such an error "would leave the request unscoped rather than refused";
+// a caller who ignores it appends exactly this nil, and the thing it stood for
+// was a scope. Carrying on would run the query with less scope than the code
+// reads as applying, which is the failure a dropped forced filter has every
+// time (audit O1).
+//
+// Downstream code still skips nils where it iterates a filter list, so a path
+// that never reaches a boundary degrades to an ignored entry rather than a
+// panic. This is what turns that into a diagnosis.
+func rejectNilFilters(fs []*FilterExpr, source string) error {
+	for i, f := range fs {
+		if f == nil {
+			return fmt.Errorf(
+				"maniflex: %s contains a nil filter at index %d — a *FilterExpr is nil when the "+
+					"call that built it failed, so check the error from ViaFilter (or whatever "+
+					"produced it) rather than appending its result unconditionally",
+				source, i)
+		}
+	}
+	return nil
+}
+
 // validateFilterFields rejects a filter naming a field the model does not have.
 //
 // It is the field half of the same problem validateFilterOperators covers for
@@ -322,7 +349,7 @@ func validateFilterGroups(filters []*FilterExpr, primaryTable string) error {
 	// map[group] -> first table seen for that group
 	groupTable := make(map[int]string)
 	for _, f := range filters {
-		if f.Group <= 0 {
+		if f == nil || f.Group <= 0 {
 			continue
 		}
 		table := primaryTable

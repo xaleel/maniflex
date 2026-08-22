@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.5.2 (2026-08-22)
+## v0.6.0 (2026-08-22)
 
 - **Security:** a plaintext JWKS URL now warns at construction, and a redirect that downgrades the fetch is refused. The JWK Set is the whole root of trust for `auth.JWKSAuth` — no shared secret, and issuer and audience are claims checked only after the signature verifies — so whoever controls those bytes mints identities at will. An hour-long key cache and a stale-key fallback turn a moment of interception into a lasting one. Loopback is exempt, so local development stays silent. Go follows `https:`->`http:` redirects silently, so the configured URL was not the only thing needing a check.
 - **Security (behaviour change):** `LocalStorage`'s metadata sidecar is no longer reachable through the public key namespace. Only `Store` and `Retrieve` guarded it, so `DELETE /files/<key>.meta.json` stripped a live file of its content type and download filename and answered `204`, while `Stat` and `Exists` leaked it. The guard was also case-sensitive, where Windows and macOS fold case and Windows ignores trailing dots and spaces. It now lives in the one function every operation calls to resolve a key. `S3Storage` was never affected. Migrate: a key folding to `.meta.json` is now refused.

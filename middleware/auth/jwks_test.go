@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -10,9 +11,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -165,4 +169,153 @@ func TestParseJWT_StaticPathsStillWork(t *testing.T) {
 			t.Fatalf("RS256 static verify: %v", err)
 		}
 	})
+}
+
+// The JWK Set is the whole root of trust for JWKSAuth: there is no shared
+// secret, so whoever controls the bytes at that URL decides who is
+// authenticated. Fetched over plaintext, an active network attacker swaps in
+// their own public key and mints tokens with any claims they like (audit S11).
+//
+// Loopback is exempt rather than warned about. A local Keycloak or dex on
+// http://localhost is a normal development setup, and every JWKS test in this
+// file already talks to an httptest server on 127.0.0.1 — warning on that would
+// make the warning noise, which is how warnings get ignored.
+func TestPlaintextJWKSWarning(t *testing.T) {
+	secure := []string{
+		"https://issuer.example.com/.well-known/jwks.json",
+		"https://localhost:8443/jwks.json",
+		"http://localhost:8080/jwks.json",
+		"http://127.0.0.1:8080/jwks.json",
+		"http://127.0.0.2/jwks.json",
+		"http://[::1]:8080/jwks.json",
+	}
+	for _, raw := range secure {
+		if got := plaintextJWKSWarning(raw); got != "" {
+			t.Errorf("plaintextJWKSWarning(%q) = %q, want no warning", raw, got)
+		}
+	}
+
+	insecure := []string{
+		"http://issuer.example.com/.well-known/jwks.json",
+		// A private LAN address is still another host on a wire someone can sit on.
+		"http://192.168.1.10/jwks.json",
+		"http://10.0.0.5/jwks.json",
+		// Neither scheme the fetch can use; it will fail, but say so at boot.
+		"ftp://issuer.example.com/jwks.json",
+		"://not a url",
+		"",
+	}
+	for _, raw := range insecure {
+		if plaintextJWKSWarning(raw) == "" {
+			t.Errorf("plaintextJWKSWarning(%q) = \"\", want a warning", raw)
+		}
+	}
+}
+
+// captureDefaultLogger swaps slog's default for the duration of the test and
+// returns what was written to it. Not parallel-safe, which is why none of the
+// tests using it call t.Parallel.
+func captureDefaultLogger(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return &buf
+}
+
+// The warning has to arrive at construction. Nothing fetches the JWK Set until
+// the first token is validated, so a plaintext URL is otherwise invisible until
+// production traffic arrives — and then it does not fail, it succeeds.
+func TestJWKSAuthWarnsAtConstructionOnPlaintextIssuer(t *testing.T) {
+	buf := captureDefaultLogger(t)
+	_ = JWKSAuth("http://issuer.example.com/.well-known/jwks.json")
+	if !strings.Contains(buf.String(), "JWKSAuth") || !strings.Contains(buf.String(), "plaintext") {
+		t.Errorf("no plaintext warning logged; got %q", buf.String())
+	}
+}
+
+func TestJWKSAuthSilentOnSecureAndLoopbackIssuers(t *testing.T) {
+	for _, raw := range []string{
+		"https://issuer.example.com/.well-known/jwks.json",
+		"http://localhost:8080/jwks.json",
+	} {
+		buf := captureDefaultLogger(t)
+		_ = JWKSAuth(raw)
+		if buf.Len() != 0 {
+			t.Errorf("JWKSAuth(%q) logged %q, want silence", raw, buf.String())
+		}
+	}
+}
+
+// A scheme check on the configured URL is not enough on its own. Go's default
+// http.Client follows an https -> http redirect without complaint, so an
+// issuer that redirects downgrades the fetch of the key material that decides
+// authentication, and the configured https:// URL reads as if it did not.
+func TestJWKSRedirectMayNotWeakenTransport(t *testing.T) {
+	loopbackPlain, _ := url.Parse("http://127.0.0.1:9000/jwks.json")
+	remotePlain, _ := url.Parse("http://issuer.example.com/jwks.json")
+	secure, _ := url.Parse("https://issuer.example.com/jwks.json")
+
+	cases := []struct {
+		name    string
+		from    *url.URL
+		to      *url.URL
+		wantErr bool
+	}{
+		{"https to https", secure, secure, false},
+		{"https to plaintext is a downgrade", secure, remotePlain, true},
+		{"https to loopback plaintext is still a downgrade", secure, loopbackPlain, true},
+		{"loopback plaintext to loopback plaintext", loopbackPlain, loopbackPlain, false},
+		{"loopback plaintext to a remote plaintext host", loopbackPlain, remotePlain, true},
+		{"plaintext to https", remotePlain, secure, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkJWKSRedirect(tc.from, tc.to)
+			if tc.wantErr && err == nil {
+				t.Error("want an error, got nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Errorf("want nil, got %v", err)
+			}
+		})
+	}
+}
+
+// End to end over a real redirect, because the policy is only worth anything if
+// it is wired into the client that does the fetching.
+func TestJWKSCacheRefusesDowngradingRedirect(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(rsaJWKS("k1", &key.PublicKey)))
+	}))
+	defer plain.Close()
+	tlsSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, plain.URL+"/jwks.json", http.StatusFound)
+	}))
+	defer tlsSrv.Close()
+
+	cache := newJWKSCache(tlsSrv.URL)
+	// Swap only the transport, so the test trusts the server's certificate while
+	// keeping the redirect policy newJWKSCache installed. Replacing the whole
+	// client would test a policy this test wired itself, which is no test of the
+	// constructor at all.
+	cache.client.Transport = tlsSrv.Client().Transport
+
+	err := cache.refresh()
+	if err == nil {
+		t.Fatal("refresh followed an https -> http redirect")
+	}
+	// Named explicitly: a TLS verification failure would also make refresh error
+	// and would pass this test for entirely the wrong reason.
+	if !strings.Contains(err.Error(), "refusing redirect") {
+		t.Fatalf("refresh failed for the wrong reason: %v", err)
+	}
+	cache.mu.RLock()
+	n := len(cache.keys)
+	cache.mu.RUnlock()
+	if n != 0 {
+		t.Errorf("cached %d key(s) from a downgraded fetch, want 0", n)
+	}
 }

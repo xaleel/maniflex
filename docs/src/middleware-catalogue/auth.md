@@ -72,6 +72,32 @@ or for offline tests. See
 [Auth & Security Hardening](../advanced-topics/security.md#authentication) for the
 production checklist.
 
+### The JWKS URL must be `https://`
+
+The JWK Set is the *entire* root of trust here. There is no shared secret: a
+token is accepted if its signature verifies against a key from that URL, and
+`Issuer` and `Audience` are claims inside the token, checked only once the
+signature already has. Anyone who can control the bytes that URL returns can
+therefore serve their own public key and mint tokens for any identity they like.
+
+A plaintext URL logs a warning at construction. Two things make a moment of
+interception last much longer than the moment:
+
+- a fetch replaces the **whole** key map and caches it for an hour, so one
+  intercepted response buys an hour with nobody on the wire;
+- when a later refresh fails, a cached key of any age is still used — so
+  breaking the endpoint afterwards keeps an injected key alive indefinitely.
+
+`http://localhost` and other loopback addresses are exempt and log nothing: a
+local Keycloak or dex is an ordinary development setup and there is no wire to
+intercept. A private LAN address such as `192.168.1.10` is **not** exempt — it is
+still another host, reached over a network someone may be sitting on.
+
+Redirects are policed as well as the configured URL. Go's default HTTP client
+follows `https://` → `http://` without complaint, so an issuer that redirects
+could move key material onto plaintext while your configured `https://` URL
+looks untouched. Such a redirect is refused and the fetch fails.
+
 ## `APIKeyAuth`
 
 Validates a static API key from a request header. Each entry maps one key to

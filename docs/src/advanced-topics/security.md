@@ -8,6 +8,10 @@ layers. This page collects the practical checklist.
 - **Use `auth.JWTAuth` with an asymmetric algorithm** (`RS256` / `ES256`) when
   tokens are issued by an external provider. Symmetric `HS256` works when the
   signing service and the API share infrastructure.
+- **Publish the JWK Set over `https://`.** It is the only thing deciding which
+  tokens verify, so plaintext hands anyone on the path the ability to mint their
+  own; a non-loopback `http://` URL warns at startup. See
+  [`JWKSAuth`](../middleware-catalogue/auth.md#the-jwks-url-must-be-https).
 - **Use `auth.JWKSAuth(jwksURL, opts…)` when the issuer publishes a rotating
   JWK Set** (`/.well-known/jwks.json`). It fetches and caches the keys, selects
   the signing key by the token's `kid`, and refetches on an unknown `kid` so key

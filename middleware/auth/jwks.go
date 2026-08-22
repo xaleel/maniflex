@@ -9,8 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/big"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,6 +42,17 @@ const (
 //	    "https://issuer.example.com/.well-known/jwks.json",
 //	    auth.JWTOptions{Issuer: "https://issuer.example.com", Audience: "api"}))
 func JWKSAuth(jwksURL string, opts ...JWTOptions) maniflex.MiddlewareFunc {
+	if reason := plaintextJWKSWarning(jwksURL); reason != "" {
+		// At construction, because nothing fetches the JWK Set until the first
+		// token is validated — so a plaintext URL is otherwise invisible until
+		// production traffic arrives, and then it does not fail, it succeeds.
+		slog.Default().Warn("auth.JWKSAuth: "+reason,
+			slog.String("url", jwksURL),
+			slog.String("why", "the JWK Set is the only thing deciding which tokens verify, so "+
+				"anyone able to intercept the fetch can substitute their own key and mint tokens "+
+				"with any claims they like"),
+			slog.String("hint", "use https; an issuer on loopback is exempt for local development"))
+	}
 	opt := JWTOptions{}
 	if len(opts) > 0 {
 		opt = opts[0]
@@ -63,12 +78,106 @@ type jwksCache struct {
 
 func newJWKSCache(url string) *jwksCache {
 	return &jwksCache{
-		url:        url,
-		client:     &http.Client{Timeout: 10 * time.Second},
+		url: url,
+		client: &http.Client{
+			Timeout:       10 * time.Second,
+			CheckRedirect: jwksCheckRedirect,
+		},
 		ttl:        defaultJWKSCacheTTL,
 		minRefetch: defaultJWKSMinRefetch,
 		keys:       map[string]crypto.PublicKey{},
 	}
+}
+
+// plaintextJWKSWarning returns the reason the JWK Set at rawURL would be
+// fetched over an untrustworthy transport, or "" when it is sound.
+//
+// The JWK Set is the entire root of trust for JWKSAuth: unlike JWTAuth there is
+// no shared secret, and the authentication decision reduces to whether the
+// token's signature verifies against a key from this URL. Issuer and audience
+// are claims inside the token, checked only after that signature verifies, so
+// they are the attacker's to choose too. Fetched over plaintext, an active
+// network attacker returns a JWK Set holding their own public key and mints
+// tokens for any identity they like — not privilege escalation from a stolen
+// account but arbitrary identities, including ones that never existed (S11).
+//
+// Two things here make a transient intercept a lasting one, which is why this
+// is worth a warning rather than a docs note: refresh replaces the whole key
+// map and caches it for defaultJWKSCacheTTL, and key() falls back to a cached
+// key of any age when a later refresh fails.
+//
+// Loopback is exempt rather than warned about. A local Keycloak or dex on
+// http://localhost is an ordinary development setup with no wire to sit on, and
+// a warning that fires on every dev run is one nobody reads by the time it
+// matters. A private LAN address is not exempt: 192.168.0.0/16 is still another
+// host, reached over a network somebody may be on.
+func plaintextJWKSWarning(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return "JWKS URL is not a valid absolute URL"
+	}
+	switch u.Scheme {
+	case "https":
+		return ""
+	case "http":
+		if isLoopbackHost(u.Hostname()) {
+			return ""
+		}
+		return "JWK Set is fetched over plaintext HTTP from a non-loopback host"
+	default:
+		return fmt.Sprintf("JWKS URL scheme %q is neither http nor https", u.Scheme)
+	}
+}
+
+// isLoopbackHost reports whether host names this machine. url.URL.Hostname has
+// already stripped the port and the brackets around a literal IPv6 address.
+func isLoopbackHost(host string) bool {
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// jwksCheckRedirect is the fetching client's redirect policy.
+//
+// A scheme check on the configured URL does not survive a redirect on its own:
+// Go's default client follows https -> http without complaint, stripping
+// Authorization across hosts but permitting the downgrade itself. So an issuer
+// that redirects can move the key material that decides authentication onto
+// plaintext while the configured https:// URL reads as though nothing happened.
+func jwksCheckRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("fetch JWKS: stopped after 10 redirects")
+	}
+	// Compare against the hop just taken rather than the original request, so a
+	// downgrade anywhere along a chain is caught rather than only at its head.
+	return checkJWKSRedirect(via[len(via)-1].URL, req.URL)
+}
+
+// checkJWKSRedirect refuses a redirect that would fetch the JWK Set over a
+// weaker transport than the previous hop used.
+//
+// Landing on plaintext loopback is refused too when the hop before it was
+// https. Loopback is exempt as a configured destination, where it means "the
+// IdP is on this machine"; arriving there by redirect from a TLS endpoint means
+// something else entirely and is never what the operator asked for.
+func checkJWKSRedirect(from, to *url.URL) error {
+	if to.Scheme == "https" {
+		return nil
+	}
+	if from.Scheme == "https" {
+		return fmt.Errorf("fetch JWKS: refusing redirect from %s to %s: "+
+			"the JWK Set decides which tokens verify and must not be fetched over plaintext",
+			from.Scheme+"://"+from.Host, to.Scheme+"://"+to.Host)
+	}
+	if !isLoopbackHost(to.Hostname()) {
+		return fmt.Errorf("fetch JWKS: refusing redirect to plaintext non-loopback host %s: "+
+			"the JWK Set decides which tokens verify", to.Host)
+	}
+	return nil
 }
 
 // key resolves the public key for kid, (re)fetching the JWK Set when the cache

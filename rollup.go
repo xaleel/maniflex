@@ -399,15 +399,25 @@ func (cr compiledRollup) backfill(ctx *ServerContext) error {
 	if !ok {
 		return fmt.Errorf("child model %q is not registered", cr.cfg.Child)
 	}
-	// DISTINCT over the FK column: the identifiers are validated DB names from
-	// the registry, so the statement is not client-influenced.
+	// DISTINCT over the FK column. Both identifiers are quoted, as the migrator
+	// quotes them when it creates the table and as every other statement quotes
+	// them on the way back out. Unquoted they broke on two ordinary spellings:
+	// a camelCase name — json:/db: names reach the DB name verbatim, so
+	// json:"parentId" is a column called parentId, which Postgres created
+	// case-sensitively and then could not find as "parentid" — and a reserved
+	// word, a syntax error on both drivers (audit O6). The camelCase half was
+	// invisible on SQLite, which folds identifier case, so it waited for
+	// production.
+	//
+	// The values are validated DB names from the registry, so the statement was
+	// never client-influenced; this is about correctness, not injection.
 	//
 	// A configured Where deliberately does not narrow this scan. It selects which
 	// children the aggregate counts, not which parents have one — a parent whose
 	// every child fails the filter still needs its column driven to the empty
 	// value, and filtering here would skip it and leave the stale total behind.
 	// recompute applies the filter, which is where it belongs.
-	q := fmt.Sprintf("SELECT DISTINCT %s AS pid FROM %s", cr.onDB, child.TableName)
+	q := fmt.Sprintf("SELECT DISTINCT %s AS pid FROM %s", Quote(cr.onDB), Quote(child.TableName))
 	rows, err := ctx.rawQuery(q)
 	if err != nil {
 		return err

@@ -92,7 +92,7 @@ func (c *ServerContext) RecursiveQuery(modelName string, q RecursiveQuery) ([]Ro
 	}
 
 	joinCond := rqJoinCond(dir, table, q.ParentField)
-	id := rqIDText(table)
+	id := rqIDPathSegment(table)
 
 	query := fmt.Sprintf(
 		"WITH RECURSIVE _cte AS ("+
@@ -125,6 +125,26 @@ func rqIDText(tableQuoted string) string {
 	return "CAST(" + tableQuoted + "." + Quote("id") + " AS TEXT)"
 }
 
+// rqIDPathSegment renders the row's id for the visited-path string, escaped so
+// that the '/' separating one id from the next cannot be confused with a '/'
+// inside an id.
+//
+// Ids are application data. Server-supplied ids are a documented feature and
+// identity.md offers "a record keyed by an external system's identifier" as a
+// reason to use them — and external identifiers contain '/' routinely. With one
+// unescaped the path "/x/a/b/" reads as three visited ids rather than two, so a
+// node with id "b" matched an ancestor it had nothing to do with and its whole
+// subtree was dropped from the result, silently (audit O4).
+//
+// The escape is RFC 6901's, and its order is the load-bearing part: '~' becomes
+// '~0' first, then '/' becomes '~1'. Substituting '/' alone would leave the ids
+// "a/b" and "a~1b" sharing one encoding, which prunes exactly as the raw '/'
+// did. Nothing decodes this — the column is dropped from every row before the
+// rows are returned — so only its injectivity matters.
+func rqIDPathSegment(tableQuoted string) string {
+	return "replace(replace(" + rqIDText(tableQuoted) + ", '~', '~0'), '/', '~1')"
+}
+
 // rqCycleCond returns a predicate that admits a row only when its id is not
 // already on the path walked to reach it, which is what stops a cyclic parent
 // chain (a row that is its own ancestor) from looping forever.
@@ -132,9 +152,10 @@ func rqIDText(tableQuoted string) string {
 // The test is an exact substring search rather than LIKE: an id is application
 // data and may legitimately contain '%' or '_', which LIKE would treat as
 // wildcards — '_' in particular would silently prune a real subtree by matching
-// an unrelated id of the same length.
+// an unrelated id of the same length. It searches the escaped form for the same
+// class of reason; see rqIDPathSegment.
 func rqCycleCond(tableQuoted string, driver DriverType) string {
-	needle := "'/' || " + rqIDText(tableQuoted) + " || '/'"
+	needle := "'/' || " + rqIDPathSegment(tableQuoted) + " || '/'"
 	fn := "instr"
 	if driver == Postgres {
 		fn = "strpos"

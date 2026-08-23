@@ -186,6 +186,23 @@ the DB step.
 All are nil-safe: `ctx.ParsedBody` is `nil` for body-less requests (GET, DELETE)
 and the readers return zero values rather than panicking.
 
+#### Numbers read from the body are `float64`
+
+The body is JSON decoded into a map, so **every** number in it is a `float64` —
+including one written as an integer. A `float64` represents every integer only
+up to 2^53 (9007199254740992), so a larger one read back through `ctx.Field`,
+`ParsedBody.Map()`, a validation callback or an ABAC policy has been rounded,
+and can differ from what the client sent in either direction.
+
+The stored value has not been. Writes source their columns from the typed record
+(`ctx.Record`), where an `int64` field decodes from the JSON number exactly, so a
+large id or amount reaches the database intact — the body map is the fallback and
+a typed write does not use it. That is the trap worth knowing: above 2^53 the
+value a policy inspects and the value the row receives can disagree.
+
+If a middleware needs an integer larger than 2^53 exactly, read it from the typed
+record (`maniflex.For[T](ctx)`) rather than from the body map.
+
 For typed access, read the whole body as the concrete model struct:
 
 ```go

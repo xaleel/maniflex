@@ -1796,8 +1796,15 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 	// migrated to SetField/DeleteField (W1/W2), the bound typed record carries
 	// the authoritative write set in the common case, so we source columns from
 	// it. ParsedBody remains the fallback for writes the record can't faithfully
-	// represent — raw ParsedBody mutation that bypassed SetField, loose-typed or
-	// multipart values that never bound to the struct (see recordSourcedWrite).
+	// represent — loose-typed or multipart values that never bound to the struct
+	// (see recordSourcedWrite).
+	//
+	// Which source wins decides more than column parity. A JSON number in
+	// ParsedBody is a float64, which holds every integer only up to 2^53, while
+	// the record's field is whatever the model declared — so an int64 column
+	// keeps its exact value through the record and would quietly start rounding
+	// past 2^53 if a write were sourced from the map instead. Pinned by
+	// TestLargeIntegerSurvivesWriteRoundTrip (audit N1).
 	var dbData map[string]any
 	if recordSourcedWrite(ctx, model) {
 		dbData = recordToMap(model, ctx.Record)
@@ -2581,10 +2588,16 @@ func (s *defaultSteps) streamAttachment(ctx *ServerContext) {
 // faithfully covers the request body, so the DB write can source column values
 // from the struct instead of from ParsedBody. It requires a typed carrier whose
 // present-set exactly matches the DB-column keys ParsedBody would produce. Any
-// divergence — a raw ParsedBody mutation that bypassed SetField, or loose-typed
-// / multipart values that never bound to the struct — fails the check and the
+// divergence — loose-typed or multipart values that never bound to the struct —
+// fails the check and the
 // caller falls back to toDBMap(ParsedBody). This keeps write-column parity with
 // the map path exactly while moving the common case onto the record.
+//
+// For a registered model the fallback is close to unreachable, which is what
+// makes the record path load-bearing rather than an optimisation: RequestBody's
+// backing map is unexported and only SetField/DeleteField reach it (both of
+// which sync the record), and registration refuses a model that does not embed
+// BaseModel, so the present-set is never nil.
 func recordSourcedWrite(ctx *ServerContext, model *ModelMeta) bool {
 	if ctx.Record == nil || model.GoType == nil {
 		return false

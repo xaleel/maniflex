@@ -223,6 +223,21 @@ func validateExprTree(meta *ModelMeta, e Expr, depth int) (int, int, error) {
 
 // isNumericKind reports whether t is an integer or float type, dereferencing a
 // pointer. Arithmetic on anything else is a mistake worth catching at startup.
+func isIntegerKind(t reflect.Type) bool {
+	if t == nil {
+		return false
+	}
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	switch t.Kind() {
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return true
+	}
+	return false
+}
+
 func isNumericKind(t reflect.Type) bool {
 	if t == nil {
 		return false

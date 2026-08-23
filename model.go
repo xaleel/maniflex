@@ -513,6 +513,10 @@ func (m *ModelMeta) rejectMisplacedBounds() error {
 		hasNum := f.Tags.Min != nil || f.Tags.Max != nil
 		hasLen := f.Tags.MinLen != nil || f.Tags.MaxLen != nil
 
+		if err := rejectUnrepresentableBound(m.Name, f); err != nil {
+			return err
+		}
+
 		if hasNum && !isNumericKind(f.Type) {
 			hint := ""
 			if canMeasureLength(f.Type) {
@@ -553,6 +557,55 @@ func (m *ModelMeta) rejectMisplacedBounds() error {
 					"no value can satisfy both",
 				m.Name, f.Name, *f.Tags.MinLen, *f.Tags.MaxLen)
 		}
+	}
+	return nil
+}
+
+// maxExactFloat64Int is 2^53: the largest integer float64 holds exactly while
+// also holding every integer below it. Past it the representable integers are
+// spaced more than 1 apart, so some round-trip and some do not.
+const maxExactFloat64Int = 1 << 53
+
+// rejectUnrepresentableBound refuses an mfx:"min:"/"max:" on an integer column
+// that float64 cannot carry exactly.
+//
+// The tag is parsed with ParseFloat, so such a bound is stored as whatever
+// float64 rounds it to and then enforced as that — and the rounding goes both
+// ways. max:9007199254740995 becomes ...996, a ceiling one looser than the one
+// written; max:9223372036854775807, meaning "cap at MaxInt64", becomes
+// 9223372036854776000, which is above MaxInt64, so the guard can never fire and
+// the column is silently unbounded (audit O5).
+//
+// The cutoff is the whole exactly-representable range rather than the subset of
+// larger integers float64 happens to land on, because "some values in this range
+// are enforced as written and some are not" is not a contract worth offering. It
+// costs the exact bound 2^53 itself, which is the price of the boundary being
+// somewhere a reader can state.
+//
+// Integer columns only. A float column's bound is inexact by the nature of the
+// column, and mfx:"max:1e20" there asks for a magnitude, not an exact value.
+func rejectUnrepresentableBound(model string, f FieldMeta) error {
+	if !isIntegerKind(f.Type) {
+		return nil
+	}
+	for _, b := range []struct {
+		tag string
+		val *float64
+	}{{"min", f.Tags.Min}, {"max", f.Tags.Max}} {
+		if b.val == nil || (*b.val < maxExactFloat64Int && *b.val > -maxExactFloat64Int) {
+			continue
+		}
+		// The value shown is the rounded one, and is labelled as such: echoing it
+		// as the tag would send the reader looking through their model for a
+		// number they never wrote. Naming it as what float64 made of their bound
+		// is the whole complaint, stated.
+		return fmt.Errorf(
+			"maniflex: model %q field %q has an mfx:%q bound that float64 rounded to %s, "+
+				"at or beyond 2^53 (%d) — a bound is parsed as a float64, which cannot "+
+				"represent every integer past that point, so the bound enforced would not be "+
+				"the one written. Use a bound within ±%d, or drop the tag and check the range "+
+				"in a Validate middleware",
+			model, f.Name, b.tag+":", formatBound(*b.val), maxExactFloat64Int, maxExactFloat64Int)
 	}
 	return nil
 }

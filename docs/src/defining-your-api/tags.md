@@ -87,6 +87,29 @@ startup, and an error message that named neither the tag nor the type. This
 framework's own tutorial shipped `Password string mfx:"min:8"` and rejected
 every password.
 
+### The range a bound may span
+
+A `min:`/`max:` value is parsed as a `float64`, which represents every integer
+up to 2^53 (9007199254740992) exactly and only some beyond it. On an
+integer-typed field a bound at or past that point is a registration error rather
+than a bound enforced as some nearby number:
+
+```
+maniflex: model "Ledger" field "Balance" has an mfx:"max:" bound that float64
+rounded to 9223372036854776000, at or beyond 2^53 (9007199254740992) — a bound
+is parsed as a float64, which cannot represent every integer past that point, so
+the bound enforced would not be the one written.
+```
+
+The rounding is not conservative in either direction: `max:9007199254740995`
+becomes `...996`, a ceiling one *looser* than written, and
+`max:9223372036854775807` — "cap at `MaxInt64`" — becomes a number above
+`MaxInt64`, so the guard can never fire and the column is silently unbounded.
+
+Float-typed fields are unaffected: a bound there is inexact by the nature of the
+column, and `max:1e20` asks for a magnitude rather than an exact value. For an
+integer range wider than 2^53, check it in a `Validate` middleware instead.
+
 String length is counted in **characters, not bytes**. A cap sized against
 English would otherwise reject the same message written in Arabic or carrying
 emoji — a limit that behaves differently depending on the writer's language, and

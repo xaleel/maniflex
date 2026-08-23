@@ -22,8 +22,21 @@ package maniflex
 import (
 	"fmt"
 	"reflect"
+	"strconv"
 	"unicode/utf8"
 )
+
+// formatBound renders a numeric bound the way the tag wrote it rather than in
+// whichever form is shortest.
+//
+// %g switches to scientific notation as soon as that is shorter, so
+// mfx:"max:1000000" reported "must be <= 1e+06" — a 422 body at a completely
+// ordinary bound, reading as a framework defect rather than as the limit the
+// model declared (audit O5). 'f' with a precision of -1 keeps a fraction a
+// fraction, so 0.5 is still "0.5".
+func formatBound(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
+}
 
 // WriteOption adjusts a programmatic write. See SkipValidation.
 type WriteOption func(*writeOptions)
@@ -134,10 +147,10 @@ func checkFieldValue(f *FieldMeta, val any) string {
 			return fmt.Sprintf("field %q must be a number", jn)
 		}
 		if f.Tags.Min != nil && num < *f.Tags.Min {
-			return fmt.Sprintf("field %q must be >= %g", jn, *f.Tags.Min)
+			return fmt.Sprintf("field %q must be >= %s", jn, formatBound(*f.Tags.Min))
 		}
 		if f.Tags.Max != nil && num > *f.Tags.Max {
-			return fmt.Sprintf("field %q must be <= %g", jn, *f.Tags.Max)
+			return fmt.Sprintf("field %q must be <= %s", jn, formatBound(*f.Tags.Max))
 		}
 	}
 	if f.Tags.MinLen != nil || f.Tags.MaxLen != nil {

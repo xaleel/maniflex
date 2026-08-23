@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Bugfix:** a next-page cursor that cannot be encoded now fails the page instead of answering `has_more: true` with no token — a walk the client can neither continue nor detect the end of, logged nowhere. Reporting no further rows would be worse: the client stops believing it has everything, and every row past that boundary is missing from a result that looks complete. Registration accepts a narrower set of column types than the encoder does, so what reaches this is a NaN or infinite float, or a NULL in a column an out-of-band schema never declared NOT NULL.
 - **Bugfix:** a nil `*FilterExpr` in a Go-built filter list is now refused with an error naming where it came from, rather than panicking. `ctx.Aggregate`, `ctx.RecursiveQuery` and the list path all dereferenced every entry to ask whether it was a relation filter, the last dying in the adapter's join builder — a 500 whose body said only `PANIC`. Refused rather than skipped because a nil is usually a dropped scope: `ViaFilter` returns `(nil, error)` on failure and warns that ignoring it leaves a request unscoped rather than refused. Loops over filters now skip nils too, so no path panics.
 
 ## v0.6.0 (2026-08-22)

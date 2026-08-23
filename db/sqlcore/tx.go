@@ -276,10 +276,14 @@ func (t *txAdapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp 
 		return nil, 0, err
 	}
 	if qp.Cursor != nil {
-		recs = recs[:finalizeCursorPage(qp.Cursor, len(recs), qp.Limit, func(i int) (any, string) {
+		kept, err := finalizeCursorPage(qp.Cursor, len(recs), qp.Limit, func(i int) (any, string) {
 			m := maniflex.RecordToMap(model, recs[i])
 			return m[qp.Cursor.Field], fmt.Sprint(m["id"])
-		})]
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		recs = recs[:kept]
 	}
 	if err := populateIncludesTyped(ctx, t.tx, t.reg, t.driver, model, recs, qp); err != nil {
 		return nil, 0, err
@@ -332,9 +336,13 @@ func (t *txAdapter) findManyMap(ctx context.Context, model *maniflex.ModelMeta, 
 	}
 
 	if qp.Cursor != nil {
-		results = results[:finalizeCursorPage(qp.Cursor, len(results), qp.Limit, func(i int) (any, string) {
+		kept, err := finalizeCursorPage(qp.Cursor, len(results), qp.Limit, func(i int) (any, string) {
 			return results[i][qp.Cursor.Field], fmt.Sprint(results[i]["id"])
-		})]
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+		results = results[:kept]
 	}
 
 	if err := populateIncludes(ctx, t.tx, t.reg, t.driver, model, results, qp); err != nil {

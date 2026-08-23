@@ -63,12 +63,36 @@ func cursorDataClauses(model *maniflex.ModelMeta, cur *maniflex.CursorParams, li
 // limit, recording on cur whether more rows follow and, if so, the next-page
 // token built from the last kept row. rowKey returns the cursor field value and
 // id for the row at index i. It returns the number of rows to keep.
-func finalizeCursorPage(cur *maniflex.CursorParams, n, limit int, rowKey func(i int) (any, string)) int {
+//
+// A boundary value EncodeCursor cannot represent is an error rather than a page.
+// It used to set HasMore first and then assign the empty string EncodeCursor
+// returns on failure, and next_cursor is rendered with omitempty — so the client
+// got {"has_more": true} and no token, which is a walk it cannot continue and
+// cannot detect the end of, with nothing logged (audit O3).
+//
+// Reporting no further rows instead would be worse: the client would stop,
+// believing it had everything, and every row past this boundary would be missing
+// from a result that looked complete. Neither silent answer is available, so the
+// page fails and says why.
+//
+// cur is left untouched on that path, so nothing downstream sees the half-set
+// state this exists to prevent.
+func finalizeCursorPage(cur *maniflex.CursorParams, n, limit int, rowKey func(i int) (any, string)) (int, error) {
 	if n <= limit {
-		return n
+		return n, nil
+	}
+	v, id := rowKey(limit - 1)
+	token := maniflex.EncodeCursor(v, id)
+	if token == "" {
+		return 0, fmt.Errorf(
+			"maniflex: cannot encode a next-page cursor for cursor_field %q at row id %q: "+
+				"the boundary value (%T) has no cursor encoding. Registration accepts a narrower "+
+				"set of column types than this — a NaN or infinite float, or a NULL in a column "+
+				"the schema was not migrated to declare NOT NULL, reaches here and cannot be put "+
+				"in a token",
+			cur.Field, id, v)
 	}
 	cur.HasMore = true
-	v, id := rowKey(limit - 1)
-	cur.NextCursor = maniflex.EncodeCursor(v, id)
-	return limit
+	cur.NextCursor = token
+	return limit, nil
 }

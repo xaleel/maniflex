@@ -917,6 +917,7 @@ func (c *Server) handler() (http.Handler, error) {
 		// Legal-but-costly encryption configuration. After validation, so a
 		// server that is about to be refused does not also get advice.
 		warnBlindIndexFallback(c.registry, &c.cfg, c.cfg.logger())
+		warnUninferableSchemas(c.registry, &c.cfg, c.cfg.logger())
 		warnUnsignedFileACL(c.registry, &c.cfg, c.cfg.logger())
 		// Close the registration window — after this the composed chains are cached
 		// per (model, operation) instead of rebuilt six times per request, so the

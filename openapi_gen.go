@@ -2,9 +2,11 @@ package maniflex
 
 import (
 	"fmt"
+	"log/slog"
 	"net/http"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -107,10 +109,7 @@ func buildModelSchemas(spec *OpenAPISpec, m *ModelMeta, reg RegistryAccessor) {
 			continue
 		}
 
-		schema := goTypeToSchema(f.Type)
-		if schema == nil {
-			continue
-		}
+		schema := modelFieldSchema(&f)
 
 		jn := f.Tags.JSONName
 
@@ -1002,6 +1001,138 @@ type ObjectWithSchema interface {
 	Schema() *OASSchema
 }
 
+// uninferableSchemaModel names one model and the published fields whose schema
+// could not be inferred from their Go type.
+type uninferableSchemaModel struct {
+	name   string
+	fields []string
+}
+
+// uninferableSchemaModels returns, in registry order, the models carrying a
+// published field that the schema generator cannot describe.
+//
+// Such a field is no longer dropped — modelFieldSchema publishes it
+// unconstrained — but an unconstrained schema is a worse contract than a real
+// one, and only the model's author can supply the real one. Hidden fields and
+// the id are excluded: neither is generated from its Go type.
+func uninferableSchemaModels(reg RegistryAccessor) []uninferableSchemaModel {
+	if reg == nil {
+		return nil
+	}
+	var out []uninferableSchemaModel
+	for _, m := range reg.All() {
+		var fields []string
+		for i := range m.Fields {
+			f := &m.Fields[i]
+			if f.Tags.Hidden || f.Tags.JSONName == "" || f.Tags.DBName == "id" {
+				continue
+			}
+			if goTypeToSchema(f.Type) == nil {
+				fields = append(fields, f.Tags.JSONName)
+			}
+		}
+		if len(fields) > 0 {
+			out = append(out, uninferableSchemaModel{name: m.Name, fields: fields})
+		}
+	}
+	return out
+}
+
+// collectSchemaCoverageIssues reports a published field the generated spec
+// cannot describe. Fatal only under Config.Strict; warnUninferableSchemas covers
+// everyone else.
+//
+// The field used to be omitted from the spec altogether, with no signal — and
+// omitted from the `required` list with it, so the spec denied a field the
+// server demands (downstream report, ASKS.md issue 2). Adding a case for the
+// type that prompted the report fixes that instance; this is what makes the next
+// one say so instead of costing whoever generates a client a week of patching
+// types by hand.
+func collectSchemaCoverageIssues(reg RegistryAccessor, strict bool, issues *issueList) {
+	if !strict {
+		return
+	}
+	for _, m := range uninferableSchemaModels(reg) {
+		issues.addStrict("openapi",
+			"%s has field(s) %s whose Go type the schema generator cannot describe, so the "+
+				"generated OpenAPI spec publishes them with no type constraint and a client "+
+				"generated from it has no type for them. Give the field's type a Schema() "+
+				"method (maniflex.ObjectWithSchema) to say what it serialises as",
+			m.name, quoteJoin(m.fields))
+	}
+}
+
+// warnUninferableSchemas logs once at boot what collectSchemaCoverageIssues only
+// refuses under Strict.
+//
+// It reaches everyone because the cost is not paid by whoever reads startup
+// errors: it lands on whoever generates a client from the spec, possibly in
+// another team and certainly later.
+func warnUninferableSchemas(reg RegistryAccessor, cfg *Config, l *slog.Logger) {
+	if cfg != nil && cfg.Strict {
+		return // already a startup error; a warning as well is just noise
+	}
+	for _, m := range uninferableSchemaModels(reg) {
+		l.Warn("field(s) have no OpenAPI schema and are published with no type constraint; "+
+			"a client generated from the spec has no type for them",
+			slog.String("model", m.name),
+			slog.String("fields", strings.Join(m.fields, ", ")),
+			slog.String("hint", "give the field's type a Schema() method (maniflex.ObjectWithSchema)"))
+	}
+}
+
+// quoteJoin renders names as a quoted, comma-separated list, so a field name
+// that reads like prose still reads as a name.
+func quoteJoin(names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = strconv.Quote(n)
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// modelFieldSchema returns the schema a model field is published with. It never
+// returns nil.
+//
+// A field whose Go type nothing here recognises used to be skipped by the
+// caller, which took it out of the spec entirely — and out of the `required`
+// list with it, so the spec denied the existence of a field the server demands
+// (downstream report, ASKS.md issue 2). Publishing it without a type constraint
+// says less, but everything it says is true, and the field stays in the
+// contract. collectSchemaCoverageIssues reports the model so the fallback is a
+// prompt rather than a resting place.
+func modelFieldSchema(f *FieldMeta) *OASSchema {
+	if s := goTypeToSchema(f.Type); s != nil {
+		return s
+	}
+	return &OASSchema{
+		Description: "No schema could be inferred for this field's Go type. " +
+			"Give the type a Schema() method (maniflex.ObjectWithSchema) to describe it.",
+	}
+}
+
+// sliceItemsSchema renders a slice or array type, and reports whether t is one.
+//
+// A byte slice is the exception, and the reason this is not one line:
+// encoding/json base64s it, so its JSON shape is a string and not an array. The
+// existing reflectTypeSchema renders it as an array of integers — a payload no
+// server ever sends — which is why both paths call this rather than one
+// delegating to the other.
+//
+// An element type with no schema of its own leaves the array untyped rather than
+// dropping it: "an array" is still true, and the caller reports the field.
+func sliceItemsSchema(t reflect.Type) (*OASSchema, bool) {
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array:
+	default:
+		return nil, false
+	}
+	if t.Elem().Kind() == reflect.Uint8 {
+		return &OASSchema{Type: "string", Format: "byte"}, true
+	}
+	return &OASSchema{Type: "array", Items: goTypeToSchema(t.Elem())}, true
+}
+
 func implements(t reflect.Type, iface reflect.Type) bool {
 	return t.Implements(iface) || reflect.PointerTo(t).Implements(iface)
 }
@@ -1023,6 +1154,8 @@ func goTypeToSchema(t reflect.Type) *OASSchema {
 	} else if t.Kind() == reflect.Map && t.Key().Kind() == reflect.String {
 		// map[string]unknown
 		s = &OASSchema{Type: "object"}
+	} else if items, ok := sliceItemsSchema(t); ok {
+		s = items
 	} else {
 		switch t.Kind() {
 		case reflect.String:
@@ -1616,6 +1749,11 @@ func reflectTypeSchema(rt reflect.Type, depth int) *OASSchema {
 		}
 		return reflectStructSchema(rt, depth)
 	case reflect.Slice, reflect.Array:
+		// A byte slice is a base64 string, not an array — the same rule the model
+		// path applies, shared so the two cannot describe one Go type differently.
+		if rt.Elem().Kind() == reflect.Uint8 {
+			return &OASSchema{Type: "string", Format: "byte"}
+		}
 		items := reflectTypeSchema(rt.Elem(), depth+1)
 		if items == nil {
 			return nil

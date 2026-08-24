@@ -143,12 +143,12 @@ func TestFieldLen_AppearsInOpenAPI(t *testing.T) {
 		}
 	}
 
-	// The list field's bound is deliberately not asserted here: a custom
-	// SQLTyper type is omitted from the model schema entirely, so `tags` has no
-	// property to carry a maxItems. That is a pre-existing OpenAPI gap rather
-	// than anything about length bounds — the array branch of
-	// applyFieldValidation is covered by a unit test instead.
-	if strings.Contains(body, `"tags":{"type"`) {
-		t.Error("tags is now represented in the spec — assert its maxItems here")
+	// The list field's bound used to be unassertable here: a slice-typed column
+	// was omitted from the model schema entirely, so `tags` had no property to
+	// carry a maxItems. That gap is closed (ASKS.md issue 2), so the bound the
+	// server enforces on a list now has to reach the spec like any other.
+	if !strings.Contains(body, `"maxItems":2`) {
+		t.Errorf("openapi.json does not carry the list bound maxlen:2 as maxItems; "+
+			"the server rejects a third element and the spec does not say so:\n%s", body)
 	}
 }

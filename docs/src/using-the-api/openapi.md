@@ -82,10 +82,22 @@ response shape.
 ## Schemas for custom types
 
 Field types are mapped to OpenAPI schemas by their Go kind: strings, booleans,
-the integer and float families, `time.Time` (as `date-time`), and any
-string-keyed `map` (as a free-form `object`). A field whose type falls outside
-these — a custom struct, or any type with a non-obvious JSON representation — is
-**omitted** from the generated schema rather than guessed at.
+the integer and float families, `time.Time` (as `date-time`), any string-keyed
+`map` (as a free-form `object`), and slices and arrays (as `array`, with the
+element type inferred — except a byte slice, which `encoding/json` base64s and
+which is therefore documented as `{"type": "string", "format": "byte"}`).
+
+A field whose type falls outside these — a custom struct, or any type with a
+non-obvious JSON representation — is published **with no type constraint**, and
+the server says so at startup: a warning naming the model and the field, and a
+startup error under `Config.Strict`.
+
+Such a field is not omitted. It used to be, and a spec that omits a field says
+two false things about it. A generated client has no type for it — and because
+the omission happened before the `required` list was built, a field the server
+*demands* was absent from `required` as well, so the spec described a request
+that always fails. An unconstrained schema says less than a real one, but
+everything it says is true.
 
 To document such a type, make it implement the `ObjectWithSchema` interface:
 

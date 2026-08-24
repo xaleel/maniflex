@@ -262,8 +262,19 @@ closed pay periods, confirmed POs).
 
 Multiple `lock_when` directives accumulate; **any** matching condition locks
 the record. The directive can be written on any field — the referenced
-`field` is what matters. A typo in the referenced JSON name is caught at
-registration so you never ship a rule that silently never matches.
+`field` is what matters.
+
+Both halves of the directive are checked at registration, so you never ship a
+rule that silently never matches: the JSON name has to resolve to a real field,
+and the value has to be one that field could hold. `lock_when:count=five` on an
+integer column is a startup error rather than a lock that never fires, as is
+`lock_when` against a `time.Time` or a struct — the directive tests equality and
+covers string, bool and numeric columns.
+
+The comparison is made on the field's own type rather than on the two sides'
+printed forms, so it does not depend on which shape a driver returns: SQLite
+reports a bool column as an integer, Postgres as a bool, and a `NUMERIC` arrives
+through `lib/pq` as text. `1` is accepted where the field is a bool.
 
 ```go
 type Invoice struct {

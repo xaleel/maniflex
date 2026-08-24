@@ -392,6 +392,16 @@ so it controls its own column type — e.g. a `JSONMap` that maps to `JSONB` on
 Postgres and `TEXT` on SQLite. `maniflex.LocaleString` is a built-in example. To
 keep such a field out of the database entirely, tag it `mfx:"-"`.
 
+A `NOT NULL` column of such a type is given a zero-value `DEFAULT` so that adding
+it to a table which already has rows succeeds. For a type whose `SQLType` is one
+the migrator has no literal rule for — `BLOB`, `BYTEA`, `UUID`, `NUMERIC(12,2)` —
+that default is a `CAST` to the column's own type, and the value cast is the
+type's zero `driver.Valuer` output where it has one, else `''`, `{}` or `[]` by
+kind. Give the type a `Value()` a zero receiver can answer if the generic choice
+is wrong for it.
+
+To filter inside such a column, see `json_array` / `json_object` above.
+
 ## Relation directives
 
 A field may declare a relationship to another model. Relations are **opt-in** —

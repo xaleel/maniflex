@@ -811,7 +811,20 @@ func (a *Adapter) quotedDefault(val, sqlType string) string {
 	case "TEXT", "TIMESTAMPTZ":
 		return "'" + strings.ReplaceAll(val, "'", "''") + "'"
 	}
-	return fmt.Sprintf("CAST('%s' AS %s)", strings.ReplaceAll(val, "'", "''"), sqlType)
+	// Anything else — a SQLTyper reporting BLOB, BYTEA, UUID, NUMERIC(12,2) — has
+	// no literal rule here, so the value is cast to the column's own type.
+	//
+	// The parentheses are load-bearing. A CAST is an expression, and SQLite takes
+	// an expression as a DEFAULT only in parentheses: without them CREATE TABLE
+	// and ALTER TABLE ADD COLUMN are both syntax errors, so a model carrying such
+	// a column could not be created at all (audit N3). Postgres accepts either
+	// form, which is why this failed only on SQLite — the model migrated in
+	// production and would not create locally, the reverse of the usual split.
+	//
+	// Nothing shipped reaches this branch: LocaleString and the JSON containers
+	// all report TEXT on SQLite, which is handled above. It takes a money or blob
+	// type, the case zeroDefaultSQL's own note names as the one it exists for.
+	return fmt.Sprintf("(CAST('%s' AS %s))", strings.ReplaceAll(val, "'", "''"), sqlType)
 }
 
 func (a *Adapter) columnDef(f maniflex.FieldMeta) string {

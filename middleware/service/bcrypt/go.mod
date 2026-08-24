@@ -2,7 +2,7 @@ module github.com/xaleel/maniflex/middleware/service/bcrypt
 
 go 1.25.12
 
-require github.com/xaleel/maniflex v0.6.0
+require github.com/xaleel/maniflex v0.7.0
 
 require golang.org/x/crypto v0.51.0
 

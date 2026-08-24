@@ -35,6 +35,28 @@ custom adapter's transaction cannot run raw SQL, the call fails with
 connection outside the transaction — where the write would commit on its own and
 survive the rollback.
 
+### `?` is also a Postgres operator
+
+Rebinding rewrites `?` wherever it appears in executable code. A `?` inside a
+string literal, a quoted identifier, a dollar-quoted body or a comment is left
+alone — but Postgres also spells three **jsonb operators** with it, and a bare
+`?` is indistinguishable from a placeholder:
+
+| Operator | Meaning | Rebinding |
+|---|---|---|
+| `?\|` | any of these keys exists | preserved |
+| `?&` | all of these keys exist | preserved |
+| `?` | this key exists | **rewritten as a placeholder** |
+
+`?|` and `?&` are safe because no placeholder is spelt that way. The bare
+key-exists operator is not expressible in a raw query: write it as
+`data::jsonb @> '{"key": null}'` or `jsonb_exists(data, 'key')`, both of which
+mean the same thing without the ambiguous character.
+
+Getting this wrong is loud rather than silent — the statement ends up asking for
+more parameters than were supplied, or naming a column that does not exist — so
+it fails on the first run rather than returning a wrong answer.
+
 ### Portability pitfalls
 
 Hand-written SQL runs on both SQLite and Postgres, which differ in ways the ORM

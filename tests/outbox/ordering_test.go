@@ -98,11 +98,11 @@ func TestOrdering_RetriedEventDoesNotFallBehindItsSuccessor(t *testing.T) {
 		aggregateEvent("ord-2", "invoice/abc"),
 	)
 
-	runRelay(t, bus, outbox.RelayOptions{
+	relayUntil(t, bus, outbox.RelayOptions{
 		MaxAttempts:  5,
 		OrderedByKey: true,
 		DLQType:      "test.created.dlq",
-	}, 2500*time.Millisecond)
+	}, "delivery of both events", func() bool { return len(pub.delivered()) == 2 })
 
 	got := pub.delivered()
 	if len(got) != 2 {
@@ -128,8 +128,8 @@ func TestOrdering_OneStalledKeyDoesNotBlockAnother(t *testing.T) {
 		aggregateEvent("other-1", "invoice/bbb"),
 	)
 
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 50, OrderedByKey: true},
-		600*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 50, OrderedByKey: true},
+		"delivery of the unblocked key", func() bool { return len(pub.delivered()) >= 1 })
 
 	got := pub.delivered()
 	if len(got) != 1 || got[0] != "other-1" {
@@ -150,7 +150,8 @@ func TestOrdering_DisabledByDefaultKeepsShipping(t *testing.T) {
 		aggregateEvent("def-2", "invoice/xyz"),
 	)
 
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 50}, 600*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 50},
+		"delivery of the later event", func() bool { return len(pub.delivered()) >= 1 })
 
 	got := pub.delivered()
 	if len(got) != 1 || got[0] != "def-2" {
@@ -170,8 +171,8 @@ func TestOrdering_RowsWithoutAKeyAreNotSerialised(t *testing.T) {
 	// makeEvent leaves Subject empty.
 	publishAll(t, bus, makeEvent("nokey-1"), makeEvent("nokey-2"))
 
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 50, OrderedByKey: true},
-		600*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 50, OrderedByKey: true},
+		"delivery of the keyless successor", func() bool { return len(pub.delivered()) >= 1 })
 
 	got := pub.delivered()
 	if len(got) != 1 || got[0] != "nokey-2" {

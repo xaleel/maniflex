@@ -20,7 +20,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/xaleel/maniflex/events"
 	"github.com/xaleel/maniflex/events/outbox"
@@ -69,8 +68,8 @@ func TestDLQFail_RowSurvivesWhenDeadLetterAlsoFails(t *testing.T) {
 	}
 
 	// MaxAttempts 1 so the first failure exhausts it and reaches the DLQ path.
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 1, DLQType: "test.created.dlq"},
-		300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 1, DLQType: "test.created.dlq"},
+		"the row being held after a failed dead-letter", heldRow(t, db, "ev-outage"))
 
 	if broker.count() < 2 {
 		t.Fatalf("precondition: broker saw %d publish(es), want at least 2 "+
@@ -97,8 +96,8 @@ func TestDLQFail_RowStaysClaimable(t *testing.T) {
 	if err := bus.Publish(context.Background(), makeEvent("ev-claimable")); err != nil {
 		t.Fatal(err)
 	}
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 1, DLQType: "test.created.dlq"},
-		300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 1, DLQType: "test.created.dlq"},
+		"the row being held after a failed dead-letter", heldRow(t, db, "ev-claimable"))
 
 	_, attempts, _ := rowState(t, db, "ev-claimable")
 	if attempts >= 1 {
@@ -119,8 +118,8 @@ func TestDLQFail_DeliversOnceBrokerRecovers(t *testing.T) {
 	}
 
 	// Outage: exhaust attempts and fail the dead-letter too.
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 1, DLQType: "test.created.dlq"},
-		300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 1, DLQType: "test.created.dlq"},
+		"the row being held after a failed dead-letter", heldRow(t, db, "ev-recover"))
 	if shipped, _, _ := rowState(t, db, "ev-recover"); shipped {
 		t.Fatal("precondition: the row was discarded during the outage")
 	}
@@ -130,8 +129,8 @@ func TestDLQFail_DeliversOnceBrokerRecovers(t *testing.T) {
 	// retrying a broker that was just down is deliberate, so the test waits it
 	// out rather than the code retrying tightly.
 	broker.recover()
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 1, DLQType: "test.created.dlq"},
-		1500*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 1, DLQType: "test.created.dlq"},
+		"redelivery of the retained row", shippedRow(t, db, "ev-recover"))
 
 	if shipped, _, _ := rowState(t, db, "ev-recover"); !shipped {
 		t.Error("the retained row was never delivered after the broker recovered; " +
@@ -154,8 +153,8 @@ func TestDLQFail_SuccessfulDeadLetterStillShipsRow(t *testing.T) {
 	if err := bus.Publish(context.Background(), makeEvent("ev-dlq-ok")); err != nil {
 		t.Fatal(err)
 	}
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 1, DLQType: dlqType},
-		300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 1, DLQType: dlqType},
+		"the dead-lettered row being resolved", shippedRow(t, db, "ev-dlq-ok"))
 
 	if len(pub.dead()) != 1 {
 		t.Fatalf("precondition: %d dead-letters, want 1", len(pub.dead()))
@@ -176,7 +175,8 @@ func TestDLQFail_NoDLQConfiguredStillDropsRow(t *testing.T) {
 	if err := bus.Publish(context.Background(), makeEvent("ev-nodlq")); err != nil {
 		t.Fatal(err)
 	}
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 1}, 300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 1},
+		"the row being dropped with no DLQ configured", shippedRow(t, db, "ev-nodlq"))
 
 	if shipped, _, _ := rowState(t, db, "ev-nodlq"); !shipped {
 		t.Error("row retained with no DLQ configured; RelayOptions.DLQType documents " +

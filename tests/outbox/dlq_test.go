@@ -19,7 +19,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/xaleel/maniflex/events"
 	"github.com/xaleel/maniflex/events/outbox"
@@ -73,13 +72,10 @@ func TestOutboxDLQ_PayloadCarriesProvenance(t *testing.T) {
 	}
 
 	// MaxAttempts 1 so the first failure exhausts it and routes straight to DLQ.
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	bus.Relay(outbox.RelayOptions{
-		PollInterval: time.Millisecond,
-		MaxAttempts:  1,
-		DLQType:      dlqType,
-	}).Start(ctx) //nolint:errcheck
+	relayUntil(t, bus, outbox.RelayOptions{
+		MaxAttempts: 1,
+		DLQType:     dlqType,
+	}, "the dead-lettered row being resolved", shippedRow(t, db, orig.ID))
 
 	dead := pub.dead()
 	if len(dead) != 1 {

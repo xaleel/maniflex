@@ -69,7 +69,13 @@ func makeEvent(id string) events.Event {
 	}
 }
 
-// runOneRelay runs the relay loop for one poll cycle using a very short interval.
+// runOneRelay runs the relay loop for a fixed window.
+//
+// It is the only fixed-window driver left, and it belongs only where the
+// assertion is that something did NOT happen: the window has to contain enough
+// scheduling for a delivery, so a loaded machine can make a positive assertion
+// wrong but never a negative one. Everything that waits for something uses
+// relayUntil instead.
 func runOneRelay(t *testing.T, bus *outbox.Bus) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
@@ -199,7 +205,8 @@ func TestOutbox_RelayMarksShipped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runOneRelay(t, bus)
+	relayUntil(t, bus, outbox.RelayOptions{}, "the event being shipped",
+		shippedRow(t, db, e.ID))
 
 	if rec.count() != 1 {
 		t.Fatalf("expected 1 downstream publish, got %d", rec.count())
@@ -226,7 +233,8 @@ func TestOutbox_RelayRetriesOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runOneRelay(t, bus)
+	relayUntil(t, bus, outbox.RelayOptions{}, "the failed attempt being recorded",
+		func() bool { _, n, _ := rowState(t, db, e.ID); return n >= 1 })
 
 	var attempts int
 	var shippedAt sql.NullTime
@@ -255,8 +263,9 @@ func TestOutbox_RelaySkipsAlreadyShipped(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runOneRelay(t, bus) // ships the event
-	runOneRelay(t, bus) // must not ship again
+	relayUntil(t, bus, outbox.RelayOptions{}, "the event being shipped",
+		shippedRow(t, db, e.ID))
+	runOneRelay(t, bus) // a full window, to give a re-delivery every chance to happen
 
 	if n := rec.count(); n != 1 {
 		t.Fatalf("expected 1 total delivery, got %d (relay should skip shipped rows)", n)
@@ -283,14 +292,23 @@ func TestOutbox_ConcurrentRelayers_NoDoublePublish(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Both relayers must run side by side against the same unshipped row: that
+	// race is what the test stages, and the slow publisher is what holds it open
+	// long enough for both to claim it. What must not depend on the clock is the
+	// verdict — a window too short for even one delivery used to read as "0
+	// copies", which is indistinguishable from a relay that lost the event.
+	ctx, cancel := context.WithTimeout(context.Background(), relayCeiling)
+	defer cancel()
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			runOneRelay(t, bus)
+			bus.Relay(outbox.RelayOptions{PollInterval: time.Millisecond}).Start(ctx) //nolint:errcheck
 		}()
 	}
+	waitFor(t, "the event being shipped", shippedRow(t, db, e.ID))
+	cancel()
 	wg.Wait()
 
 	if n := rec.count(); n != 1 {

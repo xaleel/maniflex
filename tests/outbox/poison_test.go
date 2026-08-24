@@ -18,6 +18,7 @@ package outbox_test
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -63,15 +64,90 @@ func countRows(t *testing.T, db *sql.DB) int {
 	return n
 }
 
-// runRelay drives the relayer for a short window.
-func runRelay(t *testing.T, bus *outbox.Bus, opts outbox.RelayOptions, d time.Duration) {
+// relayCeiling bounds relayUntil. It is a ceiling, not a schedule: every
+// condition in this package is met in milliseconds on an idle machine, and this
+// only decides how long a genuine failure takes to report.
+const relayCeiling = 30 * time.Second
+
+// relayUntil runs the relayer until cond holds, then stops it and waits for it
+// to finish.
+//
+// Every test here used to run the relay for a fixed span and assert afterwards,
+// which turns each assertion into a bet that the window contained enough CPU.
+// On a loaded CI runner it does not, and the failure reads as a broken outbox
+// rather than a busy machine: three unrelated tests flaked that way, and halving
+// every window reproduced the CI messages exactly. Waiting on the condition
+// makes a test as quick as the machine allows and as patient as it needs to be.
+//
+// A condition that never holds fails at the ceiling with the same message a
+// fixed window gave, so a real regression still ends the test rather than
+// hanging it.
+func relayUntil(t *testing.T, bus *outbox.Bus, opts outbox.RelayOptions, what string, cond func() bool) {
 	t.Helper()
 	if opts.PollInterval == 0 {
 		opts.PollInterval = time.Millisecond
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), d)
+	ctx, cancel := context.WithTimeout(context.Background(), relayCeiling)
 	defer cancel()
-	bus.Relay(opts).Start(ctx) //nolint:errcheck
+
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		bus.Relay(opts).Start(ctx) //nolint:errcheck
+	}()
+
+	deadline := time.After(relayCeiling)
+	for !cond() {
+		select {
+		case <-deadline:
+			cancel()
+			<-stopped
+			t.Fatalf("relay never reached %s within %s", what, relayCeiling)
+		case <-time.After(time.Millisecond):
+		}
+	}
+	// Stop the relayer before returning, so nothing is still touching the
+	// database while the caller asserts against it or the temp dir is removed.
+	cancel()
+	<-stopped
+}
+
+// heldRow reports whether the retain path has finished with the row.
+//
+// holdForRetry writes attempts, last_error and the cleared lease in one UPDATE,
+// and last_error is the only one of those a test can recognise, so seeing it
+// means the whole statement landed. Waiting on the broker's call count instead
+// stops the relayer mid-cycle: the dead-letter has been attempted but the row
+// has not been written back yet, and the assertion then reads an intermediate
+// value that no real deployment would ever observe.
+func heldRow(t *testing.T, db *sql.DB, id string) func() bool {
+	return func() bool {
+		_, _, lastErr := rowState(t, db, id)
+		return strings.Contains(lastErr, "retained for retry")
+	}
+}
+
+// waitFor polls cond while something else drives the relay, for the one test
+// that has to keep two relayers running side by side.
+func waitFor(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.After(relayCeiling)
+	for !cond() {
+		select {
+		case <-deadline:
+			t.Fatalf("never reached %s within %s", what, relayCeiling)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+// shippedRow reports whether the row has reached a terminal state — the
+// condition almost every test here is really waiting for.
+func shippedRow(t *testing.T, db *sql.DB, id string) func() bool {
+	return func() bool {
+		shipped, _, _ := rowState(t, db, id)
+		return shipped
+	}
 }
 
 // TestPoison_UndecodableRowIsResolvedNotStuck is the EV-8 regression. The row
@@ -84,7 +160,8 @@ func TestPoison_UndecodableRowIsResolvedNotStuck(t *testing.T) {
 
 	insertRaw(t, db, "poison-1", "test.created", "{not json at all")
 
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 3, DLQType: dlqType}, 300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 3, DLQType: dlqType},
+		"a terminal state for the poison row", shippedRow(t, db, "poison-1"))
 
 	shipped, attempts, lastErr := rowState(t, db, "poison-1")
 	if !shipped {
@@ -106,7 +183,8 @@ func TestPoison_UndecodableRowIsDeadLettered(t *testing.T) {
 
 	insertRaw(t, db, "poison-2", "test.created", "{truncated")
 
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 3, DLQType: dlqType}, 300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 3, DLQType: dlqType},
+		"a dead-letter for the poison row", func() bool { return len(pub.dead()) > 0 })
 
 	dead := pub.dead()
 	if len(dead) != 1 {
@@ -142,7 +220,8 @@ func TestPoison_DecodeFailureIsTerminalNotRetried(t *testing.T) {
 
 	insertRaw(t, db, "poison-3", "test.created", "nonsense")
 
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 10, DLQType: dlqType}, 300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 10, DLQType: dlqType},
+		"a terminal state for the poison row", shippedRow(t, db, "poison-3"))
 
 	shipped, attempts, _ := rowState(t, db, "poison-3")
 	if !shipped {
@@ -164,7 +243,8 @@ func TestPoison_ResolvesWithoutDLQConfigured(t *testing.T) {
 
 	insertRaw(t, db, "poison-4", "test.created", "{bad")
 
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 3}, 300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 3},
+		"a terminal state with no DLQ configured", shippedRow(t, db, "poison-4"))
 
 	if shipped, _, _ := rowState(t, db, "poison-4"); !shipped {
 		t.Error("row is stuck when no DLQ is configured; it accumulates forever")
@@ -183,7 +263,8 @@ func TestPoison_ResolvedRowBecomesSweepEligible(t *testing.T) {
 	bus := outbox.Wrap(pub, db, "sqlite")
 
 	insertRaw(t, db, "poison-5", "test.created", "{bad")
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 3, DLQType: dlqType}, 300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 3, DLQType: dlqType},
+		"a terminal state for the poison row", shippedRow(t, db, "poison-5"))
 
 	var n int
 	if err := db.QueryRowContext(context.Background(),
@@ -213,8 +294,8 @@ func TestPoison_ValidEventStillDeliveredNormally(t *testing.T) {
 	}
 	insertRaw(t, db, "poison-6", "test.created", "{bad")
 
-	runRelay(t, bus, outbox.RelayOptions{MaxAttempts: 3, DLQType: "test.created.dlq"},
-		300*time.Millisecond)
+	relayUntil(t, bus, outbox.RelayOptions{MaxAttempts: 3, DLQType: "test.created.dlq"},
+		"delivery of the valid event", shippedRow(t, db, "good-1"))
 
 	var deliveredGood bool
 	for _, e := range pub.all() {

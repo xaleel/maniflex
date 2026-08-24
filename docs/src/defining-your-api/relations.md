@@ -318,6 +318,19 @@ The action is enforced one of two ways, chosen automatically per relation:
 Either way the whole deletion is atomic: a `restrict` that fires rolls back any
 `cascade` that ran alongside it.
 
+### Large fan-outs
+
+On the maniflex-enforced path the children of a deleted parent are walked in
+pages of 500, ordered by `id` and bounded by the last id seen, and each page is
+applied before the next is read. Only the `id` column is selected, so the memory
+a delete needs is set by the page size rather than by how many children the row
+has. `restrict` does not read the children at all — it asks how many there are.
+
+The work is still proportional to the fan-out, and it all happens inside the
+delete request's transaction: deleting a row with a million descendants is a
+long transaction holding locks the whole time. Prefer soft-deleting the parent
+and reaping in a job when the fan-out is that large.
+
 > **Existing SQLite tables.** New FK constraints are declared when a table is
 > **created**. SQLite cannot add a foreign key to a table that already exists, so
 > adding `onDelete` to a model with a pre-existing SQLite table does not

@@ -199,14 +199,7 @@ func (s *defaultSteps) cascadeChildren(ctx *ServerContext, exec dbExec, parentMo
 		if dbEnforcedDelete(parentModel, edge.child) {
 			continue
 		}
-		rows, err := s.findChildRows(ctx, exec, edge.child, edge.rel.FKColumn, parentID)
-		if err != nil {
-			return err
-		}
-		if len(rows) == 0 {
-			continue
-		}
-		if err := s.applyCascadeEdge(ctx, exec, parentModel, edge, rows, visited); err != nil {
+		if err := s.applyCascadeEdge(ctx, exec, parentModel, edge, parentID, visited); err != nil {
 			return err
 		}
 	}
@@ -215,81 +208,142 @@ func (s *defaultSteps) cascadeChildren(ctx *ServerContext, exec dbExec, parentMo
 
 // applyCascadeEdge carries out one edge's onDelete action against the child rows
 // that reference the parent.
-func (s *defaultSteps) applyCascadeEdge(ctx *ServerContext, exec dbExec, parentModel *ModelMeta, edge cascadeEdge, rows []map[string]any, visited map[string]bool) error {
+func (s *defaultSteps) applyCascadeEdge(ctx *ServerContext, exec dbExec, parentModel *ModelMeta, edge cascadeEdge, parentID string, visited map[string]bool) error {
 	switch edge.rel.OnDelete {
 	case OnDeleteRestrict:
-		ctx.Abort(http.StatusConflict, "DELETE_RESTRICTED", fmt.Sprintf(
-			"%s cannot be deleted: %d %s record(s) still reference it (onDelete:restrict)",
-			parentModel.Name, len(rows), edge.child.Name))
-		return errCascadeRestricted
+		return s.cascadeRestrict(ctx, exec, parentModel, edge, parentID)
 	case OnDeleteSetNull:
-		return s.cascadeSetNull(ctx, exec, edge.child, edge.rel.FKColumn, rows)
+		return s.cascadeSetNull(ctx, exec, edge.child, edge.rel.FKColumn, parentID)
 	case OnDeleteCascade:
-		return s.cascadeDeleteRows(ctx, exec, edge.child, rows, visited)
+		return s.cascadeDeleteRows(ctx, exec, edge.child, edge.rel.FKColumn, parentID, visited)
 	}
 	return nil
 }
 
-// cascadeSetNull nulls the FK column of each referencing child row.
-func (s *defaultSteps) cascadeSetNull(ctx *ServerContext, exec dbExec, child *ModelMeta, fkCol string, rows []map[string]any) error {
-	for _, row := range rows {
-		id := cascadeID(row)
-		if id == "" {
-			continue
-		}
-		if _, err := exec.Update(ctx.Ctx, child, id, map[string]any{fkCol: nil}); err != nil {
-			return err
-		}
+// cascadeRestrict refuses the parent's deletion when any child still references
+// it, reporting how many do.
+//
+// It asks for the count and a single row rather than for the rows: the message
+// needs a number, and nothing else here looks at a child at all. Loading the
+// fan-out to take its length was the most expensive way to answer the cheapest
+// question on this path — and restrict is the edge where the fan-out is largest,
+// since a table nobody may orphan is a table rows accumulate in (audit O9).
+//
+// The refusal turns on whether a row came back, not on the count, so an adapter
+// whose FindMany does not report a total cannot make the guard fail open.
+func (s *defaultSteps) cascadeRestrict(ctx *ServerContext, exec dbExec, parentModel *ModelMeta, edge cascadeEdge, parentID string) error {
+	rows, total, err := exec.FindMany(ctx.Ctx, edge.child, &QueryParams{
+		Page:    1,
+		Limit:   1,
+		Fields:  []string{"id"},
+		Filters: []*FilterExpr{{Field: edge.rel.FKColumn, Operator: OpEq, Value: parentID}},
+	})
+	if err != nil {
+		return err
 	}
-	return nil
+	if len(rows) == 0 {
+		return nil
+	}
+	if total < int64(len(rows)) {
+		total = int64(len(rows))
+	}
+	ctx.Abort(http.StatusConflict, "DELETE_RESTRICTED", fmt.Sprintf(
+		"%s cannot be deleted: %d %s record(s) still reference it (onDelete:restrict)",
+		parentModel.Name, total, edge.child.Name))
+	return errCascadeRestricted
+}
+
+// cascadeSetNull nulls the FK column of each referencing child row.
+func (s *defaultSteps) cascadeSetNull(ctx *ServerContext, exec dbExec, child *ModelMeta, fkCol, parentID string) error {
+	return s.eachChildID(ctx, exec, child, fkCol, parentID, func(id string) error {
+		_, err := exec.Update(ctx.Ctx, child, id, map[string]any{fkCol: nil})
+		return err
+	})
 }
 
 // cascadeDeleteRows deletes each referencing child through the adapter's own
 // Delete — so a soft-delete child is soft-deleted — after recursing into that
 // child's own children first, so a child is never deleted while its children
 // still point at it. The visited set breaks reference cycles.
-func (s *defaultSteps) cascadeDeleteRows(ctx *ServerContext, exec dbExec, child *ModelMeta, rows []map[string]any, visited map[string]bool) error {
-	for _, row := range rows {
-		id := cascadeID(row)
-		if id == "" {
-			continue
-		}
+func (s *defaultSteps) cascadeDeleteRows(ctx *ServerContext, exec dbExec, child *ModelMeta, fkCol, parentID string, visited map[string]bool) error {
+	return s.eachChildID(ctx, exec, child, fkCol, parentID, func(id string) error {
 		key := cascadeKey(child.Name, id)
 		if visited[key] {
-			continue // already being deleted in this sweep — a cycle
+			return nil // already being deleted in this sweep — a cycle
 		}
 		visited[key] = true
 		if err := s.cascadeChildren(ctx, exec, child, id, visited); err != nil {
 			return err
 		}
-		if err := exec.Delete(ctx.Ctx, child, id); err != nil {
-			return err
-		}
-	}
-	return nil
+		return exec.Delete(ctx.Ctx, child, id)
+	})
 }
 
-// findChildRows collects every row of child whose FK column equals parentID,
-// paging so a large fan-out is not bounded by one page. It reads all rows before
-// any are modified, so nulling or deleting them does not shift the pages under it.
-func (s *defaultSteps) findChildRows(ctx *ServerContext, exec dbExec, child *ModelMeta, fkCol, parentID string) ([]map[string]any, error) {
-	const pageSize = 500
-	var out []map[string]any
-	for page := 1; ; page++ {
-		q := &QueryParams{
-			Page:    page,
-			Limit:   pageSize,
-			Filters: []*FilterExpr{{Field: fkCol, Operator: OpEq, Value: parentID}},
-		}
-		rows, _, err := exec.FindMany(ctx.Ctx, child, q)
+// cascadePageSize is how many child ids one edge reads at a time.
+const cascadePageSize = 500
+
+// eachChildID calls fn with the id of every child row whose FK column equals
+// parentID, a page at a time.
+//
+// The walk is keyset, not offset: each page asks for the ids after the last one
+// seen, ordered by id. Offset paging was wrong here twice over (audit O9).
+//
+// It was unordered, and a SELECT with no ORDER BY may return rows in any order —
+// nothing obliges a database to choose the same one for the next OFFSET, and
+// Postgres does not: it costs the offset into the plan, and a synchronised
+// sequential scan joins whichever scan is already running. Rows either side of a
+// page boundary were therefore skipped, and a child skipped on a cascade edge is
+// one left pointing at a parent that no longer exists.
+//
+// And it could only be made safe by reading the whole fan-out before touching
+// any of it, since deleting a row shifts every later offset. That snapshot held
+// one full column map per child — of which nothing but the id was ever read — so
+// the memory a delete needed was set by the size of the fan-out. Keyset paging
+// needs no snapshot: the bound is a value, so removing a row already behind it
+// moves nothing, and the walk holds one page.
+func (s *defaultSteps) eachChildID(ctx *ServerContext, exec dbExec, child *ModelMeta, fkCol, parentID string, fn func(id string) error) error {
+	lastID := ""
+	for {
+		ids, err := s.childIDPage(ctx, exec, child, fkCol, parentID, lastID)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, rows...)
-		if len(rows) < pageSize {
-			return out, nil
+		if len(ids) == 0 {
+			return nil
+		}
+		for _, id := range ids {
+			if err := fn(id); err != nil {
+				return err
+			}
+		}
+		lastID = ids[len(ids)-1]
+	}
+}
+
+// childIDPage reads one page of child ids, ordered by id and bounded below by
+// lastID. Only the id column is selected: it is the only thing any caller uses.
+func (s *defaultSteps) childIDPage(ctx *ServerContext, exec dbExec, child *ModelMeta, fkCol, parentID, lastID string) ([]string, error) {
+	q := &QueryParams{
+		Page:    1,
+		Limit:   cascadePageSize,
+		Fields:  []string{"id"},
+		Sorts:   []SortExpr{{DBName: "id", Direction: SortAsc}},
+		Filters: []*FilterExpr{{Field: fkCol, Operator: OpEq, Value: parentID}},
+	}
+	if lastID != "" {
+		q.Filters = append(q.Filters, &FilterExpr{Field: "id", Operator: OpGt, Value: lastID})
+	}
+	rows, _, err := exec.FindMany(ctx.Ctx, child, q)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if id := cascadeID(row); id != "" {
+			ids = append(ids, id)
 		}
 	}
+	return ids, nil
 }
 
 // cascadeKey identifies a row across the cascade sweep, for the cycle guard.

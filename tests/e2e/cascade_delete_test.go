@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -167,6 +168,63 @@ func TestCascadeDelete(t *testing.T) {
 		got.AssertStatus(http.StatusOK)
 		if v := got.Data()["org_id"]; v != nil {
 			t.Errorf("org_id = %v, want null after setNull", v)
+		}
+	})
+
+	// A fan-out larger than one page of the cascade's child walk (audit O9). What
+	// this proves is that the keyset query the walk now issues — ordered by id,
+	// bounded by id > last, selecting the id column alone — is one a real adapter
+	// answers correctly across a page boundary. It is not the regression guard for
+	// the skipped-row bug: SQLite plans this query the same way every time, so the
+	// unordered-offset walk it replaced passes here too. The guard is the unit
+	// test, which exercises the reordering freedom SQL actually grants.
+	t.Run("cascade_crosses_a_page_boundary", func(t *testing.T) {
+		t.Parallel()
+		srv := cascadeServer(t)
+
+		const n = 520 // cascadePageSize is 500
+		team := srv.POST("/cs_teams", map[string]any{"name": "Big"}).ID()
+		for i := range n {
+			srv.POST("/cs_members", map[string]any{
+				"email":   fmt.Sprintf("m%04d@x.com", i),
+				"team_id": team,
+			}).AssertStatus(http.StatusCreated)
+		}
+
+		srv.DELETE("/cs_teams/" + team).AssertStatus(http.StatusNoContent)
+
+		left := srv.GET("/cs_members?limit=1").Meta()["total"]
+		if fmt.Sprint(left) != "0" {
+			t.Errorf("%v of %d members survived the cascade — the child walk skipped "+
+				"them, and each still names a deleted team", left, n)
+		}
+	})
+
+	// setNull walks the same pages.
+	t.Run("set_null_crosses_a_page_boundary", func(t *testing.T) {
+		t.Parallel()
+		srv := cascadeServer(t)
+
+		const n = 520
+		org := srv.POST("/cs_orgs", map[string]any{"name": "Big"}).ID()
+		for i := range n {
+			srv.POST("/cs_docs", map[string]any{
+				"title":  fmt.Sprintf("d%04d", i),
+				"org_id": org,
+			}).AssertStatus(http.StatusCreated)
+		}
+
+		srv.DELETE("/cs_orgs/" + org).AssertStatus(http.StatusNoContent)
+
+		stuck := 0
+		for _, d := range srv.GET("/cs_docs?limit=1000").DataList() {
+			if doc, ok := d.(map[string]any); ok && doc["org_id"] != nil {
+				stuck++
+			}
+		}
+		if stuck != 0 {
+			t.Errorf("%d of %d docs still name the deleted org — the child walk "+
+				"skipped them", stuck, n)
 		}
 	})
 

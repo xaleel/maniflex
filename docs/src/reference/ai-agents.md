@@ -257,9 +257,11 @@ Success envelope: `{"data": ...}`; list adds `"meta": {total, page, limit, pages
 
 ## Querying (only on opt-in fields)
 
-Operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `contains`, `starts_with`, `ends_with`, `in`, `not_in`, `between`, `is_null`, `not_null`.
+Operators: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `contains`, `starts_with`, `ends_with`, `has`, `not_has`, `in`, `not_in`, `between`, `is_null`, `not_null`.
 
 `like`/`ilike` take a raw SQL pattern (`%`, `_` are wildcards). `contains`/`starts_with`/`ends_with` take a literal value — `%` and `_` are escaped and match themselves — and are case-insensitive. Use the latter for user-typed text.
+
+`has`/`not_has` ask whether a JSON column holds a value, and need the column tagged `mfx:"json_array"` (element membership: `tags:has:urgent`) or `mfx:"json_object"` (a key=value pair: `meta:has:tier=gold`). `contains` on such a column is refused: it substring-matches the serialised document.
 
 Bare `?filter=` clauses AND. `?filter[N]=` puts a clause in OR group N: same index ORs, different indexes AND, and a bare clause is its own AND term — so the expressible shape is an AND of ORs, with no nesting and no OR across groups. The index must be a non-negative integer (`filter[recent]` is `400 INVALID_QUERY`). In Go the equivalent is `FilterExpr.Group`, where `0` means ungrouped, so URL `filter[0]` is `Group: 1`.
 

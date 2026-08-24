@@ -2,6 +2,7 @@ package maniflex
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
@@ -31,6 +32,21 @@ const (
 	OpStartsWith FilterOperator = "starts_with" // field starts with value (value%)
 	OpEndsWith   FilterOperator = "ends_with"   // field ends with value   (%value)
 
+	// The JSON operators ask whether a JSON column holds a value. They are the
+	// answer to a question `contains` looked like it answered and did not:
+	// `contains` compiles to a substring LIKE, which against a JSON array matches
+	// across element boundaries on SQLite (a search for "cat-1" finds ["cat-10"])
+	// and cannot be applied to JSONB at all on Postgres — silently wrong results in
+	// development, a failed query in production.
+	//
+	// They require the column to carry mfx:"json_array" or mfx:"json_object",
+	// which also decides what the operator means: on an array, element membership
+	// (`tags:has:urgent`); on an object, a key=value pair (`meta:has:name=John`).
+	// Both sides are compared JSON-encoded, so the string "5" and the number 5 are
+	// different values on both drivers rather than the same one on one of them.
+	OpHas    FilterOperator = "has"     // JSON column holds this element / pair
+	OpNotHas FilterOperator = "not_has" // …and its negation
+
 	// The *_field operators compare two columns of the same model instead of
 	// comparing a column to a literal — "paid_amount >= amount_due". Their value
 	// is a field name, carried in FilterExpr.ValueField.
@@ -55,14 +71,38 @@ const (
 	OpLteField FilterOperator = "lte_field" // field <= other field
 )
 
-var validOperators = map[FilterOperator]bool{
-	OpEq: true, OpNeq: true, OpGt: true, OpGte: true,
-	OpLt: true, OpLte: true, OpLike: true, OpILike: true,
-	OpIn: true, OpNotIn: true, OpIsNull: true, OpNotNull: true,
-	OpBetween: true,
-	OpContains: true, OpStartsWith: true, OpEndsWith: true,
-	OpEqField: true, OpNeqField: true, OpGtField: true,
-	OpGteField: true, OpLtField: true, OpLteField: true,
+// allFilterOperators is every operator the query builder implements, in the
+// order the generated documentation presents them.
+//
+// It is the single source: validOperators is derived from it, and the ?filter=
+// parameter's description in the OpenAPI spec is generated from it. Those were
+// two hand-maintained lists a few hundred lines apart, so an operator could be
+// implemented and undocumented — which is what a client reads the spec to find
+// out, and the one place the omission is invisible.
+var allFilterOperators = []FilterOperator{
+	OpEq, OpNeq, OpGt, OpGte, OpLt, OpLte,
+	OpLike, OpILike,
+	OpContains, OpStartsWith, OpEndsWith,
+	OpHas, OpNotHas,
+	OpIn, OpNotIn, OpIsNull, OpNotNull, OpBetween,
+	OpEqField, OpNeqField, OpGtField, OpGteField, OpLtField, OpLteField,
+}
+
+var validOperators = func() map[FilterOperator]bool {
+	m := make(map[FilterOperator]bool, len(allFilterOperators))
+	for _, op := range allFilterOperators {
+		m[op] = true
+	}
+	return m
+}()
+
+// filterOperatorList renders allFilterOperators for the generated spec.
+func filterOperatorList() string {
+	names := make([]string, len(allFilterOperators))
+	for i, op := range allFilterOperators {
+		names[i] = string(op)
+	}
+	return strings.Join(names, ", ")
 }
 
 // Valid reports whether o is an operator the query builder implements.
@@ -469,6 +509,9 @@ func resolveFlatFilter(expr *FilterExpr, fieldPath string, model *ModelMeta) (*F
 		return nil, fmt.Errorf("field %q on model %s is not filterable (%s)",
 			fieldPath, model.Name, howToAllow(f.Tags.DBName, "filterable"))
 	}
+	if err := checkJSONColumnFilter(f, fieldPath, model.Name, expr.Operator, expr.Value); err != nil {
+		return nil, err
+	}
 	expr.Field = f.Tags.DBName
 	// On a time-typed column the value is compared as TEXT on SQLite, so a raw
 	// client string ("…12:00:00Z", a zone offset, a short fraction) can misorder
@@ -598,6 +641,159 @@ func resolveNestedSort(fieldPath string, dir SortDir, model *ModelMeta, reg Regi
 // defence-in-depth guard: it rejects an injection payload at parse time with a
 // clear 400 rather than letting it reach the SQL layer (SEC-1). The same
 // allowlist is intended to gate the locale sort path.
+// validateJSONColumnTags checks that mfx:"json_array" / mfx:"json_object" agree
+// with the field they are on.
+//
+// The tag is what the `has` operator compiles from, and it is the only thing
+// that knows: a JSON column is JSONB on Postgres but plain TEXT on SQLite, so
+// the SQL type cannot be asked. That makes the tag load-bearing and unchecked
+// by anything else — a json_array on a string column would build json_each over
+// text, which returns nothing on SQLite and errors on Postgres, with no hint
+// that a tag is the reason.
+func (m *ModelMeta) validateJSONColumnTags() error {
+	for i := range m.Fields {
+		f := &m.Fields[i]
+		if !f.Tags.JSONArray && !f.Tags.JSONObject {
+			continue
+		}
+		if f.Tags.JSONArray && f.Tags.JSONObject {
+			return fmt.Errorf(
+				"maniflex: model %q field %q carries both json_array and json_object; "+
+					"a column holds one or the other, and has compiles differently for each",
+				m.Name, f.Tags.JSONName)
+		}
+		t := f.Type
+		for t != nil && t.Kind() == reflect.Pointer {
+			t = t.Elem()
+		}
+		if t == nil {
+			continue
+		}
+		tag, ok := "json_array", jsonArrayKind(t)
+		if f.Tags.JSONObject {
+			tag, ok = "json_object", jsonObjectKind(t)
+		}
+		if !ok {
+			return fmt.Errorf(
+				"maniflex: model %q field %q is tagged %s but its Go type is %s; "+
+					"the tag says what the column holds and has is compiled from it, so a "+
+					"type that cannot hold that produces a filter which never matches",
+				m.Name, f.Tags.JSONName, tag, f.Type)
+		}
+	}
+	return nil
+}
+
+// jsonArrayKind reports whether t serialises as a JSON array. A byte slice is
+// excluded: it marshals to a base64 string, so walking its elements would walk
+// bytes rather than the values the tag promises.
+func jsonArrayKind(t reflect.Type) bool {
+	switch t.Kind() {
+	case reflect.Slice, reflect.Array:
+		return t.Elem().Kind() != reflect.Uint8
+	}
+	return false
+}
+
+// jsonObjectKind reports whether t serialises as a JSON object. time.Time is a
+// struct and marshals to a string, so it is excluded by name the way it is
+// everywhere else the framework reasons about kinds.
+func jsonObjectKind(t reflect.Type) bool {
+	if isTimeType(t) {
+		return false
+	}
+	switch t.Kind() {
+	case reflect.Map, reflect.Struct:
+		return true
+	}
+	return false
+}
+
+// checkJSONColumnFilter refuses the two filter shapes a JSON column makes wrong,
+// in both directions.
+//
+// has/not_has ask what a JSON document holds, so they need a column that holds
+// one. Without the tag the builder has no JSON to look inside and renders a
+// predicate that matches nothing — a filter that silently returns an empty list
+// is the failure this operator was added to remove, not one to reintroduce.
+//
+// contains/starts_with/ends_with are the original defect (todo/ASKS.md issue 1):
+// they compile to a substring LIKE, and against a serialised JSON document that
+// matched across element boundaries on SQLite — a search for "cat-1" answering
+// 200 with a row holding ["cat-10"] — while on Postgres LIKE cannot be applied to
+// JSONB at all. The same query was quietly wrong in development and a hard error
+// in production. Nothing correct depends on the old behaviour, so it is refused
+// rather than kept: a 400 naming the operator that works is the one outcome that
+// cannot be mistaken for an answer.
+func checkJSONColumnFilter(f *FieldMeta, fieldPath, modelName string, op FilterOperator, value any) error {
+	isJSON := f.Tags.JSONArray || f.Tags.JSONObject
+	switch op {
+	case OpHas, OpNotHas:
+		if !isJSON {
+			return fmt.Errorf(
+				"operator %q on field %q of model %s asks what a JSON column holds, and %q is "+
+					"not tagged as one; add mfx:%q for a JSON array or mfx:%q for a JSON object",
+				op, fieldPath, modelName, fieldPath, "json_array", "json_object")
+		}
+		return checkJSONHasValue(f, fieldPath, op, value)
+	case OpContains, OpStartsWith, OpEndsWith:
+		if isJSON {
+			return fmt.Errorf(
+				"operator %q on field %q of model %s substring-matches the serialised JSON: it "+
+					"matches across element boundaries on SQLite and cannot run at all on "+
+					"Postgres. Use %q to ask whether the column holds a value",
+				op, fieldPath, modelName, OpHas)
+		}
+	}
+	return nil
+}
+
+// checkJSONHasValue holds the has value to the shape its column gives it: a whole
+// element for an array, a key=value pair for an object.
+//
+// The object key is bound into a JSON path by the query builder rather than
+// spliced into it, so this allowlist is not what stops an injection — it is what
+// stops a key the path cannot express reaching SQL as a malformed one, and what
+// makes an unsupported shape say so. It matches the rule locale keys are held to
+// for the same reason (SEC-1).
+func checkJSONHasValue(f *FieldMeta, fieldPath string, op FilterOperator, value any) error {
+	s := ""
+	if value != nil {
+		s = fmt.Sprint(value)
+	}
+	if s == "" {
+		return fmt.Errorf("operator %q on field %q requires a value (e.g. %s:%s:urgent)",
+			op, fieldPath, fieldPath, op)
+	}
+	if !f.Tags.JSONObject {
+		return nil
+	}
+	key, _, found := strings.Cut(s, "=")
+	if !found {
+		return fmt.Errorf(
+			"operator %q on the JSON object field %q takes key=value (e.g. %s:%s:name=John), got %q",
+			op, fieldPath, fieldPath, op, s)
+	}
+	if strings.Contains(key, ".") {
+		return fmt.Errorf(
+			"operator %q on field %q does not yet take a path: %q addresses a nested value, "+
+				"and only a top-level key is supported",
+			op, fieldPath, key)
+	}
+	if !isJSONObjectKey(key) {
+		return fmt.Errorf(
+			"invalid JSON object key %q in filter on %q: must be a key identifier "+
+				"([A-Za-z_][A-Za-z0-9_-]*)", key, fieldPath)
+	}
+	return nil
+}
+
+// isJSONObjectKey reports whether s is a JSON object key a has filter may name.
+// The same rule locale keys are held to, and for the same reason: the key is
+// targeted into a JSON-path expression, so what may appear in one is decided at
+// the door rather than in the query builder.
+func isJSONObjectKey(s string) bool { return isLocaleKey(s) }
+
 func isLocaleKey(s string) bool {
 	if s == "" {
 		return false

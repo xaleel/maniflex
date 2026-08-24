@@ -154,6 +154,20 @@ type FieldTags struct {
 	// Response representation is controlled by LocaleMode (default: split).
 	Locale bool
 
+	// JSONArray / JSONObject mark a column whose stored value is a JSON array or
+	// a JSON object, enabling the `has` / `not_has` filter operators on it.
+	//
+	// The tag is explicit rather than inferred because the running driver cannot
+	// tell: a JSON column is JSONB on Postgres but plain TEXT on SQLite — the same
+	// SQL type a string column has — so SQLType(driver) answers "text" for half of
+	// all deployments. mfx:"locale" is the same decision for the same reason.
+	//
+	// They also decide what `has` means. On an array it is element membership; on
+	// an object it is a key=value pair. Without the distinction one operator would
+	// silently mean two things depending on data the framework never sees.
+	JSONArray  bool
+	JSONObject bool
+
 	// LocaleMode overrides the response representation for this specific field.
 	// When empty the mode is inherited from ModelConfig.DefaultLocaleMode, then
 	// LocaleOptions.DefaultLocaleMode, then split (framework default).
@@ -401,6 +415,10 @@ func parseFieldTags(field reflect.StructField) FieldTags {
 		// The semicolon-separated sub-options all live inside this single comma-part.
 		case strings.HasPrefix(part, "relation:"):
 			parseRelationTag(part, &t)
+		case part == "json_array":
+			t.JSONArray = true
+		case part == "json_object":
+			t.JSONObject = true
 		case part == "locale":
 			t.Locale = true
 		case part == string(LocaleModeSplit), part == string(LocaleModeResolve), part == string(LocaleModeDynamic):

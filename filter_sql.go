@@ -1,6 +1,7 @@
 package maniflex
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -129,6 +130,13 @@ func filterCond(model *ModelMeta, f *FilterExpr, driver DriverType, p Placeholde
 	if sqlOp, ok := fieldComparisonOp(f.Operator); ok {
 		return fieldCond(model, col, sqlOp, f.ValueField)
 	}
+	// has/not_has need to know whether the column holds an array or an object,
+	// which filterPredicate cannot see: it is given a rendered column and an
+	// operator, not the field. Handled here, where the field is still in hand.
+	// The value is not normalised — it is JSON-encoded instead, by jsonHasCond.
+	if f.Operator == OpHas || f.Operator == OpNotHas {
+		return jsonHasCond(col, fm, f.Operator, f.Value, driver, p)
+	}
 	return filterPredicate(col, f.Operator, NormalizeFilterValue(fm, f.Operator, f.Value), driver, p)
 }
 
@@ -253,6 +261,104 @@ func substringPredicate(col string, op FilterOperator, val any, driver DriverTyp
 		return fmt.Sprintf("%s ILIKE %s ESCAPE '\\'", col, p.Add(pattern))
 	}
 	return fmt.Sprintf("LOWER(%s) LIKE LOWER(%s) ESCAPE '\\'", col, p.Add(pattern))
+}
+
+// jsonHasCond builds has / not_has against a JSON column: element membership on
+// a mfx:"json_array" column, a key=value pair on a mfx:"json_object" one.
+//
+// Both drivers compare JSON encodings rather than text, so the two agree about
+// what equality means. The string "5" and the number 5 are different elements of
+// a JSON array, and a filter that matched one against the other on one driver
+// only would be the divergence this operator exists to remove.
+//
+// A malformed filter renders false on both branches — including not_has, where
+// negating the false predicate would produce 1=1 and quietly match every row.
+// That is the direction filterPredicate's own note refuses to fail in.
+func jsonHasCond(col string, fm *FieldMeta, op FilterOperator, val any, driver DriverType, p PlaceholderBinder) string {
+	var pred string
+	switch {
+	case fm.Tags.JSONArray:
+		pred = jsonArrayHasPredicate(col, val, driver, p)
+	case fm.Tags.JSONObject:
+		pred = jsonObjectHasPredicate(col, val, driver, p)
+	default:
+		// Not a JSON column. ParseFilterParam refuses this, so only a Go-built
+		// filter arrives here; there is no JSON to look inside.
+		return falsePredicate
+	}
+	if pred == falsePredicate {
+		return falsePredicate
+	}
+	if op == OpNotHas {
+		return "NOT (" + pred + ")"
+	}
+	return pred
+}
+
+// jsonArrayHasPredicate asks whether the array holds val as an element.
+//
+// Postgres uses containment, which a GIN index on the column can serve. SQLite
+// has no containment operator, so it walks the elements with json_each and
+// compares each one's JSON form — json_quote renders a scanned element back into
+// the encoding the bound value is already in.
+func jsonArrayHasPredicate(col string, val any, driver DriverType, p PlaceholderBinder) string {
+	lit, ok := jsonFilterLiteral(val)
+	if !ok {
+		return falsePredicate
+	}
+	if driver == Postgres {
+		return col + " @> " + p.Add(lit) + "::jsonb"
+	}
+	return "EXISTS (SELECT 1 FROM json_each(" + col +
+		") WHERE json_quote(" + Quote("json_each") + "." + Quote("value") + ") = " + p.Add(lit) + ")"
+}
+
+// jsonObjectHasPredicate asks whether the object holds key=value.
+//
+// Postgres compares the pair as a document, so the same GIN index that serves
+// array membership serves this. SQLite extracts the one key and compares its
+// JSON form; a key the object does not hold extracts to NULL, which is not equal
+// to anything, so a missing key is a non-match rather than an error.
+//
+// The key travels as a bound parameter inside the path, never as text spliced
+// into it — the rule mfx:"locale" filters already follow (SEC-1).
+func jsonObjectHasPredicate(col string, val any, driver DriverType, p PlaceholderBinder) string {
+	key, want, found := strings.Cut(fmt.Sprint(val), "=")
+	if !found || key == "" || !jsonPathSafeKey(key) {
+		return falsePredicate
+	}
+	if driver == Postgres {
+		lit, ok := jsonFilterLiteral(map[string]any{key: want})
+		if !ok {
+			return falsePredicate
+		}
+		return col + " @> " + p.Add(lit) + "::jsonb"
+	}
+	lit, ok := jsonFilterLiteral(want)
+	if !ok {
+		return falsePredicate
+	}
+	return "json_quote(json_extract(" + col + ", " + p.Add(`$."`+key+`"`) + ")) = " + p.Add(lit)
+}
+
+// jsonPathSafeKey reports whether key can be placed inside a quoted SQLite JSON
+// path label. A quote or a backslash would end or escape the label and make the
+// path mean something else, so those are refused rather than escaped.
+//
+// This is the backstop, not the rule: ParseFilterParam holds a key to a narrower
+// allowlist still (isJSONObjectKey). A filter built in Go is never parsed, so the
+// builder cannot assume the parser ran.
+func jsonPathSafeKey(key string) bool {
+	return !strings.ContainsAny(key, `"\`)
+}
+
+// jsonFilterLiteral renders v as the JSON text both drivers compare against.
+func jsonFilterLiteral(v any) (string, bool) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", false
+	}
+	return string(b), true
 }
 
 // betweenPredicate expands a "lo,hi" value into "col >= lo AND col <= hi". Both

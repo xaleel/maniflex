@@ -74,6 +74,7 @@ var aggregateWhereOps = map[FilterOperator]bool{
 	OpLike: true, OpILike: true, OpIn: true, OpNotIn: true,
 	OpIsNull: true, OpNotNull: true, OpBetween: true,
 	OpContains: true, OpStartsWith: true, OpEndsWith: true,
+	OpHas: true, OpNotHas: true,
 }
 
 // buildAggregateQuery parses the ?aggregate= spec into an AggregateQuery,

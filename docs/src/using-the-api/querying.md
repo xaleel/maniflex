@@ -248,6 +248,8 @@ for the per-column allowlist.
 | `contains` | field contains the value, case-insensitive | one literal value |
 | `starts_with` | field starts with the value, case-insensitive | one literal value |
 | `ends_with` | field ends with the value, case-insensitive | one literal value |
+| `has` | JSON column holds this element / key=value pair | one value, or `key=value` |
+| `not_has` | JSON column does **not** hold it | one value, or `key=value` |
 | `in` | field IN (…) | at least one comma-separated value |
 | `not_in` | field NOT IN (…) | at least one comma-separated value |
 | `between` | field ≥ lo AND ≤ hi (inclusive) | exactly two comma-separated values `lo,hi` |
@@ -264,6 +266,8 @@ for the per-column allowlist.
 ?filter=title:ilike:%intro%
 ?filter=title:contains:intro
 ?filter=paid_amount:gte_field:amount_due
+?filter=category_ids:has:cat-1
+?filter=meta:has:tier=gold
 ```
 
 ### Patterns vs. literals
@@ -288,6 +292,44 @@ string:
 ?filter=label:contains:50%25       → matches the literal "50%"
 ?filter=label:like:50%25           → matches "50%", "500 units", "50 off", …
 ```
+
+### Filtering inside a JSON column
+
+`has` asks whether a JSON column holds a value. It needs the column to say which
+kind of document it holds, with `mfx:"json_array"` or `mfx:"json_object"`:
+
+```go
+type Merchant struct {
+    maniflex.BaseModel
+    CategoryIDs JSONArray  `json:"categoryIds" mfx:"filterable,json_array"`
+    Meta        JSONObject `json:"meta"        mfx:"filterable,json_object"`
+}
+```
+
+```
+?filter=categoryIds:has:cat-1        # the array holds the element "cat-1"
+?filter=categoryIds:not_has:cat-1    # …and its negation
+?filter=meta:has:tier=gold           # the object holds "tier": "gold"
+```
+
+The tag is required rather than inferred because nothing else can tell: a JSON
+column is `JSONB` on Postgres but plain `TEXT` on SQLite — the same SQL type a
+string column has — so the running driver cannot answer the question for you.
+
+Both sides are compared as **JSON**, not as text. `?filter=tags:has:5` matches an
+array holding the number `5`, and does not match one holding the string `"5"`;
+the two are different values, and they stay different on both backends.
+
+On Postgres both forms compile to `@>`, so a GIN index on the column serves them.
+Only a top-level key is supported on an object — `meta:has:a.b=x` is refused
+rather than quietly reading `a.b` as a single key.
+
+> **`contains` is refused on a JSON column.** It compiles to a substring `LIKE`
+> over the serialised document, which matched across element boundaries on SQLite
+> — a search for `cat-1` returning a row holding `["cat-10"]` — and could not run
+> at all on Postgres, where `LIKE` has no `JSONB` overload. The same filter was
+> quietly wrong in development and a hard error in production, so it now returns
+> `400` naming `has` instead. Text columns are unaffected.
 
 ### Comparing two columns
 

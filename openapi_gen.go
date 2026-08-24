@@ -900,11 +900,12 @@ func listParameters(m *ModelMeta) []OASParameter {
 			"Use bracket-indexed keys to OR conditions within a group: " +
 			"?filter[0]=status:eq:draft&filter[0]=status:eq:published combines as (draft OR published). " +
 			"Different group indices are ANDed together. " +
-			"Operators: eq, neq, gt, gte, lt, lte, like, ilike, contains, starts_with, ends_with, " +
-			"in, not_in, is_null, not_null, between, " +
-			"eq_field, neq_field, gt_field, gte_field, lt_field, lte_field. " +
+			"Operators: " + filterOperatorList() + ". " +
 			"like/ilike take a raw SQL pattern (% and _ are wildcards); contains/starts_with/ends_with " +
 			"take a literal value (% and _ match themselves) and are case-insensitive. " +
+			"has/not_has ask whether a JSON column holds a value and need the column tagged " +
+			"json_array (element membership, e.g. tags:has:urgent) or json_object " +
+			"(a key=value pair, e.g. meta:has:name=John). " +
 			"The *_field operators take the name of another filterable column on the same model " +
 			"holding the same kind of value (e.g. paid_amount:gte_field:amount_due), not a literal. " +
 			"Filterable fields: " + strings.Join(filterable, ", ")

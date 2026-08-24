@@ -994,6 +994,13 @@ func ScanModel(v any, cfg ModelConfig) (*ModelMeta, error) {
 		return nil, err
 	}
 
+	// mfx:"json_array" / mfx:"json_object" decide how the `has` filter compiles,
+	// and nothing downstream can second-guess them: a JSON column's SQL type is
+	// indistinguishable from a text one on SQLite. Check them against the field.
+	if err := meta.validateJSONColumnTags(); err != nil {
+		return nil, err
+	}
+
 	// Aggregate `lock_when:field=value` directives across the model's fields.
 	// We resolve the referenced JSON name now so a typo (`lock_when:satus=…`)
 	// is caught at registration rather than silently never matching.

@@ -495,6 +495,8 @@ require `locale` to be present.
 | Directive             | Effect                                                                                                   |
 | --------------------- | -------------------------------------------------------------------------------------------------------- |
 | `locale`              | marks the field as a `LocaleString`; enables locale-aware response serialisation                         |
+| `json_array`          | column holds a JSON array; enables the `has` / `not_has` filter operators on it                          |
+| `json_object`         | column holds a JSON object; enables `has:key=value` / `not_has:key=value`                                |
 | `split`               | (default) response emits `"name"` = resolved string and `"name_i18n"` = full map                         |
 | `resolve`             | response always emits `"name"` as a plain string; no companion field                                     |
 | `dynamic`             | response emits a string when `?locale=` is set, the full map otherwise                                   |
@@ -530,4 +532,5 @@ filtering/sorting behaviour.
 | `encrypted` `key:…`                                          | encryption            |
 | `scheduled;…`                                                | scheduled transitions |
 | `locale` `split` `resolve` `dynamic` `default_locale:…`      | localization          |
+| `json_array` `json_object`                                   | JSON columns          |
 | `-`                                                          | exclude the field     |

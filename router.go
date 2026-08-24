@@ -19,12 +19,25 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 
 	validateReadinessChecks(cfg.ReadinessChecks)
 
+	// RequestID must be registered BEFORE PanicRecoverer, and the order is the
+	// whole point (audit M1). chi middleware wrap in registration order, so a
+	// recoverer registered first holds the request as it was before the id was
+	// attached to the context — and read an id that was never there, logging
+	// request_id="" for every panic it ever recovered. That id is what ties the
+	// panic to the access log, the trace and the user's report, and an empty
+	// one reads as "this request had no id" rather than "this logger looked in
+	// the wrong place".
+	//
+	// The cost of the order is that a panic inside RequestID itself no longer
+	// becomes a JSON envelope. It increments an atomic counter and stores the
+	// result in the context; there is nothing in it to panic.
+	r.Use(chiMiddleware.RequestID)
+
 	// PanicRecoverer replaces chi's built-in Recoverer. It catches panics,
 	// logs them as structured JSON via cfg.PanicLogger (or slog.Default()),
 	// and returns a {"error": {"code": "PANIC", ...}} response consistent
 	// with every other maniflex error envelope.
 	r.Use(PanicRecoverer(cfg.PanicLogger))
-	r.Use(chiMiddleware.RequestID)
 	if len(cfg.RequestObservers) > 0 {
 		for i, observer := range cfg.RequestObservers {
 			if observer == nil {

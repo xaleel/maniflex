@@ -416,6 +416,59 @@ func TestPanicRecovery(t *testing.T) {
 		}
 	})
 
+	// The panic log is frequently the only durable record of a 500, so its
+	// request_id is what ties it to the access log, the trace and the user's
+	// report. An empty one is worse than an absent field: it reads as "this
+	// request carried no id" rather than "this logger read the wrong context".
+	//
+	// Asserting on an id the caller supplied, rather than merely on non-empty,
+	// pins that the value came from *this* request. chi's RequestID honours an
+	// inbound X-Request-Id, which is also how a gateway correlates its own id
+	// with the application's.
+	t.Run("log_record_contains_request_id", func(t *testing.T) {
+		t.Parallel()
+		const wantID = "panic-req-id-abc123"
+
+		var mu sync.Mutex
+		var records []slog.Record
+		logger := slog.New(&captureSlogHandler{mu: &mu, records: &records})
+
+		srv := testutil.NewServer(t, testutil.Options{
+			PanicLogger: logger,
+			Middleware: func(s *maniflex.Server) {
+				s.Pipeline.Auth.Register(func(ctx *maniflex.ServerContext, next func() error) error {
+					panic("request id test")
+				})
+			},
+		})
+		srv.GET("/users", map[string]string{"X-Request-Id": wantID}).
+			AssertStatus(http.StatusInternalServerError)
+
+		mu.Lock()
+		recs := append([]slog.Record{}, records...)
+		mu.Unlock()
+
+		var got string
+		var seen bool
+		for _, rec := range recs {
+			rec.Attrs(func(a slog.Attr) bool {
+				if a.Key == "request_id" {
+					seen = true
+					got = a.Value.String()
+				}
+				return true
+			})
+		}
+		if !seen {
+			t.Fatal("panic log record carries no 'request_id' attribute at all")
+		}
+		if got != wantID {
+			t.Errorf("panic log recorded request_id %q, want %q — PanicRecoverer must be "+
+				"registered inside chi's RequestID middleware, or it reads the request as it "+
+				"was before the id was attached", got, wantID)
+		}
+	})
+
 	t.Run("nil_panic_logger_uses_slog_default_without_panic", func(t *testing.T) {
 		// Config.PanicLogger = nil must not itself cause a panic.
 		t.Parallel()

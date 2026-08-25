@@ -20,6 +20,7 @@ package e2e
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -278,6 +279,94 @@ func TestPanicRecovery(t *testing.T) {
 		}
 	})
 
+	// ── Panics after the response has started ─────────────────────────────────
+	//
+	// Once bytes are on the wire they cannot be recalled, so the envelope stops
+	// being a courtesy and becomes corruption: the client receives the partial
+	// stream with {"error":...} glued to the end, under whatever status was
+	// already sent. That parses as neither the stream nor an error. recover.go
+	// names this hazard in its ErrAbortHandler comment — "try to write a 500
+	// JSON body on top of a response that is already half-written" — and
+	// re-panics to avoid it, but an ordinary panic on the same half-written
+	// response took the opposite path (audit M2).
+	//
+	// The response is aborted rather than merely left truncated. A truncated
+	// chunked response that terminates cleanly looks *complete* to the client,
+	// so a half-written CSV export or NDJSON stream is silently short — the
+	// same "cannot detect the end of the walk" failure the cursor fix removed.
+	// Aborting makes the transfer fail, which a client can see.
+
+	t.Run("panic_after_response_started_does_not_append_envelope", func(t *testing.T) {
+		t.Parallel()
+		const partial = `{"data":[{"id":1}`
+		srv := startedResponsePanicServer(t, partial, nil)
+
+		resp, err := srv.Client().Get(srv.APIPath("/users"))
+		if err != nil {
+			t.Fatalf("request: %v", err)
+		}
+		defer resp.Body.Close()
+		raw, readErr := io.ReadAll(resp.Body)
+		body := string(raw)
+
+		if strings.Contains(body, "PANIC") {
+			t.Errorf("the panic envelope was appended to a response that had already begun; "+
+				"the client receives the stream followed by an error object, which parses as "+
+				"neither.\nbody: %q", body)
+		}
+		if body != partial {
+			t.Errorf("body = %q, want exactly the bytes the handler had already written (%q)",
+				body, partial)
+		}
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("status = %d, want %d — 200 was already sent and cannot be taken back",
+				resp.StatusCode, http.StatusOK)
+		}
+		if readErr == nil {
+			t.Error("the truncated response completed cleanly, so the client cannot tell it is " +
+				"short; a half-written export must fail the transfer rather than look complete")
+		}
+	})
+
+	t.Run("panic_after_response_started_is_still_logged", func(t *testing.T) {
+		t.Parallel()
+		var mu sync.Mutex
+		var records []slog.Record
+		logger := slog.New(&captureSlogHandler{mu: &mu, records: &records})
+
+		srv := startedResponsePanicServer(t, `partial`, logger)
+		resp, err := srv.Client().Get(srv.APIPath("/users"))
+		if err == nil {
+			io.Copy(io.Discard, resp.Body) //nolint:errcheck // the abort is the point
+			resp.Body.Close()
+		}
+
+		mu.Lock()
+		recs := append([]slog.Record{}, records...)
+		mu.Unlock()
+
+		var gotPanic, gotCommitted bool
+		for _, rec := range recs {
+			rec.Attrs(func(a slog.Attr) bool {
+				if a.Key == "panic" && strings.Contains(a.Value.String(), "died-mid-stream") {
+					gotPanic = true
+				}
+				if a.Key == "response_committed" && a.Value.String() == "true" {
+					gotCommitted = true
+				}
+				return true
+			})
+		}
+		if !gotPanic {
+			t.Error("a panic that could not be reported to the client must still be logged; " +
+				"suppressing the envelope must not also suppress the record")
+		}
+		if !gotCommitted {
+			t.Error("the log record must say the response was already committed — otherwise the " +
+				"operator sees a panic with no 500 and no explanation for why the client got neither")
+		}
+	})
+
 	// ── Structured logging ────────────────────────────────────────────────────
 
 	t.Run("panic_is_logged_at_error_level", func(t *testing.T) {
@@ -529,6 +618,36 @@ func panicServer(t *testing.T, name string, mw maniflex.MiddlewareFunc) *testuti
 	return testutil.NewServer(t, testutil.Options{
 		Middleware: func(s *maniflex.Server) {
 			s.Pipeline.Auth.Register(mw)
+		},
+	})
+}
+
+// startedResponsePanicServer builds a server whose Auth middleware sends a
+// 200 and some bytes -- a streaming export or SSE feed already in flight --
+// and then panics, which is the state PanicRecoverer cannot write an envelope
+// into. logger may be nil.
+func startedResponsePanicServer(t *testing.T, partial string, logger *slog.Logger) *testutil.Server {
+	t.Helper()
+	return testutil.NewServer(t, testutil.Options{
+		PanicLogger: logger,
+		Middleware: func(s *maniflex.Server) {
+			s.Pipeline.Auth.Register(func(ctx *maniflex.ServerContext, next func() error) error {
+				// Asserted rather than probed: PanicRecoverer wraps the writer
+				// to learn whether the response has begun, and a wrapper that
+				// dropped Flusher would break every SSE stream while leaving
+				// this test green if it merely skipped the flush.
+				f, ok := ctx.Writer.(http.Flusher)
+				if !ok {
+					t.Errorf("ctx.Writer is %T, which is not an http.Flusher — the response "+
+						"writer wrapping in PanicRecoverer must preserve it or streaming breaks",
+						ctx.Writer)
+					panic("died-mid-stream")
+				}
+				ctx.Writer.WriteHeader(http.StatusOK)
+				_, _ = ctx.Writer.Write([]byte(partial))
+				f.Flush()
+				panic("died-mid-stream")
+			})
 		},
 	})
 }

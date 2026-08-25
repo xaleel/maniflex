@@ -30,10 +30,20 @@ func TestAbortHandler_NotRecovered(t *testing.T) {
 			s.Action(maniflex.ActionConfig{
 				Method: "GET", Path: "/proxy",
 				Handler: func(ctx *maniflex.ServerContext) error {
+					// Asserted rather than probed. This test's whole premise is
+					// that the bytes are already on the wire when the panic
+					// happens; an `if ok` that quietly skipped the flush would
+					// leave that premise untested and the test still green.
+					f, ok := ctx.Writer.(http.Flusher)
+					if !ok {
+						t.Errorf("ctx.Writer is %T, which is not an http.Flusher — this test "+
+							"cannot put bytes on the wire before the abort, so it would prove "+
+							"nothing", ctx.Writer)
+					}
 					ctx.Writer.Header().Set("Content-Type", "text/plain")
 					ctx.Writer.WriteHeader(http.StatusOK)
 					_, _ = ctx.Writer.Write([]byte("partial payload"))
-					if f, ok := ctx.Writer.(http.Flusher); ok {
+					if ok {
 						f.Flush() // the client already has these bytes
 					}
 					panic(http.ErrAbortHandler) // upstream died mid-stream

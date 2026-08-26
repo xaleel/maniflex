@@ -2,7 +2,7 @@ module github.com/xaleel/maniflex/db/sqlite
 
 go 1.25.12
 
-require github.com/xaleel/maniflex v0.7.0
+require github.com/xaleel/maniflex v0.8.0
 
 require modernc.org/sqlite v1.50.1
 

@@ -337,7 +337,27 @@ func wrapFileMiddleware(cfg *Config, hf func(ctx *ServerContext) http.HandlerFun
 		// handler runs. obs records the outcome without buffering the body,
 		// letting AfterMiddlewares observe the result and guarding against a
 		// double-write when ctx.Response is set after the body is already sent.
-		obs := &responseObserver{ResponseWriter: w}
+		//
+		// chi's wrapper rather than a local struct{http.ResponseWriter}: the
+		// latter forwards only Write and WriteHeader and silently drops every
+		// other interface the concrete writer implements. io.ReaderFrom is the
+		// one that costs here — io.Copy hands the copy to the destination's
+		// ReadFrom when it has one, which is net/http's own path to the
+		// connection, so dropping it put every download through a generic
+		// user-space loop (audit M6). Flusher, Hijacker and Pusher survive with
+		// it. Its ReadFrom also marks the header written and counts the bytes,
+		// so wrote() below stays correct across the fast path; a hand-rolled
+		// ReadFrom that forwarded straight to the embedded writer would report
+		// "nothing sent" after streaming a whole file and stack a 500 on top of
+		// it (audit M2, by another route).
+		obs := chiMiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
+
+		// Whether any part of the response has reached the client. Status is
+		// set by WriteHeader (explicitly or via the first Write/ReadFrom);
+		// BytesWritten covers a handler that wrote a body without a status.
+		// AfterMiddlewares read the same state through the documented
+		// ctx.Writer.(interface{ Status() int }), which chi's wrapper satisfies.
+		wrote := func() bool { return obs.Status() != 0 || obs.BytesWritten() > 0 }
 		reqID := chiMiddleware.GetReqID(r.Context())
 		ctx := &ServerContext{
 			Request:     r,
@@ -386,7 +406,7 @@ func wrapFileMiddleware(cfg *Config, hf func(ctx *ServerContext) http.HandlerFun
 		if err := run(); err != nil {
 			ctx.logServerError(http.StatusInternalServerError, "INTERNAL", err.Error())
 			// Don't stack a 500 on top of an already-streamed body.
-			if !obs.wrote {
+			if !wrote() {
 				writeJSONError(obs, http.StatusInternalServerError, "INTERNAL",
 					"internal server error")
 			}
@@ -399,45 +419,15 @@ func wrapFileMiddleware(cfg *Config, hf func(ctx *ServerContext) http.HandlerFun
 		// body is already on the wire cannot rewrite it; warn instead of
 		// emitting a corrupt double-write.
 		if ctx.Response != nil {
-			if obs.wrote {
+			if wrote() {
 				cfg.logger().Warn("file middleware: ctx.Response set after the response was already sent; ignoring",
-					"status", obs.status)
+					"status", obs.Status())
 			} else {
 				ctx.Response.Write(obs)
 			}
 		}
 	})
 }
-
-// responseObserver wraps the ResponseWriter to record the handler's outcome
-// (status code + whether anything was written) WITHOUT buffering the body, so
-// file downloads still stream straight to the client. AfterMiddlewares read
-// this via ctx.Writer to observe the result; because the body is already on
-// the wire, they can run side effects (audit, metrics, cleanup) but cannot
-// rewrite a response the handler has already committed.
-type responseObserver struct {
-	http.ResponseWriter
-	status int
-	wrote  bool
-}
-
-func (o *responseObserver) WriteHeader(code int) {
-	if !o.wrote {
-		o.status, o.wrote = code, true
-	}
-	o.ResponseWriter.WriteHeader(code)
-}
-
-func (o *responseObserver) Write(b []byte) (int, error) {
-	if !o.wrote {
-		o.status, o.wrote = http.StatusOK, true
-	}
-	return o.ResponseWriter.Write(b)
-}
-
-// Status reports the status code the handler sent (0 if nothing was written).
-// After-middlewares can read it with ctx.Writer.(interface{ Status() int }).
-func (o *responseObserver) Status() int { return o.status }
 
 // writeJSONError writes a maniflex-style error envelope.
 func writeJSONError(w http.ResponseWriter, status int, code, message string) {

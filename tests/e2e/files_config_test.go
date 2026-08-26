@@ -7,6 +7,8 @@ package e2e
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"strings"
@@ -348,5 +350,115 @@ func TestFilesConfig_ReproducesLegacyMiddlewareBehaviour(t *testing.T) {
 	srv.POSTMultipart("/files", nil, txtUpload("a.txt")).AssertStatus(http.StatusForbidden)
 	if len(store.Keys()) != 0 {
 		t.Errorf("blocked upload should store nothing, got %d", len(store.Keys()))
+	}
+}
+
+// ── The response writer the file routes hand to middleware ───────────────────
+//
+// The file routes wrap the ResponseWriter so an AfterMiddleware can read the
+// outcome without the body being buffered. A wrapper that only forwards
+// Write/WriteHeader silently drops every optional interface the concrete
+// net/http writer implements, and one of them is load-bearing here: Serve ends
+// in io.Copy, which reaches the destination's io.ReaderFrom — that is
+// net/http's optimised path to the connection, and losing it puts every
+// download through a generic 32KB user-space loop instead (audit M6).
+//
+// Flusher and Hijacker come along for free and are asserted with it, so a
+// future wrapper cannot quietly narrow the writer again.
+
+func TestFilesConfig_ResponseWriterPreservesStreamingInterfaces(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewMemoryStorage()
+	var seen, gotReaderFrom, gotFlusher, gotHijacker bool
+
+	srv := testutil.NewServer(t, testutil.Options{
+		Models: testutil.FileModels(),
+		FilesConfig: &maniflex.FilesConfig{
+			Storage:        store,
+			MountEndpoints: true,
+			BeforeMiddlewares: []maniflex.MiddlewareFunc{
+				func(ctx *maniflex.ServerContext, next func() error) error {
+					seen = true
+					_, gotReaderFrom = ctx.Writer.(io.ReaderFrom)
+					_, gotFlusher = ctx.Writer.(http.Flusher)
+					_, gotHijacker = ctx.Writer.(http.Hijacker)
+					return next()
+				},
+			},
+		},
+	})
+
+	resp := srv.POSTMultipart("/files", nil, txtUpload("a.txt"))
+	resp.AssertStatus(http.StatusCreated)
+	key := testutil.Field(t, resp.Data(), "key")
+
+	srv.GET("/files/" + key).AssertStatus(http.StatusOK)
+
+	if !seen {
+		t.Fatal("the before-middleware never ran, so nothing about ctx.Writer was observed")
+	}
+	if !gotReaderFrom {
+		t.Error("ctx.Writer on a file route is not an io.ReaderFrom: writeFileResponse ends in " +
+			"io.Copy, which uses the destination's ReadFrom when it has one, so every download " +
+			"falls back to a generic user-space copy loop instead of net/http's own path")
+	}
+	if !gotFlusher {
+		t.Error("ctx.Writer on a file route is not an http.Flusher")
+	}
+	if !gotHijacker {
+		t.Error("ctx.Writer on a file route is not an http.Hijacker")
+	}
+}
+
+// The trap in fixing the above: bytes written through ReadFrom bypass Write, so
+// a wrapper that tracks "did anything go out?" only in Write reports false after
+// streaming a whole file. Two guards in wrapFileMiddleware depend on that answer,
+// and both then staple a 500 envelope onto a body already on the wire -- the M2
+// corruption, reintroduced on the file path by the fix for M6.
+//
+// This targets the upload rather than the download deliberately. writeFileResponse
+// sets Content-Length whenever the size is known, and net/http silently discards
+// writes past it, so a download of a sized file masks the second write instead of
+// showing it. The 201 upload response declares no length up front, so a stacked
+// envelope lands in the body where it can be seen -- as does a download whose
+// FileMeta carries no size, since that Content-Length is conditional.
+func TestFilesConfig_FailureAfterStreamingDoesNotStackAnEnvelope(t *testing.T) {
+	t.Parallel()
+	store := testutil.NewMemoryStorage()
+
+	srv := testutil.NewServer(t, testutil.Options{
+		Models: testutil.FileModels(),
+		FilesConfig: &maniflex.FilesConfig{
+			Storage:        store,
+			MountEndpoints: true,
+			AfterMiddlewares: []maniflex.MiddlewareFunc{
+				func(ctx *maniflex.ServerContext, next func() error) error {
+					// Fails only once the handler has committed its response.
+					return errors.New("audit sink unreachable")
+				},
+			},
+		},
+	})
+
+	resp := srv.POSTMultipart("/files", nil, txtUpload("a.txt"))
+	body := string(resp.Body)
+
+	if resp.Status != http.StatusCreated {
+		t.Errorf("status = %d, want 201: it was already sent before the middleware failed", resp.Status)
+	}
+	if strings.Contains(body, "INTERNAL") {
+		t.Errorf("a 500 error envelope was stacked onto a response that was already committed; "+
+			"the writer reported nothing written after the handler wrote its body.\nbody: %q", body)
+	}
+	var probe any
+	if err := json.Unmarshal(resp.Body, &probe); err != nil {
+		t.Errorf("the response body is not valid JSON (%v) -- two objects concatenated is exactly "+
+			"what a second write onto a committed response produces.\nbody: %q", err, body)
+	}
+
+	// And the download still streams its bytes intact through the new wrapper.
+	key := testutil.Field(t, resp.Data(), "key")
+	if got := string(srv.GET("/files/" + key).Body); got != "hello" {
+		t.Errorf("download body = %q, want the stored contents", got)
 	}
 }

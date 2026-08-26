@@ -414,3 +414,201 @@ func (a *countingPingAdapter) Ping(context.Context) error {
 }
 
 var _ maniflex.DBAdapter = (*countingPingAdapter)(nil)
+
+// ── A flight outlives the request that opened it ──────────────────────────────
+//
+// The readiness flight is shared, so binding it to one participant's lifetime
+// makes that participant's disconnect everyone's failure (audit M3). A kubelet
+// probe that times out and drops its connection cancels the request context,
+// and every request coalesced onto that flight is handed the resulting
+// failure — a healthy server answering 503 and, since 503 on readiness pulls
+// the pod out of the load balancer's endpoints, taking itself out of service.
+//
+// The cause is tested directly rather than through its consequence: the
+// context the checks run on must not die with the request that opened the
+// flight. Values are still inherited, so anything request-scoped a check reads
+// keeps working; only cancellation and the deadline are severed, and
+// Config.HealthTimeout still bounds the run.
+
+func TestProbeFlight_CheckOutlivesTheRequestThatOpenedIt(t *testing.T) {
+	t.Parallel()
+
+	// Long enough that a cancellation which is going to propagate has done so.
+	// The asymmetry is deliberate: with the bug the context dies in
+	// milliseconds and the test fails immediately, so this is only ever paid
+	// when passing.
+	const grace = 1500 * time.Millisecond
+
+	var startOnce sync.Once
+	started := make(chan struct{})
+	release := make(chan struct{})
+	ctxCh := make(chan context.Context, 1)
+
+	srv := testutil.NewServer(t, testutil.Options{
+		Config: func(cfg *maniflex.Config) {
+			cfg.ReadinessChecks = []maniflex.ReadinessCheck{{
+				Name: "billing",
+				Check: func(ctx context.Context) error {
+					startOnce.Do(func() {
+						ctxCh <- ctx
+						close(started)
+					})
+					<-release
+					return nil
+				},
+			}}
+		},
+	})
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, srv.APIPath("/ready"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := srv.Client().Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	<-started // the flight is open and the checks are running
+	checkCtx := <-ctxCh
+	cancel() // the orchestrator gives up on its probe and drops the connection
+	<-done   // and the client side is definitively gone
+
+	select {
+	case <-checkCtx.Done():
+		t.Errorf("the readiness checks' context was cancelled when the request that opened "+
+			"the flight went away (%v); every request coalesced onto this flight is handed "+
+			"that failure, so one disconnecting probe answers 503 for all of them from a "+
+			"healthy server", context.Cause(checkCtx))
+	case <-time.After(grace):
+		// Survived the initiator, which is the point.
+	}
+
+	close(release)
+}
+
+func TestProbeFlight_WaiterSurvivesTheInitiatorDisconnecting(t *testing.T) {
+	// The consequence of the above, end to end: a probe that joins an open
+	// flight must not inherit the 503 caused by the initiator hanging up.
+	t.Parallel()
+
+	var runs, arrived atomic.Int64
+	var startOnce, secondOnce sync.Once
+	started := make(chan struct{})
+	secondArrived := make(chan struct{})
+	release := make(chan struct{})
+
+	srv := testutil.NewServer(t, testutil.Options{
+		Config: func(cfg *maniflex.Config) {
+			cfg.Probes.Ready.Middleware = []maniflex.HTTPMiddleware{
+				func(next http.Handler) http.Handler {
+					return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if arrived.Add(1) >= 2 {
+							secondOnce.Do(func() { close(secondArrived) })
+						}
+						next.ServeHTTP(w, r)
+					})
+				},
+			}
+			cfg.ReadinessChecks = []maniflex.ReadinessCheck{{
+				Name: "billing",
+				Check: func(ctx context.Context) error {
+					runs.Add(1)
+					startOnce.Do(func() { close(started) })
+					<-release
+					// A check that respects its context fails exactly this way
+					// when the context it was handed has been cancelled.
+					return ctx.Err()
+				},
+			}}
+		},
+	})
+
+	// The initiator, which will hang up mid-flight.
+	reqCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, srv.APIPath("/ready"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initiatorDone := make(chan struct{})
+	go func() {
+		defer close(initiatorDone)
+		if resp, err := srv.Client().Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	<-started
+	cancel()
+	<-initiatorDone
+
+	// The waiter, which joins the flight the initiator left behind.
+	waiterStatus := make(chan int, 1)
+	go func() { waiterStatus <- srv.GET("/ready").Status }()
+
+	<-secondArrived
+	// The waiter is past the door and a few instructions from the flight it
+	// will join. As with arrivalGate.hold, too short a pause shows up as a
+	// second run below — a visible failure, not a quiet one.
+	time.Sleep(150 * time.Millisecond)
+	close(release)
+
+	status := <-waiterStatus
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("precondition: the check ran %d time(s), want 1 — the waiter did not join "+
+			"the initiator's flight, so this run proves nothing about coalesced failures", got)
+	}
+	if status != http.StatusOK {
+		t.Errorf("a probe that joined an open flight answered %d; the server is healthy and "+
+			"only the request that opened the flight went away", status)
+	}
+}
+
+func TestProbeFlight_HealthTimeoutStillBoundsTheFlight(t *testing.T) {
+	// Severing the initiator's cancellation leaves HealthTimeout as the only
+	// thing keeping the flight finite, and nothing covered that for /ready --
+	// health_test.go bounds /health alone. Without this a regression here would
+	// not fail, it would hang: a check that never returns holds the flight open
+	// and every later probe blocks on it forever.
+	t.Parallel()
+	const budget = 100 * time.Millisecond
+
+	srv := testutil.NewServer(t, testutil.Options{
+		Config: func(cfg *maniflex.Config) {
+			cfg.HealthTimeout = budget
+			cfg.ReadinessChecks = []maniflex.ReadinessCheck{{
+				Name: "billing",
+				Check: func(ctx context.Context) error {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(10 * time.Second):
+						// Returns rather than blocking forever, so a broken
+						// budget is a failed assertion and not a hung suite.
+						return nil
+					}
+				},
+			}}
+		},
+	})
+
+	start := time.Now()
+	status := srv.GET("/ready").Status
+	elapsed := time.Since(start)
+
+	if status != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503: a dependency that outran the %v budget is not ready",
+			status, budget)
+	}
+	if elapsed > 20*budget {
+		t.Errorf("readiness answered after %v with a %v HealthTimeout — the budget no longer "+
+			"bounds the flight, which is now the only thing that does", elapsed, budget)
+	}
+}

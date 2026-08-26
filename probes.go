@@ -274,7 +274,18 @@ func readyHandler(cfg *Config, reg *Registry, phase func() readinessPhase) http.
 			return
 		}
 
-		ctx := r.Context()
+		// The flight is shared, so it must not inherit the lifetime of whichever
+		// request happened to open it. A probe that times out and hangs up
+		// cancels its own request context, and with that context underneath the
+		// flight the cancellation became every coalesced waiter's failure: a
+		// healthy server answering 503, which on readiness pulls the pod out of
+		// the load balancer (audit M3).
+		//
+		// WithoutCancel keeps the request's values, so anything request-scoped a
+		// check reads still resolves, and severs only cancellation and the
+		// deadline. HealthTimeout is what bounds the run — it defaults to 3s, so
+		// the disconnect this removes was never the thing keeping it finite.
+		ctx := context.WithoutCancel(r.Context())
 		if cfg.HealthTimeout > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, cfg.HealthTimeout)

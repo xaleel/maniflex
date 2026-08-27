@@ -10,6 +10,23 @@
 // the same Group shares the work and each event is handled once by the group —
 // the same meaning Group has in the Kafka and Redis adapters.
 //
+// # Concurrency and backpressure
+//
+// Subscription.Concurrency bounds how many handlers run at once per
+// subscription. Once those slots are taken the JetStream dispatch callback
+// blocks rather than queueing the message behind them, which is how an async
+// nats.go subscriber declines more work: the client buffers to its pending
+// limits, and the messages already handed over stay unacked, so the consumer's
+// MaxAckPending stops the server sending. Size Concurrency for the work, not
+// for the arrival rate.
+//
+// This adapter does not set MaxAckPending, so the ceiling on undelivered work
+// is whatever the server default or a pre-existing durable imposes — a number
+// this code neither chooses nor knows. Setting it here would refuse to bind to
+// every durable created by an earlier version, because nats.go compares the
+// requested consumer config against the existing one and rejects a mismatch.
+// Set it yourself on the consumer if the default does not suit.
+//
 // # Durable names changed
 //
 // The durable consumer name is now "{group}-{subject}-{hash}". It was
@@ -177,10 +194,26 @@ func (b *Bus) Subscribe(ctx context.Context, sub events.Subscription) (events.Ca
 				msg.Ack()
 				return
 			}
-			// Acquire a concurrency slot in a goroutine so the NATS
-			// dispatch callback returns immediately and is never blocked.
+			// Take the slot before spawning, never inside the goroutine.
+			// nats.go invokes this callback serially from one goroutine per
+			// subscription, so blocking here is how an async subscriber
+			// declines more work; and because the message stays unacked while
+			// we wait, the consumer's MaxAckPending eventually stops the server
+			// sending too. Spawning first bounded only how many handlers *ran*
+			// — every message past the limit became a goroutine parked on the
+			// semaphore holding its own decoded event, and nothing capped how
+			// many of those accumulated (audit C3). events/redis and the
+			// in-process bus already take the slot first.
+			select {
+			case sem <- struct{}{}:
+			case <-cctx.Done():
+				// Cancelled while waiting. Return without acking, so the
+				// message is redelivered rather than dropped. Waiting on a slot
+				// that will never free would wedge this subscription's delivery
+				// goroutine for the life of the process.
+				return
+			}
 			go func() {
-				sem <- struct{}{}
 				defer func() { <-sem }()
 				events.DeliverWithRetry(cctx, b, sub, e)
 				msg.Ack()

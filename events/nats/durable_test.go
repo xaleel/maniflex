@@ -150,10 +150,11 @@ type fakeOps struct {
 	mu   sync.Mutex
 	got  []recordedSub
 	subs []*fakeSubscription
+	cbs  []natsclient.MsgHandler
 	err  error
 }
 
-func (f *fakeOps) QueueSubscribe(subject, queue, durable string, _ natsclient.MsgHandler) (jsSubscription, error) {
+func (f *fakeOps) QueueSubscribe(subject, queue, durable string, cb natsclient.MsgHandler) (jsSubscription, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.err != nil {
@@ -162,7 +163,22 @@ func (f *fakeOps) QueueSubscribe(subject, queue, durable string, _ natsclient.Ms
 	f.got = append(f.got, recordedSub{subject: subject, queue: queue, durable: durable})
 	s := &fakeSubscription{}
 	f.subs = append(f.subs, s)
+	f.cbs = append(f.cbs, cb)
 	return s, nil
+}
+
+// onlyHandler returns the single dispatch callback Subscribe registered, so a
+// test can drive it the way nats.go does. Recorded rather than reconstructed:
+// the callback is the whole of the delivery path, and it is otherwise reachable
+// only through a live server.
+func (f *fakeOps) onlyHandler(t *testing.T) natsclient.MsgHandler {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.cbs) != 1 {
+		t.Fatalf("%d dispatch callbacks registered, want 1", len(f.cbs))
+	}
+	return f.cbs[0]
 }
 
 func (f *fakeOps) recorded() []recordedSub {

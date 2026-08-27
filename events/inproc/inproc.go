@@ -73,9 +73,11 @@ type Options struct {
 
 // Bus is an in-process fan-out event bus.
 type Bus struct {
+	// mu guards subs and closed. Publish holds it for reading across its whole
+	// walk, not just long enough to look at the slice: see Publish.
 	mu sync.RWMutex
 	// Pointers, not values: a subscription owns a sync.Once and a WaitGroup, and
-	// Publish snapshots this slice — copying either type is a bug vet catches.
+	// copying either type is a bug vet catches.
 	subs []*subscription
 	seq  atomic.Uint64
 
@@ -90,9 +92,20 @@ type Bus struct {
 	rootCtx context.Context
 	cancel  context.CancelFunc
 
-	// inflight tracks delivery goroutines so Close can wait for them.
+	// inflight counts events that have been accepted and not yet disposed of —
+	// queued, being delivered, or released by a retiring worker — so Close can
+	// wait for them. It is only ever incremented under mu held for reading,
+	// which is what stops a count appearing after the drain has finished
+	// counting.
 	inflight sync.WaitGroup
-	closed   atomic.Bool
+
+	// closed is guarded by mu rather than being atomic. It has to be read in the
+	// same critical section that does the enqueuing: two atomics order the check
+	// against Close's flip but say nothing about the counting that follows, so
+	// Close could find the counter at zero and report a clean drain while a
+	// Publish that had already cleared the check went on to accept an event
+	// nobody would deliver (audit C1).
+	closed bool
 }
 
 // subscription is a bounded queue drained by a fixed pool of workers.
@@ -146,22 +159,30 @@ func New(opts ...Options) *Bus {
 // means "at least one subscriber did not accept this", not "nothing was
 // delivered".
 func (b *Bus) Publish(_ context.Context, e events.Event) error {
-	if b.closed.Load() {
+	// Held for the whole walk, not just long enough to copy the slice out.
+	// Counting an event and enqueuing it have to be indivisible with respect to
+	// retirement: Cancel and Close both take this lock for writing, so they
+	// queue behind a Publish in progress rather than landing between its two
+	// halves. Publish used to work from a snapshot instead, which let a Cancel
+	// retire a subscription's workers after the snapshot was taken — the event
+	// then landed in a queue nobody was draining, and the count it had been
+	// given was never balanced, so Close waited out its entire budget and
+	// reported ErrDrainIncomplete for a delivery that was never going to happen
+	// (audit C1).
+	//
+	// The sends below are non-blocking, so nothing slow runs under this lock.
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+
+	if b.closed {
 		return ErrBusClosed
 	}
 
-	b.mu.RLock()
-	subs := make([]*subscription, len(b.subs))
-	copy(subs, b.subs)
-	b.mu.RUnlock()
-
 	var full error
-	for _, s := range subs {
+	for _, s := range b.subs {
 		if !matchesAny(s.sub.Patterns, e.Type) {
 			continue
 		}
-		// Counted before the send, so a Close racing this Publish either sees
-		// the counter and waits, or has already set closed and refused above.
 		b.inflight.Add(1)
 		select {
 		case s.queue <- e:
@@ -265,8 +286,12 @@ func (b *Bus) Subscribe(_ context.Context, sub events.Subscription) (events.Canc
 			}
 		}
 		b.mu.Unlock()
-		// Unregistered first, so no further events are queued, then the workers
-		// are retired. sync.Once keeps a second Cancel from closing stop twice.
+		// Unregistered first, then retired, and the order is load-bearing. The
+		// lock above is the one Publish holds across its whole walk, so by this
+		// point any Publish already in flight has finished enqueuing and no
+		// later one can see this subscription — which is what makes it safe to
+		// take the workers away. sync.Once keeps a second Cancel from closing
+		// stop twice.
 		s.once.Do(func() { close(s.stop) })
 		s.worker.Wait()
 	}, nil
@@ -288,9 +313,17 @@ func (b *Bus) Subscribe(_ context.Context, sub events.Subscription) (events.Canc
 // Individual subscriptions are still removed with their Cancel func; Close ends
 // the whole bus. It is safe to call more than once.
 func (b *Bus) Close() error {
-	if !b.closed.CompareAndSwap(false, true) {
+	// Under the write lock, so this cannot interleave with a Publish that has
+	// already read closed as false: such a Publish holds the read lock until
+	// every event it accepted is counted, so the wait below cannot begin early
+	// and call a shutdown clean that dropped one (audit C1).
+	b.mu.Lock()
+	if b.closed {
+		b.mu.Unlock()
 		return nil
 	}
+	b.closed = true
+	b.mu.Unlock()
 
 	done := make(chan struct{})
 	go func() {

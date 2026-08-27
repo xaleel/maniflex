@@ -17,7 +17,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 )
 
 func streamFields(names ...string) []FieldMeta {
@@ -61,38 +60,47 @@ func generatedRows(fields []FieldMeta, n int, counter *int) iter.Seq[map[string]
 	}
 }
 
-// peakHeapDuring samples the heap while f runs and returns the highest reading.
-// Sampling on a timer is crude, but the property under test is a 10x difference
-// in growth, not a precise figure.
-func peakHeapDuring(f func()) uint64 {
-	runtime.GC()
-	var peak uint64
-	stop, finished := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(finished)
-		var m runtime.MemStats
-		for {
-			select {
-			case <-stop:
-				return
-			default:
+// exportWriter is the shape both export writers share.
+type exportWriter func(io.Writer, []FieldMeta, iter.Seq[map[string]any]) error
+
+// liveHeapAtLastRow reports the live heap at the moment the writer has consumed
+// n-1 rows and is therefore holding whatever it retains.
+//
+// This replaces a timer-sampled peak (audit N9). Sampling HeapAlloc every
+// millisecond and keeping the maximum measured the wrong thing twice over: it
+// saw allocation churn rather than what was retained, and the 100k run lasts ten
+// times longer than the 10k one, so it drew ten times the samples and was that
+// much likelier to land just before a collection — growth the writer never had.
+// On Windows the 1ms sleep is also subject to ~15.6ms timer granularity, so the
+// sample count swung with machine load. It failed on a healthy tree.
+//
+// Forcing a collection at a fixed row index removes the clock from the
+// measurement entirely. HeapAlloc straight after a GC is the live set, which is
+// the definition of "what the writer holds"; measured this way the streaming
+// writers sit at a ratio of 1.00-1.04 where the old metric reported up to 3.2.
+func liveHeapAtLastRow(write exportWriter, fields []FieldMeta, n int) uint64 {
+	var live uint64
+	rows := func(yield func(map[string]any) bool) {
+		for i := range n {
+			m := make(map[string]any, len(fields))
+			for _, f := range fields {
+				m[f.Tags.JSONName] = fmt.Sprintf("row-%d-%s-padding-padding-padding", i, f.Tags.JSONName)
 			}
-			// Throttle. ReadMemStats stops the world, so sampling it in a tight
-			// loop starves the very work being measured: on two cores under
-			// -race that turned this test from ~100s into a >13min timeout,
-			// which is how it took the whole root suite down in CI. 1ms still
-			// yields ~1000 samples/sec, far finer than a 10x signal needs.
-			time.Sleep(time.Millisecond)
-			runtime.ReadMemStats(&m)
-			if m.HeapAlloc > peak {
-				peak = m.HeapAlloc
+			if i == n-1 {
+				runtime.GC()
+				var ms runtime.MemStats
+				runtime.ReadMemStats(&ms)
+				live = ms.HeapAlloc
+			}
+			if !yield(m) {
+				return
 			}
 		}
-	}()
-	f()
-	close(stop)
-	<-finished // also the happens-before that makes reading peak safe
-	return peak
+	}
+	if err := write(io.Discard, fields, rows); err != nil {
+		panic(err)
+	}
+	return live
 }
 
 // The point of the change: what a writer holds must not grow with the row count.
@@ -106,27 +114,47 @@ func TestExportWriters_HoldNothingPerRow(t *testing.T) {
 	}
 
 	for name, write := range writers {
-		small := peakHeapDuring(func() {
-			if err := write(io.Discard, fields, generatedRows(fields, 10_000, nil)); err != nil {
-				t.Fatalf("%s: %v", name, err)
-			}
-		})
-		large := peakHeapDuring(func() {
-			if err := write(io.Discard, fields, generatedRows(fields, 100_000, nil)); err != nil {
-				t.Fatalf("%s: %v", name, err)
-			}
-		})
+		small := liveHeapAtLastRow(write, fields, 10_000)
+		large := liveHeapAtLastRow(write, fields, 100_000)
 
-		// 10x the rows. A writer that accumulated would show something near 10x;
-		// 3x is loose enough to absorb GC pacing on a noisy machine and still
-		// catch accumulation.
-		if large > small*3 {
-			t.Errorf("%s: peak heap went %d KB -> %d KB for 10x the rows — the writer is "+
+		// 10x the rows. A writer that accumulated shows very close to 10x — the
+		// hoarder below measures 9.7 — while these two sit at 1.00-1.04. 2x is
+		// an order of magnitude clear of the noise and still less than a
+		// quarter of the signal, so it is both stricter than the 3x it replaces
+		// and no longer a bet on GC pacing.
+		if large > small*2 {
+			t.Errorf("%s: live heap went %d KB -> %d KB for 10x the rows — the writer is "+
 				"accumulating rows rather than writing them through",
 				name, small/1024, large/1024)
 		}
 		t.Logf("%s: 10k rows %d KB, 100k rows %d KB", name, small/1024, large/1024)
 	}
+}
+
+// The measurement above is only worth having if it would still notice a writer
+// that hoarded, so this pins that it does. Without it, a change that made
+// liveHeapAtLastRow read a constant would leave every assertion above passing
+// and the whole file asserting nothing.
+func TestExportWriters_MeasurementCatchesAccumulation(t *testing.T) {
+	fields := streamFields("a", "b", "c", "d", "e", "f", "g", "h")
+	hoarder := func(_ io.Writer, _ []FieldMeta, rows iter.Seq[map[string]any]) error {
+		var held []map[string]any
+		for r := range rows {
+			held = append(held, r)
+		}
+		runtime.KeepAlive(held)
+		return nil
+	}
+
+	small := liveHeapAtLastRow(hoarder, fields, 10_000)
+	large := liveHeapAtLastRow(hoarder, fields, 100_000)
+
+	if large <= small*2 {
+		t.Errorf("a writer that retains every row measured %d KB -> %d KB for 10x the rows, "+
+			"which the 2x threshold would pass: liveHeapAtLastRow is no longer measuring what "+
+			"a writer holds, so the streaming assertions prove nothing", small/1024, large/1024)
+	}
+	t.Logf("hoarder: 10k rows %d KB, 100k rows %d KB", small/1024, large/1024)
 }
 
 // A row must be pulled only when the writer is ready for it — if the writer

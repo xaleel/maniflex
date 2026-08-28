@@ -36,6 +36,19 @@ problem together and changes no runtime behavior.
 - Standalone files, custom actions, and global search each have a protected or
   explicitly public access decision.
 
+It also runs every registry check `Start` runs, so one call reports the whole
+startup posture rather than only the part specific to production:
+
+- Encrypted `unique` fields have a blind-index key, so their uniqueness digests
+  can still be re-derived after a key rotation.
+- Fields tagged `file_acl:signed` have a `FileStorage` that can mint a
+  time-limited URL, rather than degrading to a permanent one.
+- Every model field has a Go type the OpenAPI generator can describe.
+- Relations, `lock_scope` declarations, and `Pipeline` middleware wiring resolve.
+
+Several of those are findings `Config.Strict` turns fatal, and production
+validation requires `Strict`, so they surface here rather than at the first boot.
+
 Framework outbound calls made through `integration.Caller` already have bounded
 timeout, retry, and response-size defaults. The validator cannot inspect
 arbitrary `http.Client` instances created by application code.

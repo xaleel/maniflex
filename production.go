@@ -11,6 +11,14 @@ import "strings"
 // query shapes are bounded, automatic migration is disabled when models exist,
 // and every mounted data route has an explicit protected or public access
 // decision.
+//
+// It also runs every registry check Start runs — proxy allowlist, blind-index
+// keys for encrypted unique fields, signable storage for file_acl:signed fields,
+// OpenAPI schema coverage, relations, lock scopes and middleware wiring — so one
+// call reports the whole startup posture rather than only the part specific to
+// production. Config.Strict is required to pass, and several of those checks are
+// findings Strict turns fatal, so they surface here rather than at the first
+// boot.
 func (c *Server) ValidateProduction() error {
 	c.mu.Lock()
 	c.productionValidated = true

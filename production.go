@@ -12,6 +12,10 @@ import "strings"
 // and every mounted data route has an explicit protected or public access
 // decision.
 func (c *Server) ValidateProduction() error {
+	c.mu.Lock()
+	c.productionValidated = true
+	c.mu.Unlock()
+
 	var issues issueList
 	c.collectRegistryIssues(&issues)
 	c.collectProductionIssues(&issues)

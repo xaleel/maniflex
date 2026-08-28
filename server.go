@@ -69,6 +69,16 @@ const (
 //	    log.Fatal(err)
 //	}
 //
+// # Production readiness
+//
+// [Server.ValidateProduction] audits the fully configured server for
+// production-dangerous defaults — strict validation, bounded database and query
+// work, migration disabled, and an explicit protected-or-public decision on
+// every mounted route. It is opt-in so development stays convenient, so nothing
+// runs it for you; call it after registering everything and before Handler or
+// Start. Booting with Config.Strict set and no such call logs a warning saying
+// as much.
+//
 // # Configuration is sealed at boot
 //
 // Handler, Start, StartWithContext, StartServices and MigrateOnly fix the
@@ -111,6 +121,10 @@ type Server struct {
 	router  http.Handler // built exactly once, on the first Handler() or Start()
 	httpSrv *http.Server // published by StartWithContext just before the listener opens
 	state   serverState
+
+	// productionValidated records that ValidateProduction has been called, so a
+	// server booting under Config.Strict without it can be told (audit DX4).
+	productionValidated bool
 
 	exited   chan struct{} // closed when the accepted startup entrypoint returns
 	exitOnce sync.Once
@@ -241,6 +255,31 @@ func (c *Server) AddService(s Service) {
 	c.lifecycle.add(s)
 }
 
+// warnProductionUnvalidated points an operator at ValidateProduction when they
+// have declared production intent and not run it.
+//
+// Config.Strict is the signal. It defaults to false and its own doc says to turn
+// it on in CI and staging, so setting it is a deliberate choice that a developer
+// on defaults never makes — which is what keeps this quiet where the audit is
+// deliberately not wanted (audit DX4).
+//
+// A warning, not a strict issue: issues.addStrict would fail the boot and so
+// make ValidateProduction mandatory under Strict. That is a different and
+// breaking decision, and one Strict rules out for itself — it gates warnings
+// about things a reasonable application might mean, where ValidateProduction is
+// opinionated about migration and query limits.
+func (c *Server) warnProductionUnvalidated() {
+	if !c.cfg.Strict || c.productionValidated {
+		return
+	}
+	c.cfg.logger().Warn("Config.Strict is set but Server.ValidateProduction was never called, "+
+		"so the production audit did not run: strict startup validation checks a subset, and "+
+		"bounded query work, disabled runtime migration and an explicit access decision on "+
+		"every mounted route go unchecked",
+		slog.String("hint", "call server.ValidateProduction() after registering models, "+
+			"middleware and actions, and before Start or Handler"))
+}
+
 // sealedLocked reports whether the routing table is fixed or a boot that will
 // fix it is under way. The caller must hold c.mu so checking the window and
 // mutating a route/spec contributor are one atomic operation.
@@ -279,6 +318,9 @@ func (c *Server) Go(fn func(context.Context)) {
 // shutdown: in-flight requests are given up to Config.ShutdownTimeout to
 // complete before the server closes. Start returns nil if shutdown completes
 // cleanly, or an error if the shutdown context expires or startup fails.
+//
+// Call [Server.ValidateProduction] before this to audit the configured server
+// for production-dangerous defaults; it is opt-in, so nothing runs it for you.
 //
 // Start is the correct entry point for production. It is equivalent to:
 //
@@ -468,6 +510,9 @@ func (c *Server) adapterGroups() ([]adapterGroup, error) {
 //   - The caller manages its own signal handling.
 //   - The server must shut down in response to application-level events.
 //   - Tests need to stop the server without sending a real OS signal.
+//
+// Call [Server.ValidateProduction] before this to audit the configured server
+// for production-dangerous defaults; it is opt-in, so nothing runs it for you.
 //
 // Example:
 //
@@ -909,6 +954,9 @@ func (c *Server) Shutdown(ctx context.Context) error {
 // block until it is built rather than each building one of their own: the build
 // resolves many-to-many relations by writing back to the registry, so two of them
 // at once raced over shared model metadata.
+//
+// Call [Server.ValidateProduction] before this to audit the configured server
+// for production-dangerous defaults; it is opt-in, so nothing runs it for you.
 func (c *Server) Handler() http.Handler {
 	h, err := c.handler()
 	if err != nil {
@@ -946,6 +994,7 @@ func (c *Server) handler() (http.Handler, error) {
 		warnBlindIndexFallback(c.registry, &c.cfg, c.cfg.logger())
 		warnUninferableSchemas(c.registry, &c.cfg, c.cfg.logger())
 		warnUnsignedFileACL(c.registry, &c.cfg, c.cfg.logger())
+		c.warnProductionUnvalidated()
 		// Close the registration window — after this the composed chains are cached
 		// per (model, operation) instead of rebuilt six times per request, so the
 		// middleware set must stop changing. Last, because the file-cleanup hooks

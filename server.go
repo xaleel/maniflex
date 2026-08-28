@@ -68,6 +68,30 @@ const (
 //	if err := server.StartWithContext(ctx); err != nil {
 //	    log.Fatal(err)
 //	}
+//
+// # Configuration is sealed at boot
+//
+// Handler, Start, StartWithContext, StartServices and MigrateOnly fix the
+// routing table. Everything contributing to it must be configured before then,
+// and a call arriving afterwards is refused rather than applied to a server
+// whose routes no longer reflect it. There are two ways it is refused, and which
+// one you get is not arbitrary:
+//
+//   - Register, RegisterAggregateExpr, RegisterComputed and RegisterRollup
+//     return an error wrapping [ErrRegistrationClosed]. These validate what you
+//     pass them — Register alone rejects unscannable models, duplicate names and
+//     bad versioning setup — so they return an error regardless, and a late call
+//     is one more reason for one. MustRegister is the panicking form, for main().
+//
+//   - AddService, SetDB, SetStorage, SetKeyProvider, ObserveRequests, Action,
+//     AllowPublic, RealtimeDoc and EnableGlobalSearch panic. These only wire
+//     something up; there is nothing to validate, so the sole way they can fail
+//     is being called in the wrong place — a mistake in main(), fixed once and
+//     never seen again, rather than a condition to handle at run time. The panic
+//     names the offending call at the moment it is made.
+//
+// Both are programming errors: neither can be provoked by request input or by
+// anything a deployment does differently.
 type Server struct {
 	cfg          Config
 	registry     *Registry
@@ -201,7 +225,10 @@ func (c *Server) MustRegister(args ...any) {
 // before the HTTP listener opens, and stop in reverse order during graceful
 // shutdown (before the background-goroutine drain). A Start error aborts boot.
 //
-// Must be called before Start, StartWithContext, or StartServices.
+// Must be called before Start, StartWithContext, or StartServices; a late call
+// panics, since the service would otherwise never be started. See [Server] for why this panics where Register returns an error.
+// The guard is deliberately narrower than the one on the route contributors: a
+// Service adds no routes, so Handler alone does not close the window.
 //
 //	server.AddService(pool)                          // a custom Service
 //	server.AddService(maniflex.ServiceFunc(startFn)) // adapter for a bare func
@@ -1052,7 +1079,7 @@ func (c *Server) DB() DBAdapter {
 // This allows the two-step init pattern (analogous to SetDB). It must be called
 // before Handler, Start, StartServices, or MigrateOnly seals the server; a late
 // call panics rather than leaving the fixed routes inconsistent with the active
-// storage backend.
+// storage backend. See [Server] for why this panics where Register returns an error.
 //
 //	server := maniflex.New(maniflex.Config{...})
 //	fs, _ := storage.NewLocalStorage("./uploads")
@@ -1061,7 +1088,7 @@ func (c *Server) SetStorage(fs FileStorage) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.sealedLocked() {
-		panic("maniflex: SetStorage cannot be called after server configuration is sealed")
+		panic("maniflex: SetStorage must be called before Start() or Handler()")
 	}
 	c.cfg.FilesConfig.Storage = fs
 	c.steps.storage = fs
@@ -1070,6 +1097,7 @@ func (c *Server) SetStorage(fs FileStorage) {
 // SetKeyProvider injects or replaces the KeyProvider after construction.
 // This allows the two-step init pattern. It must be called before Handler,
 // Start, StartServices, or MigrateOnly seals the server; a late call panics.
+// See [Server] for why this panics where Register returns an error.
 //
 //	server := maniflex.New(maniflex.Config{...})
 //	server.SetKeyProvider(&encryption.EnvKeyProvider{Prefix: "MYAPP_KEY"})
@@ -1077,7 +1105,7 @@ func (c *Server) SetKeyProvider(kp KeyProvider) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.sealedLocked() {
-		panic("maniflex: SetKeyProvider cannot be called after server configuration is sealed")
+		panic("maniflex: SetKeyProvider must be called before Start() or Handler()")
 	}
 	c.cfg.KeyProvider = kp
 	c.steps.keyProvider = kp
@@ -1093,6 +1121,7 @@ func (c *Server) KeyProvider() KeyProvider { return c.cfg.KeyProvider }
 // SetDB injects or replaces the database adapter after construction.
 // This allows the two-step init pattern. It must be called before Handler,
 // Start, StartServices, or MigrateOnly seals the server; a late call panics.
+// See [Server] for why this panics where Register returns an error.
 //
 //	server := maniflex.New(maniflex.Config{...})
 //	server.MustRegister(User{}, Post{})
@@ -1103,14 +1132,16 @@ func (c *Server) SetDB(db DBAdapter) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.sealedLocked() {
-		panic("maniflex: SetDB cannot be called after server configuration is sealed")
+		panic("maniflex: SetDB must be called before Start() or Handler()")
 	}
 	c.cfg.DB = db
 	c.steps.adapter = db
 }
 
 // ObserveRequests registers router-level request observers. It must be called
-// before Handler, Start, StartServices, or MigrateOnly seals the server.
+// before Handler, Start, StartServices, or MigrateOnly seals the server; a late
+// call panics, because the observers would never be wrapped around the routes
+// already built. See [Server] for why this panics where Register returns an error.
 //
 //	server.ObserveRequests(
 //	    response.Logging(slog.Default()),
@@ -1120,7 +1151,7 @@ func (c *Server) ObserveRequests(observers ...RequestObserver) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.sealedLocked() {
-		panic("maniflex: ObserveRequests cannot be called after server configuration is sealed")
+		panic("maniflex: ObserveRequests must be called before Start() or Handler()")
 	}
 	for i, observer := range observers {
 		if observer == nil {
@@ -1160,7 +1191,8 @@ func (c *Server) Action(cfg ActionConfig) {
 // ValidateProduction. It does not change runtime behavior: generated routes are
 // already passthrough unless Pipeline.Auth middleware protects them.
 //
-// Call it before Start or Handler, using the same scopes as middleware:
+// Call it before Start or Handler — a late call panics. See [Server] for why this panics where Register returns an error.
+// Use the same scopes as middleware:
 //
 //	server.AllowPublic(
 //	    maniflex.ForModel("User"),
@@ -1186,7 +1218,7 @@ func (c *Server) AllowPublic(opts ...MiddlewareOption) {
 // cfg.Events and/or set cfg.AutoModelEvents to derive
 // <model>.created|updated|deleted channels from the registry.
 //
-// Must be called before Start() or Handler().
+// Must be called before Start() or Handler(); a late call panics. See [Server] for why this panics where Register returns an error.
 func (c *Server) RealtimeDoc(cfg AsyncAPIConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1225,8 +1257,8 @@ type GlobalSearchConfig struct {
 // search with the app's own authorisation, build a custom Action that calls
 // ctx.Search with an explicit model list instead.
 //
-// Must be called before Start() or Handler(). Apps that never call it gain no
-// new endpoint.
+// Must be called before Start() or Handler(); a late call panics. See [Server] for why this panics where Register returns an error.
+// Apps that never call it gain no new endpoint.
 func (c *Server) EnableGlobalSearch(cfg ...GlobalSearchConfig) {
 	resolved := GlobalSearchConfig{}
 	if len(cfg) > 0 {

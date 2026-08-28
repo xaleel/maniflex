@@ -72,7 +72,7 @@ func TestObserveRequestsRejectsLateAndNilRegistration(t *testing.T) {
 	t.Run("late", func(t *testing.T) {
 		server := New(Config{})
 		_ = server.Handler()
-		assertObserverPanic(t, "configuration is sealed", func() {
+		assertObserverPanic(t, "must be called before Start()", func() {
 			server.ObserveRequests(func(RequestObservation) {})
 		})
 	})

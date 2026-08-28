@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Documentation:** all nine `Server` methods that refuse a late call now say they panic, and `Server`'s own doc explains the split: methods that validate return `ErrRegistrationClosed`, methods that only wire panic, and both are programming errors rather than run-time conditions. Five said nothing — `AddService`, `ObserveRequests`, `AllowPublic`, `RealtimeDoc` and `EnableGlobalSearch`. The two panic phrasings are unified on the actionable one (“must be called before Start() or Handler()”).
+- **Developer experience:** a test pins the sealing contract — every guarded method panics, names itself, and documents that it does — and cross-checks the list against the panics in `server.go`, so a method added later cannot drift undocumented the way five had.
+
 ## v0.9.0 (2026-08-28)
 
 - **Bugfix:** broker adapters acknowledge an event only when `events.DeliverWithRetry` reports it settled. It returned nothing, so redis, nats, kafka and rabbitmq acked whatever had become of the event — including a delivery abandoned mid-retry on a cancelled context, which returned bare, logged nothing and was acked: a shutdown landing between two attempts destroyed the event in silence. That path now logs and reports unsettled, as does a failed dead-letter publish. Kafka and rabbitmq withhold only during shutdown, where cumulative commits and unlimited prefetch cannot accumulate.

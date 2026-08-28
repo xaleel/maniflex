@@ -22,13 +22,18 @@ rather than two conventions:
 A feature that is *off* until asked for gets a positive name, so leaving it unset
 leaves it off — `Strict`, `TrustProxyHeaders`, `Documentation.Public`. A feature
 that is *on* by default gets a negative one, so leaving it unset leaves it
-working — `DisableAutoMigrate`, `StaticDisabled`. Naming them all positively
+working — `DisableAutoMigrate`, `ProbeConfig.Disabled`. Naming those positively
 would mean `AutoMigrate: false` silently turning migration off for anyone who
 never set it, which is the failure the negative spelling exists to prevent.
 
+`StaticDisabled` spells the same way for a third shape. Static serving is opt-in
+— it needs `StaticDir` — so the flag turns off something you already asked for,
+letting an app that sets `StaticDir` unconditionally still disable serving from
+an env var without clearing the field.
+
 So an empty `Config{}` is always the intended default, and every field you set is
-a deliberate departure from it. Read a negative name as evidence the feature is
-on by default.
+a deliberate departure from it. Read a negative name as evidence that leaving the
+field unset never turns anything off — not that the feature is on by default.
 
 ## Server
 

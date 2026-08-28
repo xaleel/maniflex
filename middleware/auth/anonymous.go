@@ -39,6 +39,7 @@ const anonymousOKKey = "maniflex.auth.anonymous_ok"
 //	    maniflex.ForModel("Post"),
 //	    maniflex.ForOperation(maniflex.OpList, maniflex.OpRead))
 //	server.Pipeline.Auth.Register(auth.JWTAuth(secret))
+//	server.Pipeline.Auth.Register(auth.AllowPublicRead())
 //
 // JWTAuth and JWKSAuth honour it. Exactly one thing changes: a request with no
 // token is served with ctx.Auth left nil, instead of answering 401.
@@ -58,6 +59,20 @@ const anonymousOKKey = "maniflex.auth.anonymous_ok"
 // Ordering is by registration within a step, so an AllowAnonymous registered
 // after the authenticator sets the marker too late to be read. That mistake
 // fails closed: the route answers 401 on the first anonymous request.
+//
+// The scoping mistake fails the other way, and is the one to watch. The filters
+// are the whole of the limit: an AllowAnonymous registered without a
+// ForOperation forgives a missing credential on every operation it reaches,
+// writes included. Nothing answers 401, so there is no first request to notice
+// it on — the endpoint simply accepts anonymous creates and deletes, quietly,
+// for as long as nobody looks.
+//
+// [AllowPublicRead] is the guard, and the third line of the example above.
+// Registered after the authenticator, it re-asserts across every model that a
+// caller with no principal may not write, independently of which routes were
+// exempted here. One registration cannot drift the way a per-route exemption
+// list can, which is exactly why it is worth having even when the scoping is
+// currently right.
 func AllowAnonymous() maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
 		ctx.Set(anonymousOKKey, true)

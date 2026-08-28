@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 (2026-08-28)
 
 - **Bugfix:** broker adapters acknowledge an event only when `events.DeliverWithRetry` reports it settled. It returned nothing, so redis, nats, kafka and rabbitmq acked whatever had become of the event — including a delivery abandoned mid-retry on a cancelled context, which returned bare, logged nothing and was acked: a shutdown landing between two attempts destroyed the event in silence. That path now logs and reports unsettled, as does a failed dead-letter publish. Kafka and rabbitmq withhold only during shutdown, where cumulative commits and unlimited prefetch cannot accumulate.
 - **Documentation:** `Subscription.DLQ` records that leaving it empty drops an event whose handler still fails after `MaxRetry+1` attempts — logged at ERROR, then acked. Withholding the ack instead would redeliver a deterministically failing message for ever, so the bounded loss is deliberate.

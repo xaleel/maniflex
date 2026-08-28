@@ -1,6 +1,18 @@
 // Package inproc provides an in-process job queue backed by a goroutine pool.
 // It is suitable for tests and single-binary applications. Jobs are lost if the
 // process exits; use jobs/sql for durability.
+//
+// # No lease or visibility timeout
+//
+// A job is claimed by Dequeue and stays claimed until the worker acknowledges,
+// nacks or dead-letters it. There is no lease to expire, so a claim that is
+// never resolved is never reclaimed: the job stays StatusRunning for the life of
+// the process and, if it has one, goes on holding its GroupKey — which blocks
+// every other job sharing that key. jobs.Worker recovers handler panics and
+// resolves the job on all of its terminal paths, so reaching that state takes
+// something that kills the worker goroutine outright. Nothing here survives
+// process exit anyway, which is what makes the missing lease affordable; jobs/sql
+// has one because there it would not be.
 package inproc
 
 import (
@@ -18,13 +30,13 @@ import (
 // Queue is both a jobs.Queue (producer) and a jobs.Source (consumer).
 // Create one with New and pass it to both the enqueue site and WorkerConfig.Source.
 type Queue struct {
-	mu           sync.Mutex
-	entries      []*entry        // ordered list of pending/failed jobs
-	byID         map[string]*entry
-	runningKeys  map[string]int  // group_key → count of running jobs for that key
-	closeCh      chan struct{}
-	closeOnce    sync.Once
-	notifyCh     chan struct{}    // pulsed (non-blocking) when new jobs arrive
+	mu          sync.Mutex
+	entries     []*entry // ordered list of pending/failed jobs
+	byID        map[string]*entry
+	runningKeys map[string]int // group_key → count of running jobs for that key
+	closeCh     chan struct{}
+	closeOnce   sync.Once
+	notifyCh    chan struct{} // pulsed when a job may have become claimable
 }
 
 type entry struct {
@@ -90,11 +102,7 @@ func (q *Queue) enqueueAt(j jobs.Job, at time.Time) (string, error) {
 	q.byID[j.ID] = e
 	q.mu.Unlock()
 
-	// Pulse the notification channel (non-blocking).
-	select {
-	case q.notifyCh <- struct{}{}:
-	default:
-	}
+	q.pulse()
 	return j.ID, nil
 }
 
@@ -147,6 +155,89 @@ func (q *Queue) Dequeue(ctx context.Context, n int) ([]jobs.Job, error) {
 	return picked, nil
 }
 
+// DequeueBlocking implements jobs.BlockingSource: it waits up to max for a job
+// to become claimable instead of reporting an empty queue straight away.
+//
+// Without it the Worker falls back to polling, and its empty-queue backoff
+// doubles from 1s to 30s while a queue is idle — so a retry scheduled 100ms out,
+// or a job enqueued onto a queue that has been quiet, could sit for half a minute
+// past its due time. Nack and Requeue used to spawn a goroutine each to sleep out
+// the delay and then pulse notifyCh, which was meant to prevent exactly that and
+// could not: nothing ever received from notifyCh, so every one of those
+// goroutines slept and then wrote to a channel with no reader (audit C4). The
+// wait happens here instead, on one timer per idle consumer rather than one
+// goroutine per rescheduled job.
+func (q *Queue) DequeueBlocking(ctx context.Context, n int, max time.Duration) ([]jobs.Job, error) {
+	deadline := time.Now().Add(max)
+	for {
+		js, err := q.Dequeue(ctx, n)
+		if err != nil || len(js) > 0 {
+			return js, err
+		}
+
+		wait := time.Until(deadline)
+		if wait <= 0 {
+			return nil, nil
+		}
+		// Wake earlier if a job comes due before the budget runs out. Only a due
+		// time still in the future counts: a job that is due already and simply
+		// cannot be claimed — held off by a GroupKey that is running — would
+		// give a zero wait and spin this loop for the whole budget.
+		if due, ok := q.earliestPending(); ok {
+			if d := time.Until(due); d < wait {
+				wait = d
+			}
+		}
+
+		t := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return nil, nil
+		case <-q.closeCh:
+			t.Stop()
+			return nil, nil
+		case <-q.notifyCh:
+			t.Stop()
+		case <-t.C:
+		}
+	}
+}
+
+// earliestPending reports the soonest time at which a job that is waiting for
+// its turn becomes due. Jobs already due are excluded — see DequeueBlocking.
+func (q *Queue) earliestPending() (time.Time, bool) {
+	now := time.Now()
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	var earliest time.Time
+	found := false
+	for _, e := range q.entries {
+		if e.status != jobs.StatusEnqueued && e.status != jobs.StatusFailed {
+			continue
+		}
+		if !e.notBefore.After(now) {
+			continue
+		}
+		if !found || e.notBefore.Before(earliest) {
+			earliest, found = e.notBefore, true
+		}
+	}
+	return earliest, found
+}
+
+// pulse wakes one consumer parked in DequeueBlocking. The channel is buffered by
+// one and the send never blocks, so a pulse with nobody listening is kept rather
+// than lost, and a burst of them collapses into a single wakeup. Safe to call
+// under q.mu for the same reason.
+func (q *Queue) pulse() {
+	select {
+	case q.notifyCh <- struct{}{}:
+	default:
+	}
+}
+
 func (q *Queue) Ack(ctx context.Context, id string) error {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -157,6 +248,7 @@ func (q *Queue) Ack(ctx context.Context, id string) error {
 	e.status = jobs.StatusSucceeded
 	q.releaseGroup(e.job.GroupKey)
 	q.removeEntry(id)
+	q.pulse()
 	return nil
 }
 
@@ -175,17 +267,11 @@ func (q *Queue) Nack(ctx context.Context, id string, jobErr error, delay time.Du
 	}
 	e.status = jobs.StatusEnqueued
 	e.notBefore = time.Now().Add(delay)
-	// Pulse so the worker wakes when the delay elapses.
-	go func() {
-		select {
-		case <-time.After(delay):
-			select {
-			case q.notifyCh <- struct{}{}:
-			default:
-			}
-		case <-q.closeCh:
-		}
-	}()
+	// One pulse, not a goroutine that sleeps out the delay and then pulses.
+	// DequeueBlocking wakes on the earliest job that is not yet due, so the
+	// waiting is done once by whoever is idle rather than once per retry
+	// (audit C4).
+	q.pulse()
 	return nil
 }
 
@@ -207,16 +293,7 @@ func (q *Queue) Requeue(ctx context.Context, j jobs.Job, delay time.Duration) er
 	e.attempts = j.Attempts
 	e.status = jobs.StatusEnqueued
 	e.notBefore = time.Now().Add(delay)
-	go func() {
-		select {
-		case <-time.After(delay):
-			select {
-			case q.notifyCh <- struct{}{}:
-			default:
-			}
-		case <-q.closeCh:
-		}
-	}()
+	q.pulse()
 	return nil
 }
 
@@ -229,6 +306,7 @@ func (q *Queue) Dead(ctx context.Context, id string, jobErr error) error {
 	}
 	q.releaseGroup(e.job.GroupKey)
 	q.removeEntry(id)
+	q.pulse()
 	return nil
 }
 
@@ -353,9 +431,10 @@ func newID() string {
 
 // Compile-time interface checks.
 var (
-	_ jobs.Queue       = (*Queue)(nil)
-	_ jobs.Source      = (*Queue)(nil)
-	_ jobs.Cancellable = (*Queue)(nil)
-	_ jobs.Inspector   = (*Queue)(nil)
-	_ jobs.Requeuer    = (*Queue)(nil)
+	_ jobs.Queue          = (*Queue)(nil)
+	_ jobs.Source         = (*Queue)(nil)
+	_ jobs.Cancellable    = (*Queue)(nil)
+	_ jobs.Inspector      = (*Queue)(nil)
+	_ jobs.Requeuer       = (*Queue)(nil)
+	_ jobs.BlockingSource = (*Queue)(nil)
 )

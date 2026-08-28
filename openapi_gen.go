@@ -1732,13 +1732,39 @@ func reflectSchema(v any) *OASSchema {
 // produce an infinitely nested schema.
 const maxReflectSchemaDepth = 10
 
+// reflectTypeSchema builds the schema for rt, recording that it was a pointer
+// so the result can be marked nullable.
+//
+// It used to strip the pointer on its first line and never note it, so every
+// pointer field in an action's request or response body was published as its
+// element type: *int64 became {"type":"integer"} while a nil one serialises as
+// null. The model path has always recorded it (see goTypeToSchema), so the two
+// descriptions of one Go type disagreed — reported downstream against v0.5.0
+// with a whole spec's worth of evidence (todo/ASKS.md issue 3).
+//
+// depth 0 is exempt: that is the body itself, and ActionConfig.RequestSchema
+// documents value, pointer and reflect.Type as interchangeable ways to name a
+// type, so &Body{} there means "this type", not "the body may be null".
 func reflectTypeSchema(rt reflect.Type, depth int) *OASSchema {
+	isPtr := false
 	for rt != nil && rt.Kind() == reflect.Ptr {
+		isPtr = true
 		rt = rt.Elem()
 	}
 	if rt == nil {
 		return nil
 	}
+	s := reflectDerefTypeSchema(rt, depth)
+	if isPtr && depth > 0 && s != nil {
+		// Copied first: a type's ObjectWithSchema.Schema() may hand back a
+		// shared value, and nullable rewrites Type in place.
+		s = nullable(copySchema(s))
+	}
+	return s
+}
+
+// reflectDerefTypeSchema builds the schema for an already-dereferenced type.
+func reflectDerefTypeSchema(rt reflect.Type, depth int) *OASSchema {
 	if rt == reflect.TypeOf(time.Time{}) {
 		return goTypeToSchema(rt)
 	}
@@ -1799,7 +1825,22 @@ func reflectStructSchema(rt reflect.Type, depth int) *OASSchema {
 			}
 		}
 
-		schema := reflectTypeSchema(sf.Type, depth+1)
+		// A nil pointer under json omitempty is left out of the object entirely
+		// rather than written as null, so reflect the element type: the field is
+		// absent, not nullable. Declaring it nullable would tell clients to
+		// handle a null this server never sends — the mirror of the bug above,
+		// and just as wrong. Exactly one level of pointer: with **T a non-nil
+		// outer pointing at a nil inner does serialise as null.
+		//
+		// Only the action path does this. Model responses are built from
+		// map[string]any, where the json tag never reaches the encoder and a nil
+		// value emits "key": null, so goTypeToSchema is right to wrap every
+		// pointer. The two paths differ here on purpose.
+		ft := sf.Type
+		if tags.OmitEmpty && ft.Kind() == reflect.Ptr {
+			ft = ft.Elem()
+		}
+		schema := reflectTypeSchema(ft, depth+1)
 		if schema == nil {
 			continue
 		}

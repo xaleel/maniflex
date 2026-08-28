@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Bugfix:** custom-action request and response schemas declare pointer fields as nullable. The reflector stripped the pointer on its first line and never recorded it, so `*int64` was published as `{"type":"integer"}` while a nil one serialises as `null` — the model path had always recorded it, so the two descriptions of one Go type disagreed. A pointer with json `omitempty` stays non-nullable, since a nil one is omitted rather than written as null. A pointer at the top of a body still names the type rather than claiming the body may be null.
 - **Documentation:** all nine `Server` methods that refuse a late call now say they panic, and `Server`'s own doc explains the split: methods that validate return `ErrRegistrationClosed`, methods that only wire panic, and both are programming errors rather than run-time conditions. Five said nothing — `AddService`, `ObserveRequests`, `AllowPublic`, `RealtimeDoc` and `EnableGlobalSearch`. The two panic phrasings are unified on the actionable one (“must be called before Start() or Handler()”).
 - **Developer experience:** a test pins the sealing contract — every guarded method panics, names itself, and documents that it does — and cross-checks the list against the panics in `server.go`, so a method added later cannot drift undocumented the way five had.
 

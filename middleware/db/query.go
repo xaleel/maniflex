@@ -5,6 +5,7 @@ package db
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -288,8 +289,30 @@ type window struct {
 	resetAt time.Time
 }
 
+// clientAddrKey reduces a RemoteAddr to the address a rate-limit bucket should
+// belong to.
+//
+// Go fills RemoteAddr with "IP:port", and the port is the client's ephemeral
+// one — a different value on every TCP connection. Keying on it whole gave each
+// connection a bucket of its own, so the limit never applied to anything: ten
+// requests from one address produced ten keys. Only the default was affected;
+// the trusted-proxy resolver already rewrites RemoteAddr to a bare IP, which has
+// no port to split and is returned unchanged here.
+func clientAddrKey(remoteAddr string) string {
+	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		return host
+	}
+	return remoteAddr
+}
+
 // RateLimit is an in-process token-bucket rate limiter keyed on the
-// authenticated user ID (or remote IP for unauthenticated requests).
+// authenticated user ID, or on the client IP for unauthenticated requests.
+//
+// The IP comes from the request's RemoteAddr with any port removed, so a bucket
+// survives a client that opens a fresh connection per request. Behind a proxy
+// that is only the real client's address if the server resolves forwarding
+// headers — see Config.TrustedProxies — and without that every client sharing
+// the proxy also shares a bucket.
 // For a limit shared across replicas, set RateLimitConfig.Backend to a
 // distributed counter (see middleware/db/redis for the Redis implementation).
 //
@@ -317,7 +340,7 @@ func RateLimit(cfg RateLimitConfig) maniflex.MiddlewareFunc {
 			if ctx.Auth != nil && ctx.Auth.UserID != "" {
 				return ctx.Auth.UserID
 			}
-			return ctx.Request.RemoteAddr
+			return clientAddrKey(ctx.Request.RemoteAddr)
 		}
 	}
 

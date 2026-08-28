@@ -452,8 +452,13 @@ func (b *Bus) dispatch(ctx context.Context, stream string, sub events.Subscripti
 				_ = b.ops.Ack(ctx, stream, sub.Group, msgID)
 				return
 			}
-			events.DeliverWithRetry(ctx, b, sub, e)
-			_ = b.ops.Ack(ctx, stream, sub.Group, msgID)
+			// Acknowledge only what was settled. An abandoned delivery, or one
+			// whose dead-lettering failed, stays in the pending list so the
+			// reclaim sweep brings it back rather than the event being lost to
+			// an ack that claimed work nobody did (audit C5).
+			if events.DeliverWithRetry(ctx, b, sub, e) {
+				_ = b.ops.Ack(ctx, stream, sub.Group, msgID)
+			}
 		}()
 	}
 }

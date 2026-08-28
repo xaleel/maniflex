@@ -281,8 +281,15 @@ func (b *Bus) Subscribe(ctx context.Context, sub events.Subscription) (events.Ca
 						<-sem
 						wg.Done()
 					}()
-					events.DeliverWithRetry(cctx, b, sub, e)
-					msg.Ack(false)
+					// As Kafka: withhold the ack for an unsettled delivery only
+					// while shutting down. This consumer sets no Qos, so
+					// prefetch is unlimited and unacked messages left by a
+					// running consumer accumulate without bound; on shutdown
+					// they are simply requeued when the channel closes, which
+					// is the case worth fixing (audit C5).
+					if events.DeliverWithRetry(cctx, b, sub, e) || cctx.Err() == nil {
+						msg.Ack(false)
+					}
 				}()
 			}
 		}

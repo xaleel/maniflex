@@ -215,8 +215,11 @@ func (b *Bus) Subscribe(ctx context.Context, sub events.Subscription) (events.Ca
 			}
 			go func() {
 				defer func() { <-sem }()
-				events.DeliverWithRetry(cctx, b, sub, e)
-				msg.Ack()
+				// Acknowledge only what was settled; an unacked message comes
+				// back on AckWait rather than being lost (audit C5).
+				if events.DeliverWithRetry(cctx, b, sub, e) {
+					msg.Ack()
+				}
 			}()
 		})
 		if err != nil {

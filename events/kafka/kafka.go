@@ -303,8 +303,18 @@ func (b *Bus) runConsumer(ctx context.Context, r *kafkago.Reader, sub events.Sub
 				<-sem
 				wg.Done()
 			}()
-			events.DeliverWithRetry(ctx, b, sub, e)
-			commit(msg)
+			// Withhold the commit for an unsettled delivery only while shutting
+			// down. Kafka commits are cumulative: a gap left by a consumer that
+			// keeps running stalls every later commit on that partition and
+			// grows the tracker's pending map without bound (see offsetTracker).
+			// During shutdown there is no "later" — the offset simply stays
+			// uncommitted and the event replays on restart, which is the case
+			// that matters, because it needs no misconfiguration to reach. A
+			// dead-letter publish that fails mid-run is still committed, and
+			// logged at ERROR (audit C5).
+			if events.DeliverWithRetry(ctx, b, sub, e) || ctx.Err() == nil {
+				commit(msg)
+			}
 		}()
 	}
 }

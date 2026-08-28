@@ -38,14 +38,14 @@ type Event struct {
 	Data     json.RawMessage `json:"data,omitempty"`
 
 	// maniflex extension attributes
-	Model     string        `json:"model,omitempty"`
+	Model     string             `json:"model,omitempty"`
 	Operation maniflex.Operation `json:"operation,omitempty"`
-	RecordID  string        `json:"recordid,omitempty"`
-	ActorID   string        `json:"actorid,omitempty"`
-	TenantID  string        `json:"tenantid,omitempty"`
-	TraceID   string        `json:"traceid,omitempty"`
-	SchemaVer int           `json:"schemaver,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"`
+	RecordID  string             `json:"recordid,omitempty"`
+	ActorID   string             `json:"actorid,omitempty"`
+	TenantID  string             `json:"tenantid,omitempty"`
+	TraceID   string             `json:"traceid,omitempty"`
+	SchemaVer int                `json:"schemaver,omitempty"`
+	Headers   map[string]string  `json:"headers,omitempty"`
 }
 
 // Publisher is the producer-only interface. Publish-only backends (SNS,
@@ -107,7 +107,13 @@ type Subscription struct {
 	Backoff func(attempt int) time.Duration
 
 	// DLQ is the event Type published after MaxRetry exhaustion.
-	// Empty string disables dead-lettering.
+	//
+	// Empty string disables dead-lettering, and an event whose handler still
+	// fails after MaxRetry+1 attempts is then dropped: it is logged at ERROR
+	// and acknowledged to the broker, so at-least-once delivery ends there.
+	// The alternative would be to leave it unacknowledged, which on a message
+	// that fails deterministically means redelivering it for ever. Set this to
+	// keep such events instead of losing them.
 	DLQ string
 
 	// OnPanic is called when Handler panics, once per panicking attempt, after
@@ -145,17 +151,36 @@ type SQLExecer interface {
 // event is re-published under the DLQ type via pub so it flows through the
 // same broker as the original event.
 //
+// It reports whether the event was settled — whether this call finished with
+// the event disposed of. A broker adapter should acknowledge the message only
+// when it was, and otherwise leave it for redelivery (audit C5).
+//
+// Settled:
+//   - the handler succeeded;
+//   - retries were exhausted and the event was dead-lettered;
+//   - retries were exhausted with no DLQ configured. That is a real loss, and
+//     it is logged at ERROR — but withholding the ack would have the broker
+//     redeliver a message that fails deterministically, forever, so a bounded
+//     drop is the lesser harm. Set Subscription.DLQ to keep these.
+//
+// Not settled:
+//   - ctx was cancelled between attempts, so delivery was abandoned rather than
+//     decided. Acking here loses an event to a shutdown that happened to land
+//     between two attempts.
+//   - dead-lettering was configured and its publish failed, so the safety net
+//     the operator asked for did not catch the event.
+//
 // Roadmap §11B.11 / checkpoint H11: the retry sleep honours ctx
 // cancellation so shutdown doesn't leave handler goroutines blocked on a
 // long backoff. The DLQ event gets a fresh ID (downstream dedupers no
 // longer see it as a duplicate of the original) and publish errors are
 // logged rather than silently swallowed.
-func DeliverWithRetry(ctx context.Context, pub Publisher, sub Subscription, e Event) {
+func DeliverWithRetry(ctx context.Context, pub Publisher, sub Subscription, e Event) (settled bool) {
 	var lastErr error
 	for attempt := 0; attempt <= sub.MaxRetry; attempt++ {
 		err := deliverOnce(ctx, sub, e)
 		if err == nil {
-			return
+			return true
 		}
 		lastErr = err
 		// WARN on each attempt that will be retried; the final failure is
@@ -171,7 +196,19 @@ func DeliverWithRetry(ctx context.Context, pub Publisher, sub Subscription, e Ev
 			if sub.Backoff != nil {
 				select {
 				case <-ctx.Done():
-					return
+					// Abandoned, not decided: this event has been neither
+					// handled nor dead-lettered nor deliberately dropped. It
+					// used to return bare, so the one outcome that loses an
+					// event through no fault of the handler was also the only
+					// one that left no trace in the log (audit C5).
+					slog.Default().Warn("events: delivery abandoned mid-retry, event left unacknowledged",
+						slog.String("type", e.Type),
+						slog.String("id", e.ID),
+						slog.Int("attempt", attempt+1),
+						slog.Int("max_attempts", sub.MaxRetry+1),
+						slog.String("error", err.Error()),
+						slog.String("cause", ctx.Err().Error()))
+					return false
 				case <-time.After(sub.Backoff(attempt + 1)):
 				}
 			}
@@ -203,6 +240,10 @@ func DeliverWithRetry(ctx context.Context, pub Publisher, sub Subscription, e Ev
 				slog.String("dlq_type", sub.DLQ),
 				slog.String("original_id", e.ID),
 				slog.String("error", err.Error()))
+			// The safety net did not catch it, so do not let the adapter ack as
+			// though it had. Left unacknowledged, the broker brings the event
+			// back and the dead-letter publish is retried with it.
+			return false
 		}
 	} else {
 		slog.Default().Error("events: handler failed after all retries, event dropped (no DLQ configured)",
@@ -211,6 +252,9 @@ func DeliverWithRetry(ctx context.Context, pub Publisher, sub Subscription, e Ev
 			slog.Int("attempts", sub.MaxRetry+1),
 			slog.String("error", errStr))
 	}
+	// Dead-lettered, or deliberately dropped. Either way the event has been
+	// disposed of and the adapter should acknowledge it.
+	return true
 }
 
 // deliverOnce calls sub.Handler for one attempt, converting a panic into an

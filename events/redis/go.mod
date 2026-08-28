@@ -2,7 +2,7 @@ module github.com/xaleel/maniflex/events/redis
 
 go 1.25.12
 
-require github.com/xaleel/maniflex v0.8.0
+require github.com/xaleel/maniflex v0.9.0
 
 require github.com/redis/go-redis/v9 v9.19.0
 

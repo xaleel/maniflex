@@ -18,20 +18,17 @@ Both are covered. The HTTP contract matters most in practice — a mobile app or
 generated SDK talks to the API, not to the Go types — and it is the one a Go
 compatibility promise alone would leave unaddressed.
 
-### Which modules are covered
+## Which modules are covered
 
-The core module and the thirteen released alongside it:
+The core module and the fourteen released alongside it:
 
 `github.com/xaleel/maniflex`, `admin`, `db/postgres`, `db/sqlite`,
 `events/kafka`, `events/nats`, `events/rabbitmq`, `events/redis`, `jobs/redis`,
-`maniflextest`, `middleware/auth/redis`, `middleware/service/bcrypt`,
-`pkg/otel`, `storage/s3`.
+`maniflextest`, `middleware/auth/redis`, `middleware/db/redis`,
+`middleware/service/bcrypt`, `pkg/otel`, `storage/s3`.
 
 Everything below is scoped to those. `examples` and `tests` are directories in
 the repository rather than modules to import, and are not published.
-`middleware/db/redis` **is** published and is **not** covered: it has not been
-released since v0.1.0 and is not part of the lockstep set, so nothing on this
-page applies to it.
 
 ## The Go API contract
 

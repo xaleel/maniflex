@@ -12,9 +12,11 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -38,6 +40,10 @@ type Options struct {
 	StartServices bool
 	// DisableTestAuth omits the middleware used by As.
 	DisableTestAuth bool
+	// RecordPipeline captures which middleware runs for each request, reported
+	// by Server.PipelineSteps. It turns on the framework's step trace and wraps
+	// Config.Logger, which keeps receiving every record.
+	RecordPipeline bool
 }
 
 // Server wraps an httptest.Server with Maniflex-aware request helpers.
@@ -45,6 +51,10 @@ type Server struct {
 	*httptest.Server
 	t   testing.TB
 	app *maniflex.Server
+
+	recorder  *pipelineRecorder
+	stepsMu   sync.Mutex
+	lastSteps []string
 }
 
 // New builds, migrates, and starts an isolated test server. All resources are
@@ -59,6 +69,17 @@ func New(t testing.TB, opts Options) *Server {
 		opts.Config.ShutdownTimeout = 5 * time.Second
 	}
 	shutdownTimeout := opts.Config.ShutdownTimeout
+
+	var recorder *pipelineRecorder
+	if opts.RecordPipeline {
+		next := slog.Default().Handler()
+		if opts.Config.Logger != nil {
+			next = opts.Config.Logger.Handler()
+		}
+		recorder = newPipelineRecorder(next)
+		opts.Config.Logger = slog.New(recorder)
+		opts.Config.Trace.Steps = true
+	}
 
 	app := maniflex.New(opts.Config)
 	if len(opts.Models) > 0 {
@@ -117,7 +138,7 @@ func New(t testing.TB, opts Options) *Server {
 	}
 
 	httpServer = httptest.NewServer(app.Handler())
-	return &Server{Server: httpServer, t: t, app: app}
+	return &Server{Server: httpServer, t: t, app: app, recorder: recorder}
 }
 
 // App returns the underlying application for background operations and
@@ -212,6 +233,7 @@ func (s *Server) do(method, url string, body any, opts ...RequestOption) *Respon
 	if err != nil {
 		s.t.Fatalf("maniflextest: send request: %v", err)
 	}
+	s.recordSteps()
 	defer res.Body.Close()
 	raw, err := io.ReadAll(res.Body)
 	if err != nil {

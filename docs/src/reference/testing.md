@@ -93,3 +93,37 @@ response's `data` object under its name.
 The harness owns adapters returned by its database factory and closes them
 after cleanup. Do not share one adapter between concurrently running harness
 servers.
+
+## Middleware order
+
+`Options.RecordPipeline` records which middleware runs for each request, and
+`Server.PipelineSteps` reports it in execution order:
+
+```go
+server := maniflextest.New(t, maniflextest.Options{
+	Models:         []any{Order{}},
+	RecordPipeline: true,
+	Setup: func(app *maniflex.Server) {
+		app.Pipeline.Auth.Register(tenantGuard, maniflex.WithName("tenant-guard"))
+	},
+})
+
+server.GET("/orders")
+
+// [Auth/tenant-guard Auth/default Deserialize/default … DB/default Response/default]
+steps := server.PipelineSteps()
+```
+
+Each entry is `Step/middleware`. A middleware registered without
+[`WithName`](https://pkg.go.dev/github.com/xaleel/maniflex#WithName) is reported
+as `[unnamed]`, and a step's built-in handler as `default`.
+
+The framework reports order by logging one record per middleware, which the
+harness captures. Matching those log records yourself is the thing to avoid: a
+log message is not part of the API, so a test that greps for one can break on a
+patch release. Recording wraps `Config.Logger` rather than replacing it, so a
+logger you configured keeps receiving everything.
+
+The report covers the most recent request. Requests issued concurrently against
+one server share the recording, so assert on one at a time, or give each its own
+server.

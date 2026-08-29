@@ -233,3 +233,33 @@ server.ObserveRequests(
 Any sink implementing `MetricsCollector` works. Counters and histograms retain
 model, operation, and status labels; non-model routes use empty model and
 operation labels.
+
+### Wiring Prometheus
+
+maniflex ships no exporter. Metrics leave through this interface, so the
+framework depends on no metrics library and you can use any — but that leaves
+the other side of the interface to you, so here is a complete one.
+
+The two sides disagree about when labels are fixed: `MetricsCollector` passes a
+label map with every observation, while a Prometheus vector binds its label
+names when it is constructed. The adapter builds a vector on first sight of a
+metric name and projects every later observation onto those names, which is what
+keeps the exposition valid — Prometheus rejects a metric whose label set varies
+between samples.
+
+```go
+{{#include ../../../examples/prometheus/main.go:collector}}
+```
+
+`/metrics` is not a maniflex route. Mount the API under your own router with
+[`maniflex.Mount`](https://pkg.go.dev/github.com/xaleel/maniflex#Mount) and
+register the scrape endpoint beside it:
+
+```go
+{{#include ../../../examples/prometheus/main.go:wiring}}
+```
+
+Keep that endpoint off the public listener, or put an auth middleware in front
+of it: the label set names every model and operation your API exposes.
+
+This example is compiled in CI, so an API change cannot leave it broken.

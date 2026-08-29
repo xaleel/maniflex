@@ -132,6 +132,7 @@ It warns at startup and fails under `Strict`; prefer the allowlist.
 
 | Field | Default | Purpose |
 |---|---|---|
+| `MaxConcurrentRequests` | `0` (unlimited) | how many requests may be in flight at once, server-wide; over the limit is refused, not queued |
 | `MaxConcurrentExports` | `4` | how many `GET /:model/export` requests may run at once, server-wide; negative disables the limit |
 | `QueryLimits` | see below | bounds client-controlled URL query and aggregate complexity; `ModelConfig.QueryLimits` can override individual fields for one model |
 
@@ -141,6 +142,20 @@ per-model `MaxExportRows` bounds one export's rows but not the row width nor the
 number in flight; this bounds the product. Requests over the limit are refused
 immediately with `503 EXPORT_BUSY` and a `Retry-After`, not queued. See
 [CSV / XLSX Export](../advanced-topics/export.md#concurrency-cap).
+
+`MaxConcurrentRequests` does the same for every request, answering
+`503 SERVER_BUSY` with a `Retry-After` rather than queueing. Without it the
+database pool is the concurrency limit by accident, and it is one that fails by
+queueing: a burst is not refused, it waits for a connection while holding a
+goroutine, a parsed body and a context, until `QueryTimeout` fires. Latency then
+climbs for every request instead of being paid by the ones that are shed.
+
+Size it against the pool rather than against the traffic you hope to serve — a
+value far above the pool's `MaxOpenConns` only moves the queue. It is off by
+default because the right number depends on your pool and hardware, and a wrong
+one refuses traffic the server could have served;
+[`ValidateProduction`](../reference/production-validation.md) requires it to be
+set.
 
 `QueryLimits` uses these safe defaults:
 

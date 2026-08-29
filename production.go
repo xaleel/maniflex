@@ -41,6 +41,7 @@ func (c *Server) collectProductionIssues(issues *issueList) {
 		issues.add("production",
 			"automatic migration is enabled; set Config.DisableAutoMigrate and run migrations separately")
 	}
+	c.collectConcurrencyIssues(issues)
 	collectProductionQueryLimitIssues(c.cfg.QueryLimits, issues)
 	for _, meta := range c.registry.All() {
 		if meta.Config.Headless {
@@ -70,6 +71,19 @@ func (c *Server) collectProductionIssues(issues *issueList) {
 
 	c.collectModelAccessIssues(issues)
 	c.collectAuxiliaryAccessIssues(issues)
+}
+
+// collectConcurrencyIssues requires an explicit ceiling on in-flight requests.
+//
+// Unset, the connection pool becomes the limit by accident, and it is one that
+// queues rather than refuses — so a burst degrades every request instead of
+// being paid by the ones that are shed.
+func (c *Server) collectConcurrencyIssues(issues *issueList) {
+	if c.cfg.MaxConcurrentRequests <= 0 {
+		issues.add("production",
+			"Config.MaxConcurrentRequests must be positive to bound in-flight requests; "+
+				"without it a burst queues on the database pool instead of being refused")
+	}
 }
 
 func collectProductionQueryLimitIssues(limits QueryLimits, issues *issueList) {

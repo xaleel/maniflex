@@ -610,6 +610,22 @@ type Config struct {
 	// when the request returns.
 	MaxConcurrentExports int
 
+	// MaxConcurrentRequests caps how many requests may be in flight at once
+	// across the whole server. Requests beyond it are answered 503 SERVER_BUSY
+	// with a Retry-After rather than queued. 0, the default, means no limit.
+	//
+	// Without it the database pool is the de facto concurrency limit, and it is
+	// one that fails by queueing: a burst is not refused, it waits for a
+	// connection while holding a goroutine, a parsed body and a context, until
+	// QueryTimeout fires. Latency then climbs for every request instead of
+	// being paid by the ones that are shed. Size it against the pool rather
+	// than the traffic — a value far above MaxOpenConns only moves the queue.
+	//
+	// Off by default because the right value depends on the pool and the
+	// hardware, and a wrong one refuses traffic the server could have served.
+	// Server.ValidateProduction requires a positive value.
+	MaxConcurrentRequests int
+
 	// TrustProxyHeaders controls whether the client IP is derived from the
 	// X-Forwarded-For / X-Real-IP request headers.
 	// It is OFF by default: RemoteAddr stays the real TCP peer, so a client

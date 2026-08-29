@@ -46,6 +46,14 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 		}
 		r.Use(requestObservationMiddleware(cfg.logger(), cfg.RequestObservers))
 	}
+	// Shed load before anything expensive. After the observers, so a refused
+	// request still reaches them — load shedding you cannot see is worse than
+	// none — and before the body deadline and proxy resolution, so a shed
+	// request never has its body read.
+	if n := cfg.MaxConcurrentRequests; n > 0 {
+		r.Use(concurrencyLimit(n))
+	}
+
 	if max := cfg.QueryLimits.MaxURLBytes; max > 0 {
 		r.Use(func(next http.Handler) http.Handler {
 			return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

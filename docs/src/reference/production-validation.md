@@ -28,6 +28,8 @@ problem together and changes no runtime behavior.
 
 - `Config.Strict` is enabled.
 - `Config.QueryTimeout` is positive.
+- `Config.MaxConcurrentRequests` is positive, so a burst is refused rather than
+  queued on the database pool.
 - Every global and per-model effective `QueryLimits` field remains positively
   bounded, as does global search's `MaxLimit` when search is mounted.
 - AutoMigrate is disabled when models are registered.

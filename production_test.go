@@ -17,6 +17,7 @@ func productionConfig() Config {
 		Strict:             true,
 		DisableAutoMigrate: true,
 		QueryTimeout:       5 * time.Second,
+		MaxConcurrentRequests: 64,
 	}
 }
 
@@ -37,6 +38,7 @@ func TestValidateProduction_ReportsDangerousDefaultsTogether(t *testing.T) {
 	for _, want := range []string{
 		"Config.Strict",
 		"Config.QueryTimeout",
+		"Config.MaxConcurrentRequests",
 		"DisableAutoMigrate",
 		`model "ProductionWidget"`,
 		"create",

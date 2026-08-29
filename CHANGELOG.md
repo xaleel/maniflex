@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Feature:** `Config.MaxConcurrentRequests` caps in-flight requests server-wide, answering `503 SERVER_BUSY` with a `Retry-After` rather than queueing — the shape `MaxConcurrentExports` already had, generalised. Without it the database pool is the concurrency limit by accident, and it fails by queueing: a burst waits for a connection holding a goroutine, a parsed body and a context until `QueryTimeout` fires, so latency climbs for every request instead of being paid by the ones that are shed. `0`, the default, means no limit.
+- **Developer experience (behaviour change):** `Server.ValidateProduction` requires `Config.MaxConcurrentRequests` to be positive, as it already requires `QueryTimeout`. A configuration that passed before and leaves in-flight work unbounded now reports one issue naming the field. **Migrate:** set it, sized against the database pool's `MaxOpenConns` rather than against hoped-for traffic — a value far above the pool only moves the queue.
+
 ## v0.10.0 (2026-08-29)
 
 - **Developer experience:** `middleware/db/redis` has tests. It was the only adapter module with none, and untestable as written — a concrete `*goredis.Client` with no seam, where `jobs/redis` and `events/redis` both have one. `Increment` now dispatches through a `counterOps` seam, so key composition, the window, the returned count and error wrapping are covered against a fake. Key composition is where rate limiters break: the same release fixes a `db.RateLimit` default that keyed on the client's ephemeral port. `NewRateLimitBackend` is unchanged.

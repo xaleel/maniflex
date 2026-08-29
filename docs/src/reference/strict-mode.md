@@ -84,6 +84,12 @@ These stay warnings by default because each has a legitimate reading:
 | `Config.TrustProxyHeaders` set with no `Config.TrustedProxies` | The service may genuinely sit behind a proxy that replaces client-supplied forwarding headers itself. |
 | Encrypted unique fields with no blind-index key on the `KeyProvider` | It is the documented legacy behaviour, and an application that never rotates its encryption keys never pays for it. |
 | `mfx:"file_acl:signed"` against a `FileStorage` that cannot sign | `LocalStorage` in development is the common case, where a permanent path costs nothing. |
+| A model field whose Go type the OpenAPI generator cannot describe | The field still serialises correctly; it is the published contract that is weaker, so a generated client loses the field's type rather than the server losing the field. |
+
+One proxy case is on neither list: a `Config.TrustedProxies` entry that does
+not parse fails the boot whether or not strict mode is on. A malformed CIDR is
+unambiguously a typo, and dropping it silently would narrow what is trusted —
+failing open on exactly the requests the entry was written to cover.
 
 **Turn it on in CI and staging**, where a boot failure costs a re-run rather
 than an outage. Leave it off in production if you would rather serve a degraded

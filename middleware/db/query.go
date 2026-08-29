@@ -5,7 +5,6 @@ package db
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -253,7 +252,11 @@ type RateLimitConfig struct {
 	// Window is the sliding-window duration. When zero, defaults to one minute.
 	Window time.Duration
 	// KeyFunc derives the rate-limit key from the request.
-	// Default: ctx.Auth.UserID, falling back to the remote IP.
+	// Default: ctx.Auth.UserID, falling back to [maniflex.ServerContext.ClientIP].
+	//
+	// Use ClientIP rather than Request.RemoteAddr in your own KeyFunc: the
+	// latter carries the client's ephemeral port, so each connection keys to a
+	// bucket of its own and the limit never applies.
 	KeyFunc func(ctx *maniflex.ServerContext) string
 	// ErrorMessage is the 429 response message. Default: "rate limit exceeded".
 	ErrorMessage string
@@ -287,22 +290,6 @@ const rateLimiterPruneEvery = 128
 type window struct {
 	count   int
 	resetAt time.Time
-}
-
-// clientAddrKey reduces a RemoteAddr to the address a rate-limit bucket should
-// belong to.
-//
-// Go fills RemoteAddr with "IP:port", and the port is the client's ephemeral
-// one — a different value on every TCP connection. Keying on it whole gave each
-// connection a bucket of its own, so the limit never applied to anything: ten
-// requests from one address produced ten keys. Only the default was affected;
-// the trusted-proxy resolver already rewrites RemoteAddr to a bare IP, which has
-// no port to split and is returned unchanged here.
-func clientAddrKey(remoteAddr string) string {
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		return host
-	}
-	return remoteAddr
 }
 
 // RateLimit is an in-process token-bucket rate limiter keyed on the
@@ -340,7 +327,7 @@ func RateLimit(cfg RateLimitConfig) maniflex.MiddlewareFunc {
 			if ctx.Auth != nil && ctx.Auth.UserID != "" {
 				return ctx.Auth.UserID
 			}
-			return clientAddrKey(ctx.Request.RemoteAddr)
+			return ctx.ClientIP()
 		}
 	}
 

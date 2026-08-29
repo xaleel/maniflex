@@ -100,7 +100,12 @@ type Config struct {
 	// TTL is how long a cached response is replayable. Default: 24h.
 	TTL time.Duration
 	// KeyFunc derives the per-caller scope for the cache key.
-	// Default: ctx.Auth.UserID, falling back to the remote IP.
+	// Default: ctx.Auth.UserID, falling back to [maniflex.ServerContext.ClientIP].
+	//
+	// Use ClientIP rather than Request.RemoteAddr in your own KeyFunc: the
+	// latter carries the client's ephemeral port, so a retry arriving on a new
+	// connection lands in a different scope, misses the cached response, and
+	// runs the operation a second time.
 	KeyFunc func(ctx *maniflex.ServerContext) string
 	// HeaderRequired makes the Idempotency-Key header mandatory on every
 	// request the middleware sees. When false (the default), requests without
@@ -134,7 +139,12 @@ func Middleware(cfg Config) maniflex.MiddlewareFunc {
 			if ctx.Auth != nil && ctx.Auth.UserID != "" {
 				return ctx.Auth.UserID
 			}
-			return ctx.Request.RemoteAddr
+			// Not RemoteAddr: its ephemeral port changes on every
+			// connection, and a retry after a network failure is exactly
+			// when a new connection is used — so the scope would differ,
+			// the cached response would be missed, and the operation
+			// idempotency exists to run once would run twice.
+			return ctx.ClientIP()
 		}
 	}
 	locker := cfg.Locker

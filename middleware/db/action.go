@@ -16,7 +16,12 @@ import (
 // (after the global Auth step, so ctx.Auth is populated) and cover those routes.
 
 // rateLimitCaller resolves the per-caller key: the configured KeyFunc, else the
-// authenticated user id, else the remote IP.
+// authenticated user id, else the client address.
+//
+// ctx.ClientIP rather than ctx.Request.RemoteAddr: the latter carries the
+// client's ephemeral port, so every connection would key to a bucket of its own
+// and the limit would never apply to an unauthenticated caller. RateLimit's
+// default was fixed for this; this copy of it was missed at the time.
 func rateLimitCaller(cfg RateLimitConfig) func(*maniflex.ServerContext) string {
 	if cfg.KeyFunc != nil {
 		return cfg.KeyFunc
@@ -25,7 +30,7 @@ func rateLimitCaller(cfg RateLimitConfig) func(*maniflex.ServerContext) string {
 		if ctx.Auth != nil && ctx.Auth.UserID != "" {
 			return ctx.Auth.UserID
 		}
-		return ctx.Request.RemoteAddr
+		return ctx.ClientIP()
 	}
 }
 

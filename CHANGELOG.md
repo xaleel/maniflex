@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.11.0 (2026-08-30)
 
 - **Bugfix:** slice-typed fields are published as nullable. A nil slice marshals to `null`, so `[]string` was described as `{"type":"array"}` while the server could send null — the same under-declaration the pointer fix closed, filed alongside it and left open. One rule now covers both: nullable unless json `omitempty` removes the field. Fixed-size arrays are excluded, since `[4]int` cannot be nil, and a byte slice is nullable too — base64 string when set, null when nil. Model and action paths agree, as they must to describe one Go type once.
 - **Bugfix:** a list's `maxlen:` reaches the spec as `maxItems` again. The check that routed it there compared `schema.Type` against the string `"array"`, which stops matching the moment a type also accepts null — so the bound was written as `maxLength`, a string constraint, on an array. Found by the test that pinned the original `maxItems` fix.

@@ -144,6 +144,45 @@ Both failure cases return `403 FORBIDDEN`: an anonymous request (`ctx.Auth ==
 nil`) and an authenticated request lacking the role are treated alike. This
 differs from `RequireOwner`, which answers `401` to an anonymous caller.
 
+## `RequireScope` and `RequireAnyScope`
+
+Reject the request unless `ctx.Auth.Scopes` carries the OAuth2 grants the route
+needs. `JWTAuth` fills that slice from `JWTOptions.ScopesClaim` (default
+`"scope"`), accepting both the JSON array form and RFC 6749's space-delimited
+string.
+
+`RequireScope` requires **every** listed scope:
+
+```go
+server.Pipeline.Auth.Register(
+    auth.RequireScope("posts:read", "posts:write"),
+    maniflex.ForModel("Post"), maniflex.ForOperation(maniflex.OpUpdate),
+)
+```
+
+That is the opposite of `RequireRole`, deliberately. A role names who the caller
+is, so holding one of several is the usual question; a scope names a grant that
+was issued, so an endpoint that both reads and writes needs both grants — not
+either. Where several grants really are each sufficient, ask for that explicitly:
+
+```go
+server.Pipeline.Auth.Register(auth.RequireAnyScope("posts:write", "admin"))
+```
+
+The refusal names only the scopes the caller is **missing**, so a client granted
+three of four is told which one to go and ask for.
+
+Scopes match exactly. A `read:*` grant does not satisfy `read:posts` — the
+framework cannot know whether `:`, `/`, or nothing at all delimits your issuer's
+hierarchy. Express one with `Enforce` and a `Policy`.
+
+Both constructors panic when given no scopes. Under all-of semantics an empty
+requirement is vacuously satisfied, so such a guard would admit every request
+while reading as though it protected the route.
+
+Like `RequireRole`, both answer `403 FORBIDDEN` to an anonymous caller and to an
+authenticated one lacking the grant.
+
 ## `RequireOwner`
 
 Enforces that the authenticated user owns the record being read or written. On

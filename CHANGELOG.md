@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Feature:** `auth.RequireScope` and `auth.RequireAnyScope` guard a route on `ctx.Auth.Scopes` — a field `JWTAuth` has populated all along and nothing read. `RequireScope` requires **every** listed scope, the opposite of `RequireRole`'s any-of: a role names who the caller is, a scope names a grant, so a read-and-write endpoint needs both. `RequireAnyScope` is the any-of form. A refusal names only the missing scopes; matching is exact, so `read:*` does not satisfy `read:posts`; and constructing either with no scopes panics rather than admitting everything.
+
 ## v0.11.0 (2026-08-30)
 
 - **Bugfix:** slice-typed fields are published as nullable. A nil slice marshals to `null`, so `[]string` was described as `{"type":"array"}` while the server could send null — the same under-declaration the pointer fix closed, filed alongside it and left open. One rule now covers both: nullable unless json `omitempty` removes the field. Fixed-size arrays are excluded, since `[4]int` cannot be nil, and a byte slice is nullable too — base64 string when set, null when nil. Model and action paths agree, as they must to describe one Go type once.

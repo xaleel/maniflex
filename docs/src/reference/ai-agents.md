@@ -345,6 +345,7 @@ import (
 auth.JWTAuth(secret, auth.JWTOptions{Issuer, Audience, TenantClaim, ScopesClaim, PublicKey})
 auth.APIKeyAuth("X-API-Key", auth.APIKeyEntry{Key, Auth: maniflex.AuthInfo{...}}, ...)
 auth.RequireRole("admin")
+auth.RequireScope("posts:read", "posts:write") // ALL of them; RequireAnyScope(...) for any one
 auth.AllowAnonymous()                        // register BEFORE JWTAuth/JWKSAuth + ForModel/ForOperation:
                                              //   no credential -> served, ctx.Auth nil; bad credential -> still 401
 auth.AllowPublicRead()                       // passthrough on read/list; needs AllowAnonymous in front of the

@@ -1144,6 +1144,9 @@ func goTypeToSchema(t reflect.Type) *OASSchema {
 	if isPtr {
 		t = t.Elem()
 	}
+	// A nil slice marshals to null, exactly as a nil pointer does, so it carries
+	// the same nullability. reflect.Array is excluded: [4]int cannot be nil.
+	isSlice := t.Kind() == reflect.Slice
 
 	var s *OASSchema
 
@@ -1177,8 +1180,11 @@ func goTypeToSchema(t reflect.Type) *OASSchema {
 		}
 	}
 
-	if isPtr {
-		s = nullable(s)
+	if isPtr || isSlice {
+		// Copied first: a type's ObjectWithSchema.Schema() may hand back a
+		// shared value, and nullable rewrites Type in place — the same
+		// precaution reflectTypeSchema takes.
+		s = nullable(copySchema(s))
 	}
 	return s
 }
@@ -1754,8 +1760,9 @@ func reflectTypeSchema(rt reflect.Type, depth int) *OASSchema {
 	if rt == nil {
 		return nil
 	}
+	isSlice := rt.Kind() == reflect.Slice
 	s := reflectDerefTypeSchema(rt, depth)
-	if isPtr && depth > 0 && s != nil {
+	if (isPtr || isSlice) && depth > 0 && s != nil {
 		// Copied first: a type's ObjectWithSchema.Schema() may hand back a
 		// shared value, and nullable rewrites Type in place.
 		s = nullable(copySchema(s))
@@ -1841,6 +1848,13 @@ func reflectStructSchema(rt reflect.Type, depth int) *OASSchema {
 			ft = ft.Elem()
 		}
 		schema := reflectTypeSchema(ft, depth+1)
+		if tags.OmitEmpty && ft.Kind() == reflect.Slice {
+			// Same reasoning one level up, by a different route: a pointer can
+			// be stripped to its element type, a slice cannot, so the wrap is
+			// bypassed instead. An empty slice under omitempty is left out of
+			// the object rather than written as null.
+			schema = reflectDerefTypeSchema(ft, depth+1)
+		}
 		if schema == nil {
 			continue
 		}
@@ -1876,6 +1890,27 @@ func applyConstraintTags(s *OASSchema, t FieldTags) {
 	}
 }
 
+// schemaIsArray reports whether s describes an array, nullable or not.
+//
+// OASSchema.Type is the string "array" for a plain one and the slice
+// ["array","null"] once nullable() has wrapped it, so a bare == comparison
+// silently stops matching the moment a type gains nullability. That is not
+// hypothetical: it is how a list's maxlen: momentarily became a maxLength: —
+// a string bound on an array — when nil slices were made nullable.
+func schemaIsArray(s *OASSchema) bool {
+	switch v := s.Type.(type) {
+	case string:
+		return v == "array"
+	case []string:
+		for _, t := range v {
+			if t == "array" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // applyFieldValidation copies a field's declared constraints onto its schema.
 //
 // The three body schemas (full, create, update) each carry the same
@@ -1896,7 +1931,7 @@ func applyFieldValidation(s *OASSchema, f FieldMeta) {
 	if f.Tags.Max != nil {
 		s.Maximum = f.Tags.Max
 	}
-	if s.Type == "array" {
+	if schemaIsArray(s) {
 		s.MinItems = f.Tags.MinLen
 		s.MaxItems = f.Tags.MaxLen
 		return

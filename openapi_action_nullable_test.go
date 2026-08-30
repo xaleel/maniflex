@@ -125,7 +125,9 @@ func TestActionSchemaNullability_NonPointersUnchanged(t *testing.T) {
 	for _, c := range []struct{ field, want string }{
 		{"plain", "integer"},
 		{"plain_str", "string"},
-		{"list", "array"},
+		// A slice is nullable, but for its own reason rather than this one: a
+		// nil slice marshals to null. See TestSliceNullability.
+		{"list", "array|null"},
 	} {
 		if got := typeOf(propOf(t, s, c.field)); got != c.want {
 			t.Errorf("%s: type = %q, want %q", c.field, got, c.want)

@@ -90,8 +90,9 @@ func TestOpenAPISchemaIncludesSliceFields(t *testing.T) {
 	if !ok {
 		t.Fatal("a slice-typed field is missing from the response schema")
 	}
-	if tags.Type != "array" {
-		t.Errorf("tags has type %v, want array", tags.Type)
+	if got := typeOf(tags); got != "array|null" {
+		t.Errorf("tags has type %q, want %q — present as an array, and nullable because a nil "+
+			"slice marshals to null", got, "array|null")
 	}
 	if tags.Items == nil || tags.Items.Type != "string" {
 		t.Errorf("tags items = %+v, want a string schema", tags.Items)
@@ -107,10 +108,13 @@ func TestOpenAPISchemaRendersByteSlicesAsBase64Strings(t *testing.T) {
 	if !ok {
 		t.Fatal("a byte-slice field is missing from the response schema")
 	}
-	if seal.Type != "string" || seal.Format != "byte" {
-		t.Errorf("seal = {type:%v format:%q}, want {type:string format:byte} — "+
+	// The nullability is a separate question from the base64 shape: a nil byte
+	// slice is null, and a non-nil empty one is "". What matters here is that it
+	// is a string rather than an array.
+	if got := typeOf(seal); got != "string|null" || seal.Format != "byte" {
+		t.Errorf("seal = {type:%q format:%q}, want {type:string|null format:byte} — "+
 			"encoding/json base64s it, so an array of integers describes a payload "+
-			"no server ever sends", seal.Type, seal.Format)
+			"no server ever sends", got, seal.Format)
 	}
 }
 
@@ -126,8 +130,8 @@ func TestReflectTypeSchemaRendersByteSlicesAsBase64Strings(t *testing.T) {
 		t.Fatalf("no blob property: %+v", s)
 	}
 	blob := s.Properties["blob"]
-	if blob.Type != "string" || blob.Format != "byte" {
-		t.Errorf("blob = {type:%v format:%q}, want {type:string format:byte}", blob.Type, blob.Format)
+	if got := typeOf(blob); got != "string|null" || blob.Format != "byte" {
+		t.Errorf("blob = {type:%q format:%q}, want {type:string|null format:byte}", got, blob.Format)
 	}
 }
 

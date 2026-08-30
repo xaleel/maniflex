@@ -329,8 +329,11 @@ func TestFileKeys_AppearsInSpecAsAnArray(t *testing.T) {
 		t.Fatal("FileKeys field absent from the spec — goTypeToSchema maps no slice kind, " +
 			"so without ObjectWithSchema the column would be invisible to a generated client")
 	}
-	if images["type"] != "array" {
-		t.Errorf("images type: got %v, want array", images["type"])
+	// ["array","null"]: FileKeys is a []string, and a nil one marshals to null,
+	// so the spec says so rather than promising an array the server may not send.
+	types, _ := images["type"].([]any)
+	if len(types) != 2 || types[0] != "array" || types[1] != "null" {
+		t.Errorf(`images type: got %v, want ["array","null"]`, images["type"])
 	}
 	items, _ := images["items"].(map[string]any)
 	if items == nil || items["type"] != "string" {

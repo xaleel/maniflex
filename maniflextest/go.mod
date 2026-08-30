@@ -3,7 +3,7 @@ module github.com/xaleel/maniflex/maniflextest
 go 1.25.12
 
 require (
-	github.com/xaleel/maniflex v0.10.0
+	github.com/xaleel/maniflex v0.11.0
 	github.com/xaleel/maniflex/db/postgres v0.10.0
 	github.com/xaleel/maniflex/db/sqlite v0.10.0
 )

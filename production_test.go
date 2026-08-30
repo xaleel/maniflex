@@ -14,9 +14,9 @@ type ProductionWidget struct {
 
 func productionConfig() Config {
 	return Config{
-		Strict:             true,
-		DisableAutoMigrate: true,
-		QueryTimeout:       5 * time.Second,
+		Strict:                true,
+		DisableAutoMigrate:    true,
+		QueryTimeout:          5 * time.Second,
 		MaxConcurrentRequests: 64,
 	}
 }

@@ -209,8 +209,13 @@ the same broker. Both paths produce the same payload:
 Everything else is copied unchanged, so the dead-letter carries the same `Data`,
 `Model`, `RecordID` and `TenantID` as the event it came from.
 
-A DLQ publish that itself fails is logged. For a `Subscription.DLQ` the event is
-then gone — there is nothing holding a copy.
+A DLQ publish that itself fails is logged, and **what happens to the event then
+depends on the adapter**. The core withholds the acknowledgement, so a broker
+that acknowledges per message brings the event back and retries the
+dead-letter with it — `events/redis` and `events/nats` do this. `events/kafka`
+and `events/rabbitmq` acknowledge anyway and the event is gone; both have
+reasons, and both are in the [delivery matrix](#adapter-delivery-matrix) with
+the rest of the row.
 
 **The outbox relayer keeps its row instead.** The DLQ rides the same broker that
 just failed every delivery attempt, so "the dead-letter failed too" is the
@@ -254,9 +259,65 @@ delivered.
 > For the transactional outbox, publish inside the action's own transaction so
 > the event commits atomically with the write.
 
+### Adapter delivery matrix
+
 Available adapters: `events/redis`, `events/kafka`, `events/nats`,
 `events/rabbitmq`. The in-process adapter (`inproc.New()` from
 `github.com/xaleel/maniflex/events/inproc`) ships in the core module for tests.
+
+Every one is **at-least-once**, and the retry, backoff, panic, and dead-letter
+behaviour above is shared: it lives in `events.DeliverWithRetry`, not in the
+adapters. What follows is where they genuinely differ. The notes after the
+tables give the reasoning for each; these are the answers.
+
+| | Durability and replay | Redelivery after a consumer dies | Backpressure | Shutdown |
+|---|---|---|---|---|
+| `events/redis` | Redis Streams. Entries are retained after reading and **trimmed at `MaxLen` (default 100,000), which drops unacked entries** | pending list, taken over by a periodic `XAUTOCLAIM` sweep (`ClaimMinIdle`, default 5m) | `Concurrency` slots; the publisher is never blocked | in-flight deliveries cancelled; whatever was unacked is reclaimed by another consumer |
+| `events/kafka` | topic retention, consumer-group offsets | replays from the last committed offset | `Concurrency` slots | uncommitted offsets replay on restart |
+| `events/nats` | JetStream — **you create the stream**; durable consumers per `Group` | unacked messages redelivered on `AckWait` | `Concurrency` slots; the JetStream callback is refused once they are taken | unacked messages redelivered |
+| `events/rabbitmq` | queue durability is yours to declare. **No reconnection: a dropped connection ends every subscription on it permanently** | unacked messages requeued when the channel closes | `Concurrency` slots, but **no `Qos`, so broker-side prefetch is unbounded** | unacked messages requeued |
+| `inproc` | **none.** Nothing published before a subscription exists, or while the process is down, survives | none | bounded queue; `Publish` returns `inproc.ErrQueueFull` — the only publisher-visible backpressure here | `Close` drains in-flight handlers within `DrainTimeout` |
+
+**Ordering is the same everywhere**: no adapter serialises per key on the
+consumer side, so `Concurrency` above 1 means two events for one record can be
+handled at once. See [Ordering](#ordering).
+
+#### What happens to an event that is not delivered
+
+The four outcomes of a delivery, and what each adapter does with them. The third
+column is the one that differs.
+
+| | retries exhausted, no DLQ | DLQ publish succeeds | DLQ publish **fails** | abandoned mid-retry by a shutdown |
+|---|---|---|---|---|
+| `events/redis` | acked — a deliberate drop | acked | **not acked** → reclaimed, and the dead-letter is retried with it | not acked → reclaimed |
+| `events/nats` | acked | acked | **not acked** → redelivered on `AckWait` | not acked → redelivered |
+| `events/kafka` | committed | committed | **committed — the event is gone** | withheld → replays on restart |
+| `events/rabbitmq` | acked | acked | **acked — the event is gone** | withheld → requeued |
+| `inproc` | dropped | dropped | dropped | dropped |
+
+Redis and NATS follow the core rule: the safety net you asked for did not catch
+the event, so it is not acknowledged as though it had.
+
+**Kafka cannot.** Its commits are cumulative, so a gap left by a consumer that
+keeps running stalls every later commit on that partition and grows its pending
+map without bound. That is an unbounded failure traded against one event whose
+dead-lettering had already failed too. During a shutdown there is no later
+commit to stall, which is why that column differs.
+
+**RabbitMQ's reason is different, and temporary.** It sets no `Qos`, so
+withholding acks on a live consumer is equally unbounded. Bounding prefetch is
+tracked as a release blocker, and closing it makes withholding possible — though
+not automatically right, since with prefetch *N* a run of withheld messages
+stalls the consumer completely. Treat that cell as a known gap rather than a
+settled guarantee.
+
+> These are behaviours, not implementation details: a change to any cell above
+> is marked **(behaviour change)** in the CHANGELOG. The Kafka and RabbitMQ
+> settle rules are named functions with tests over each column, so they cannot
+> move quietly. The rest of the rows are pinned by review — acknowledgement on
+> those adapters goes through the broker client's own message type rather than a
+> seam a test can drive.
+
 
 > **A consumer that cannot reach its broker now says so.** The `events/kafka`
 > and `events/redis` read loops retry forever — stopping would silently end

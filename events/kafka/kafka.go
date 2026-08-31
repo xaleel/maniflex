@@ -303,20 +303,33 @@ func (b *Bus) runConsumer(ctx context.Context, r *kafkago.Reader, sub events.Sub
 				<-sem
 				wg.Done()
 			}()
-			// Withhold the commit for an unsettled delivery only while shutting
-			// down. Kafka commits are cumulative: a gap left by a consumer that
-			// keeps running stalls every later commit on that partition and
-			// grows the tracker's pending map without bound (see offsetTracker).
-			// During shutdown there is no "later" — the offset simply stays
-			// uncommitted and the event replays on restart, which is the case
-			// that matters, because it needs no misconfiguration to reach. A
-			// dead-letter publish that fails mid-run is still committed, and
-			// logged at ERROR (audit C5).
-			if events.DeliverWithRetry(ctx, b, sub, e) || ctx.Err() == nil {
+			if shouldCommit(events.DeliverWithRetry(ctx, b, sub, e), ctx.Err()) {
 				commit(msg)
 			}
 		}()
 	}
+}
+
+// shouldCommit decides whether a delivered message's offset is committed.
+//
+// It departs from the shared settle contract in one case, deliberately: an
+// unsettled delivery on a consumer that keeps running is committed anyway.
+// Kafka commits are cumulative, so a gap stalls every later commit on that
+// partition and grows the tracker's pending map without bound (see
+// offsetTracker) — an unbounded failure traded against one event whose
+// dead-lettering had already failed too. Redis and NATS withhold here and let
+// the broker redeliver, which their per-message acknowledgement allows and
+// Kafka's offsets do not (audit C5).
+//
+// During shutdown there is no later commit to stall, so an unsettled delivery
+// is withheld: the offset stays uncommitted and the event replays on restart
+// rather than being destroyed by a shutdown between two attempts.
+//
+// This is a published delivery guarantee — see the adapter matrix in
+// docs/src/advanced-topics/events-jobs.md — so a change here is a behaviour
+// change rather than an implementation detail.
+func shouldCommit(settled bool, ctxErr error) bool {
+	return settled || ctxErr == nil
 }
 
 // logReadFailure reports a failed broker read. Before audit EV-13 this loop

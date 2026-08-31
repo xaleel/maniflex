@@ -281,13 +281,7 @@ func (b *Bus) Subscribe(ctx context.Context, sub events.Subscription) (events.Ca
 						<-sem
 						wg.Done()
 					}()
-					// As Kafka: withhold the ack for an unsettled delivery only
-					// while shutting down. This consumer sets no Qos, so
-					// prefetch is unlimited and unacked messages left by a
-					// running consumer accumulate without bound; on shutdown
-					// they are simply requeued when the channel closes, which
-					// is the case worth fixing (audit C5).
-					if events.DeliverWithRetry(cctx, b, sub, e) || cctx.Err() == nil {
+					if shouldAck(events.DeliverWithRetry(cctx, b, sub, e), cctx.Err()) {
 						msg.Ack(false)
 					}
 				}()
@@ -375,6 +369,26 @@ func declareExchange(ch *amqp.Channel) error {
 
 // patternToBindingKey converts a glob pattern to an AMQP topic binding key.
 // "*" → "#" (all), "invoice.*" → "invoice.*", "invoice.created" → "invoice.created".
+// shouldAck decides whether a delivered message is acknowledged.
+//
+// As Kafka: an unsettled delivery on a consumer that keeps running is acked
+// anyway. The reason here is different, and contingent. This consumer sets no
+// Qos, so prefetch is unlimited and unacked messages left by a running consumer
+// accumulate without bound; on shutdown they are simply requeued when the
+// channel closes, which is the case worth fixing (audit C5).
+//
+// Bounding prefetch (release blocker B2) removes that reason and makes
+// withholding possible — at which point whether to withhold becomes a real
+// choice, because with prefetch N a run of withheld messages stalls the
+// consumer entirely. Redis and NATS withhold here and redeliver.
+//
+// This is a published delivery guarantee — see the adapter matrix in
+// docs/src/advanced-topics/events-jobs.md — so a change here is a behaviour
+// change rather than an implementation detail.
+func shouldAck(settled bool, ctxErr error) bool {
+	return settled || ctxErr == nil
+}
+
 func patternToBindingKey(pattern string) string {
 	if pattern == "*" {
 		return "#"

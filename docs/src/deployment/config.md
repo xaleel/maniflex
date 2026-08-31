@@ -179,7 +179,7 @@ URIs return `414 URI_TOO_LONG`; invalid list-query shapes return
 | Field | Default | Purpose |
 |---|---|---|
 | `DB` | nil | the default `DBAdapter`. Usually set via `server.SetDB(db)` after `MustRegister`. Optional when every model has its own `ModelConfig.Adapter` — see [Per-model adapter routing](databases.md#per-model-adapter-routing) |
-| `DisableAutoMigrate` | `false` | skip schema migration on startup (migration runs by default) |
+| `DisableAutoMigrate` | `false` | skip the schema migration `Start` runs on boot (migration runs by default). Does not affect `MigrateOnly` — see [Migrations in production](databases.md#migrations-in-production) |
 | `DBWriteURL` | `""` | DSN for the primary database (informational; populated by `ConfigFromEnv`) |
 | `DBReadURL` | `""` | DSN for the read replica (informational) |
 | `QueryTimeout` | `0` (unlimited) | per-request deadline applied to all DB calls; exceeding it produces `504 TIMEOUT` |

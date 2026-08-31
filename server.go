@@ -385,6 +385,12 @@ func (c *Server) StartServices() error {
 //	}
 //	log.Fatal(server.Start())
 //
+// Config.DisableAutoMigrate does not apply here. It suppresses the migration
+// Start runs as a side effect of booting; MigrateOnly is the explicit call, and
+// the pattern above is exactly the case where one process must migrate while
+// the replicas it precedes must not. Use Handler or StartServices to validate
+// and seal a configuration without touching schema.
+//
 // MigrateOnly first validates and seals the complete router and middleware
 // configuration, exactly as Start does before migration. Register all models,
 // actions, and middleware before calling it. A validation error is returned
@@ -393,8 +399,23 @@ func (c *Server) MigrateOnly(ctx context.Context) error {
 	if _, err := c.handler(); err != nil {
 		return err
 	}
-	return c.migrate(ctx)
+	return c.migrate(ctx, explicitMigration)
 }
+
+// migrateTrigger distinguishes the two ways schema work is reached.
+type migrateTrigger int
+
+const (
+	// autoMigration is the migration Start runs as a side effect of booting.
+	// Config.DisableAutoMigrate suppresses it.
+	autoMigration migrateTrigger = iota
+	// explicitMigration is MigrateOnly: the caller asked for schema work by
+	// name, so a flag that disables *automatic* migration does not apply. The
+	// two were conflated until this split, which made the documented
+	// init-container pattern a silent no-op under the production posture
+	// ValidateProduction requires (it mandates DisableAutoMigrate).
+	explicitMigration
+)
 
 // migrate validates DB adapters, wires the framework logger into each, and
 // runs AutoMigrate when enabled. Shared by Start* and MigrateOnly.
@@ -403,7 +424,7 @@ func (c *Server) MigrateOnly(ctx context.Context) error {
 // across multiple DBs. Each distinct adapter is called once with a filtered
 // registry view exposing only the models routed to it. Config.DB serves the
 // models with no override; it may be nil when every model has its own adapter.
-func (c *Server) migrate(ctx context.Context) error {
+func (c *Server) migrate(ctx context.Context, trigger migrateTrigger) error {
 	groups, err := c.adapterGroups()
 	if err != nil {
 		return err
@@ -425,7 +446,7 @@ func (c *Server) migrate(ctx context.Context) error {
 		}
 	}
 
-	if c.cfg.DisableAutoMigrate {
+	if trigger == autoMigration && c.cfg.DisableAutoMigrate {
 		return nil
 	}
 
@@ -539,7 +560,7 @@ func (c *Server) StartWithContext(ctx context.Context) (returnErr error) {
 		return err
 	}
 
-	if err := c.migrate(ctx); err != nil {
+	if err := c.migrate(ctx, autoMigration); err != nil {
 		c.abortGoroutines()
 		return err
 	}

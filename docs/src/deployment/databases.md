@@ -118,8 +118,65 @@ routine that has to guess. Until that migration runs, reads and writes of the
 field can fail against the old column.
 
 `AutoMigrate` is suitable for development and many small deployments. For
-larger systems, set `DisableAutoMigrate: true` and manage the schema with a
-dedicated migration tool.
+larger systems, set `DisableAutoMigrate: true` and either manage the schema with
+a dedicated migration tool or migrate from a single process — see below.
+
+## Migrations in production
+
+`Server.ValidateProduction` requires `Config.DisableAutoMigrate`, so a
+production server does not migrate as it boots. That flag is about the
+**automatic** migration — the one `Start` runs as a side effect. `MigrateOnly`
+is the explicit call and runs regardless, which is what lets one binary and one
+config serve both roles:
+
+```go
+cfg.DisableAutoMigrate = true // every replica; ValidateProduction requires it
+
+server := maniflex.New(cfg)
+// … register models, actions, middleware …
+
+if os.Getenv("MIGRATE_ONLY") == "1" {
+    log.Fatal(server.MigrateOnly(ctx)) // the init container / pre-deploy job
+}
+log.Fatal(server.Start()) // the replicas, which migrate nothing
+```
+
+`MigrateOnly` validates and seals the whole configuration before it touches
+schema, so a misconfigured application fails the job rather than half-migrating.
+To validate and seal *without* any schema work, call `Handler` or
+`StartServices` instead.
+
+### What is safe under a rolling deploy
+
+`AutoMigrate` only ever adds. That is the property that makes it rolling-safe:
+while old and new replicas run side by side, a **new column** is invisible to
+the old ones, and a **new table** is unreferenced by them.
+
+Everything else is yours, and is not rolling-safe:
+
+| Change | Who does it | Safe mid-rollout |
+| --- | --- | --- |
+| Add a field, model, or index | `AutoMigrate` | yes |
+| Change a field's type | you, explicitly | no — old and new replicas disagree about the column |
+| Remove a field | you, explicitly | not until every old replica is gone |
+| Rename a field | you, explicitly | no — it is a drop plus an add to the database |
+
+For a removal, the two-phase shape is the usual one: ship the code that stops
+writing the column, complete the rollout, then drop it. For a type change, add a
+new column, backfill, switch reads, and drop the old one — each phase its own
+deploy.
+
+### Concurrent replicas
+
+Several processes may run migration at once without corrupting each other. Each
+table's create-introspect-alter sequence is one transaction, columns are added
+with `IF NOT EXISTS` (or duplicate-tolerantly on SQLite), and a foreign key
+another process added first is accepted rather than treated as an error.
+
+Prefer migrating from one process anyway. Concurrency-safe means the losing
+replica does not *break*; it does not mean the work is coordinated, and there is
+no migration lock or leader election here — the framework does not attempt to
+sequence a schema change against the replicas that are mid-rollout.
 
 ## The `DBAdapter` interface
 

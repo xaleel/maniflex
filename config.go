@@ -687,10 +687,15 @@ type Config struct {
 	// DB is the database adapter to use. Required before calling Start().
 	DB DBAdapter
 
-	// DisableAutoMigrate turns off schema creation/migration on Start() and
-	// MigrateOnly(). Migration runs by default; set this to true to skip it (e.g.
-	// when migrations are managed out of band). Replaces the old AutoMigrate bool,
-	// whose zero value (false) could not honour the documented "default on".
+	// DisableAutoMigrate turns off the schema creation/migration that Start()
+	// runs as a side effect of booting. Migration runs by default; set this to
+	// true to skip it (e.g. when migrations are managed out of band). Replaces
+	// the old AutoMigrate bool, whose zero value (false) could not honour the
+	// documented "default on".
+	//
+	// It does not affect MigrateOnly, which is the explicit call: a deployment
+	// sets this flag on every replica and still migrates from a single
+	// init-container process. Server.ValidateProduction requires it.
 	DisableAutoMigrate bool
 
 	// ShutdownTimeout is the maximum duration Start() waits for in-flight

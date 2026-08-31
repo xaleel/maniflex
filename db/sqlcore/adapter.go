@@ -165,7 +165,11 @@ func (a *Adapter) migratePostgresForeignKeys(ctx context.Context, reg maniflex.R
 			}
 			stmt := fmt.Sprintf("ALTER TABLE %s ADD CONSTRAINT %s %s",
 				q(m.TableName), q(fk.Name), fkConstraintClause(fk))
-			if _, err := a.writeDb.ExecContext(ctx, stmt); err != nil {
+			// A concurrently booting replica may have added it between the
+			// probe above and this statement — Postgres has no ADD CONSTRAINT
+			// IF NOT EXISTS, so the duplicate is absorbed here instead.
+			if _, err := a.writeDb.ExecContext(ctx, stmt); err != nil &&
+				!isDuplicateConstraintError(err) {
 				return fmt.Errorf("add fk %s on %s: %w", fk.Name, m.TableName, err)
 			}
 		}
@@ -667,6 +671,27 @@ func (a *Adapter) addColumn(ctx context.Context, exec sqlExec, table string, f m
 // ADD COLUMN failed because the column already exists.
 // SQLite returns "duplicate column name: <col>".
 // Postgres returns "column <col> of relation <table> already exists".
+// isDuplicateConstraintError reports whether err is Postgres refusing an
+// ALTER TABLE ADD CONSTRAINT because the constraint is already present
+// (SQLSTATE 42710, duplicate_object).
+//
+// migratePostgresForeignKeys probes for the constraint and then adds it, and
+// two replicas booting together both see it absent. There is no ADD CONSTRAINT
+// IF NOT EXISTS to close that window with, so tolerating the duplicate is the
+// only way the losing replica boots against a schema that is already correct —
+// the same race addColumn absorbs with IF NOT EXISTS and isDuplicateColumnError.
+//
+// The match is deliberately narrower than "already exists": a constraint that
+// cannot be added because existing rows violate it is a real migration failure
+// and must keep failing the boot.
+func isDuplicateConstraintError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "constraint") && strings.Contains(msg, "already exists")
+}
+
 func isDuplicateColumnError(err error) bool {
 	if err == nil {
 		return false

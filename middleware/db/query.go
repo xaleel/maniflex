@@ -264,6 +264,13 @@ type RateLimitConfig struct {
 	// Use a shared backend (e.g. Redis) so multiple replicas enforce one
 	// rate-limit window. See middleware/db/redis for the Redis implementation.
 	Backend RateLimitBackend
+	// Clock supplies the time the in-process window is measured against. Nil
+	// reads the wall clock.
+	//
+	// Set it from a test to assert that the limit lifts once the window passes,
+	// without waiting out a real one. It has no effect when Backend is set —
+	// there the window belongs to the backend, whose own clock governs it.
+	Clock maniflex.Clock
 }
 
 // RateLimitBackend is the pluggable counter behind RateLimit. Implementations
@@ -371,7 +378,7 @@ func rateLimitCheck(ctx *maniflex.ServerContext, cfg RateLimitConfig, limiter *r
 	}
 	limiter.mu.Lock()
 	defer limiter.mu.Unlock()
-	now := time.Now()
+	now := cfg.Clock.Now()
 	w, ok := limiter.windows[key]
 	if !ok || now.After(w.resetAt) {
 		w = &window{resetAt: now.Add(windowDur)}

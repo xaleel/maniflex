@@ -82,6 +82,44 @@ proID := records.ID(t, "pro")
 rejects duplicate names, requires every create to return `201`, and stores each
 response's `data` object under its name.
 
+## Time
+
+Behaviour that turns on the passage of time — an idempotency replay window, a
+rate-limit window, a cached read — used to be untestable from the outside: every
+path to it measured against the wall clock, so asserting that a one-hour window
+closes meant waiting an hour.
+
+`maniflextest.NewClock` returns a clock that only moves when you say so.
+
+```go
+clock := maniflextest.NewClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+clock.Advance(90 * time.Minute)  // or clock.Set(someInstant)
+```
+
+Hand its `Now` method to whatever measures the time. The method value satisfies
+`maniflex.Clock` and stays bound to the clock, so it can be passed anywhere one
+is accepted:
+
+| Where | What it governs |
+| --- | --- |
+| `maniflex.WithCacheClock(clock.Now)` on `NewMemoryCache` | idempotency replay windows, `db.CacheQuery` response caches, anything else backed by that `CacheStore` |
+| `db.RateLimitConfig.Clock` | the in-process rate-limit window (no effect when `Backend` is set — there the window belongs to the backend) |
+| `scheduled.Config.Clock` | when the `scheduled` runner considers a field's instant to have arrived |
+
+A nil clock anywhere is the wall clock, so nothing changes for code that does
+not set one.
+
+The whole shape, from a test that runs in CI:
+
+```go
+{{#include ../../../maniflextest/expiry_test.go:expiry}}
+```
+
+**What it does not reach.** `created_at` and `updated_at` are stamped by the
+database adapter, and job scheduling — `NotBefore`, lease expiry, cron ticks —
+runs on its own wall clock. Neither takes an injected clock, so a test that
+depends on either still has to work around it.
+
 ## Databases
 
 - `SQLite()` is the default and creates a distinct in-memory database.

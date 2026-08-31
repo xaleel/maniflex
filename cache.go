@@ -35,6 +35,24 @@ type MemoryCache struct {
 	mu      sync.Mutex
 	entries map[string]memCacheEntry
 	inserts int
+	clock   Clock
+}
+
+// MemoryCacheOption configures a MemoryCache at construction.
+type MemoryCacheOption func(*MemoryCache)
+
+// WithCacheClock supplies the clock the cache measures expiry against. The
+// default is the wall clock.
+//
+// Every idempotency replay window and cached read passes through a CacheStore,
+// so a controllable clock here is what lets a test assert that a window closes
+// without waiting for it to:
+//
+//	clock := maniflextest.NewClock(time.Now())
+//	cache := maniflex.NewMemoryCache(maniflex.WithCacheClock(clock.Now))
+//	clock.Advance(25 * time.Hour)
+func WithCacheClock(clock Clock) MemoryCacheOption {
+	return func(m *MemoryCache) { m.clock = clock }
 }
 
 // memoryCachePruneEvery controls how often Set sweeps for expired entries.
@@ -47,9 +65,14 @@ type memCacheEntry struct {
 	expiresAt time.Time
 }
 
-// NewMemoryCache returns a ready-to-use in-process CacheStore.
-func NewMemoryCache() *MemoryCache {
-	return &MemoryCache{entries: make(map[string]memCacheEntry)}
+// NewMemoryCache returns a ready-to-use in-process CacheStore. With no options
+// it measures expiry against the wall clock; see WithCacheClock.
+func NewMemoryCache(opts ...MemoryCacheOption) *MemoryCache {
+	m := &MemoryCache{entries: make(map[string]memCacheEntry)}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // Get implements CacheStore.
@@ -60,7 +83,7 @@ func (m *MemoryCache) Get(_ context.Context, key string) (any, bool) {
 	if !ok {
 		return nil, false
 	}
-	if time.Now().After(e.expiresAt) {
+	if m.clock.Now().After(e.expiresAt) {
 		delete(m.entries, key)
 		return nil, false
 	}
@@ -78,7 +101,7 @@ func (m *MemoryCache) Set(_ context.Context, key string, value any, ttl time.Dur
 			m.inserts = 0
 		}
 	}
-	m.entries[key] = memCacheEntry{value: value, expiresAt: time.Now().Add(ttl)}
+	m.entries[key] = memCacheEntry{value: value, expiresAt: m.clock.Now().Add(ttl)}
 }
 
 // Delete implements CacheStore.
@@ -90,7 +113,7 @@ func (m *MemoryCache) Delete(_ context.Context, key string) {
 
 // pruneLocked removes every expired entry. Must be called with m.mu held.
 func (m *MemoryCache) pruneLocked() {
-	now := time.Now()
+	now := m.clock.Now()
 	for k, e := range m.entries {
 		if now.After(e.expiresAt) {
 			delete(m.entries, k)

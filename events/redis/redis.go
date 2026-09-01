@@ -1,5 +1,9 @@
 // Package redis provides a Redis Streams event bus adapter for maniflex events.
 //
+// Requires Redis 6.2+: the reclaim sweep uses XAUTOCLAIM. See the minimum
+// versions in docs/src/reference/compatibility.md, which states one floor for
+// every Redis-backed module.
+//
 // Events are published to individual streams keyed by event Type
 // (e.g. "myapp:invoice.created"). A hub stream ("myapp:*") receives every event
 // for subscriptions that use wildcard or multi-type patterns, enabling client-side

@@ -71,7 +71,10 @@ func (b *RateLimitBackend) fullKey(key string) string {
 // Increment atomically increments the counter for key and, on first creation,
 // pins its TTL to window. Subsequent increments within the same window do not
 // extend the TTL, giving a fixed window aligned to the first request.
-// Requires Redis 7.0+ (uses EXPIRE … NX).
+// Requires Redis 7.0+ (uses EXPIRE … NX), which is the highest requirement of
+// any Redis-backed module and so sets the floor stated in
+// docs/src/reference/compatibility.md. Changing the command below changes that
+// floor; move both together.
 func (b *RateLimitBackend) Increment(ctx context.Context, key string, window time.Duration) (int64, error) {
 	n, err := b.ops.IncrExpireNX(ctx, b.fullKey(key), window)
 	if err != nil {

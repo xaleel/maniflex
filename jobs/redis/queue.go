@@ -8,6 +8,10 @@
 // This adapter does not provide transactional outbox semantics — enqueues are
 // best-effort after the surrounding business write. Use jobs/sql when
 // atomic outbox guarantees are required.
+//
+// Requires Redis 6.2+: lease reclaim uses XAUTOCLAIM. See the minimum versions
+// in docs/src/reference/compatibility.md, which states one floor for every
+// Redis-backed module.
 package redis
 
 import (

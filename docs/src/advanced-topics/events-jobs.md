@@ -349,7 +349,8 @@ prefetch window does not.
 
 > **`events/redis` reclaims abandoned messages.** A consumer that dies
 > mid-delivery leaves its messages pending; each consumer runs a periodic
-> `XAUTOCLAIM` sweep to take them over. Tune `Options.ClaimMinIdle` (default 5m)
+> `XAUTOCLAIM` sweep to take them over (Redis 6.2+; see
+> [minimum versions](../reference/compatibility.md#minimum-versions)). Tune `Options.ClaimMinIdle` (default 5m)
 > above your slowest handler including retries — a message becomes claimable
 > while its original consumer may still be working on it, so claiming early
 > means delivering twice. `Options.ConsumerName` (default hostname+pid) must be

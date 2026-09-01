@@ -182,6 +182,23 @@ used by `db/sqlite`. Other PostgreSQL versions are widely expected to work — t
 adapter uses `lib/pq` and no version-gated syntax — but they are not tested here,
 so this page does not promise them.
 
+**Redis: 7.0.** Four modules speak Redis, and the supported floor is the highest
+requirement among them. `middleware/db/redis` sets it: its rate-limit counter
+pins a new key's TTL with `EXPIRE … NX`, so that a failure between the increment
+and the expiry cannot leave a counter with no TTL — one that never resets, and
+therefore bars a client for ever. The `NX` argument arrived in Redis 7.0.
+
+The others ask for less. `events/redis` and `jobs/redis` reclaim abandoned
+messages with `XAUTOCLAIM`, which is 6.2, and `middleware/auth/redis` uses only
+`GET` and `SET`. A deployment that leaves out `middleware/db/redis` will work on
+6.2 — but that is a configuration this page does not promise, for the same
+reason the PostgreSQL versions above are not promised.
+
+**Nothing here is proven by CI**, which runs no job against a real Redis at all.
+This floor is derived from the commands the modules issue, not observed from a
+suite, so read it as the version the code requires rather than one it is known
+to run on. Like the Go minimum, it may be raised in a minor release.
+
 ## Security support
 
 Security fixes land on the current minor release first. Once `v2.0.0` ships, the

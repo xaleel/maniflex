@@ -275,7 +275,7 @@ tables give the reasoning for each; these are the answers.
 | `events/redis` | Redis Streams. Entries are retained after reading and **trimmed at `MaxLen` (default 100,000), which drops unacked entries** | pending list, taken over by a periodic `XAUTOCLAIM` sweep (`ClaimMinIdle`, default 5m) | `Concurrency` slots; the publisher is never blocked | in-flight deliveries cancelled; whatever was unacked is reclaimed by another consumer |
 | `events/kafka` | topic retention, consumer-group offsets | replays from the last committed offset | `Concurrency` slots | uncommitted offsets replay on restart |
 | `events/nats` | JetStream — **you create the stream**; durable consumers per `Group` | unacked messages redelivered on `AckWait` | `Concurrency` slots; the JetStream callback is refused once they are taken | unacked messages redelivered |
-| `events/rabbitmq` | queue durability is yours to declare. **No reconnection: a dropped connection ends every subscription on it permanently** | unacked messages requeued when the channel closes | `Concurrency` slots, but **no `Qos`, so broker-side prefetch is unbounded** | unacked messages requeued |
+| `events/rabbitmq` | queue durability is yours to declare. Reconnects only when built with `NewWithDialer`; a bus given a connection by `New` cannot redial it, and a drop ends every subscription on it permanently | unacked messages requeued when the channel closes, then redelivered to the rebuilt subscription | `Concurrency` slots, plus a broker-side prefetch bound (`Options.Prefetch`, default `Concurrency`) | unacked messages requeued |
 | `inproc` | **none.** Nothing published before a subscription exists, or while the process is down, survives | none | bounded queue; `Publish` returns `inproc.ErrQueueFull` — the only publisher-visible backpressure here | `Close` drains in-flight handlers within `DrainTimeout` |
 
 **Ordering is the same everywhere**: no adapter serialises per key on the
@@ -304,12 +304,14 @@ map without bound. That is an unbounded failure traded against one event whose
 dead-lettering had already failed too. During a shutdown there is no later
 commit to stall, which is why that column differs.
 
-**RabbitMQ's reason is different, and temporary.** It sets no `Qos`, so
-withholding acks on a live consumer is equally unbounded. Bounding prefetch is
-tracked as a release blocker, and closing it makes withholding possible — though
-not automatically right, since with prefetch *N* a run of withheld messages
-stalls the consumer completely. Treat that cell as a known gap rather than a
-settled guarantee.
+**RabbitMQ's reason used to be unbounded prefetch.** Prefetch is bounded now,
+and the answer did not change — it got worse. Withheld messages come back only
+when the channel closes, so with prefetch *N* a run of *N* unsettled deliveries
+fills the window and the consumer receives nothing further for the life of the
+process. A handful of poison events would end consumption entirely, which is a
+heavier failure than losing those events. Per-message acknowledgement is what
+lets Redis and NATS withhold one message without blocking the next; AMQP's
+prefetch window does not.
 
 > These are behaviours, not implementation details: a change to any cell above
 > is marked **(behaviour change)** in the CHANGELOG. The Kafka and RabbitMQ
@@ -365,13 +367,31 @@ settled guarantee.
 > policy. Each event's two writes — its own stream and the hub — go out as one
 > `MULTI`/`EXEC`, so the two can never disagree about whether it happened.
 
-> **`events/rabbitmq` does not reconnect.** It is handed an `*amqp.Connection`
-> it does not own, and amqp091-go connections do not self-heal, so a connection
-> or channel drop ends every subscription on it permanently while the process
-> keeps serving. A dead subscription logs an ERROR naming the queue and calls
-> `Options.OnSubscriptionClosed`; supervise that callback and rebuild the bus on
-> a fresh connection if consumer downtime matters. Its `Publish` waits for a
-> broker confirm, so a failed publish is reported rather than assumed delivered.
+> **`events/rabbitmq` reconnects only if it owns its connection.** amqp091-go
+> connections do not self-heal, so recovering from a drop means dialing a new
+> one — which the bus can do only when it dialed the first:
+>
+> ```go
+> bus, err := rabbitmq.NewWithDialer(func() (*amqp.Connection, error) {
+>     return amqp.Dial(os.Getenv("AMQP_URL"))
+> })
+> ```
+>
+> A dropped subscription then re-declares its exchange, queue, bindings and
+> prefetch on a fresh channel and resumes, paced by `Options.ReconnectBackoff`.
+> Unacked messages were requeued when the channel closed, so it resumes from
+> them. Attempts are logged, escalating once to ERROR when the backoff reaches
+> its ceiling.
+>
+> `New` takes an `*amqp.Connection` you own and cannot replace it: a drop ends
+> every subscription on it for the life of the process while the app keeps
+> serving. That death is made loud — an ERROR naming the queue and
+> `Options.OnSubscriptionClosed` — but nothing below it brings the subscription
+> back. Prefer `NewWithDialer` for anything long-running.
+>
+> `Options.Prefetch` bounds what the broker may push at one consumer, defaulting
+> to the subscription's `Concurrency`. Its `Publish` waits for a broker confirm,
+> so a failed publish is reported rather than assumed delivered.
 
 > **Broker adapters are nested modules.** Adapters with heavy dependencies (e.g.
 > NATS) ship as their own Go modules — `go get github.com/xaleel/maniflex/events/nats`

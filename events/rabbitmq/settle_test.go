@@ -4,10 +4,10 @@ package rabbitmq
 // the cell of the delivery matrix in docs/src/advanced-topics/events-jobs.md
 // that separates RabbitMQ from Redis and NATS.
 //
-// Unlike Kafka's, this departure is contingent: it exists because the consumer
-// sets no Qos, so withholding acks on a live consumer is unbounded. Bounding
-// prefetch (blocker B2) makes withholding possible and turns this into a real
-// choice — at which point these cases fail, which is the point of them.
+// The reason differs from Kafka's. Prefetch is now bounded (blocker B2), so
+// withholding is no longer unbounded — it is worse: withheld messages come back
+// only when the channel closes, so N unsettled deliveries fill the prefetch
+// window and the consumer stops receiving anything at all.
 //
 //	go test ./events/rabbitmq/ -run TestShouldAck
 
@@ -37,10 +37,11 @@ func TestShouldAck(t *testing.T) {
 		},
 		{
 			name: "unsettled while running", settled: false, ctxErr: nil, want: true,
-			why: "this consumer sets no Qos, so prefetch is unlimited and unacked " +
-				"messages left by a running consumer accumulate without bound — the " +
-				"departure from Redis and NATS, which withhold here and redeliver. " +
-				"Revisit with B2's prefetch bound",
+			why: "withheld messages return only when the channel closes, so with a " +
+				"bounded prefetch a run of unsettled deliveries fills the window and " +
+				"the consumer stops receiving anything at all — the departure from " +
+				"Redis and NATS, whose per-message acks let them withhold one " +
+				"message without blocking the next",
 		},
 		{
 			name: "unsettled during shutdown", settled: false, ctxErr: context.Canceled, want: false,

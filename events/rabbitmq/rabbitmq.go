@@ -19,17 +19,23 @@
 // with events/outbox (which keeps the durable log in the application DB) or choose
 // a streaming broker (Redis Streams, NATS JetStream, Kafka).
 //
-// # No reconnection
+// # Reconnection
 //
-// This adapter does not reconnect. New takes a *amqp.Connection it does not own,
-// and amqp091-go connections do not self-heal, so a connection or channel drop
-// ends every subscription running on it permanently — the process keeps serving
-// and the queue silently stops being consumed.
+// amqp091-go connections do not self-heal, so recovering from a drop means
+// dialing a new one — which the bus can only do if it owns the connection.
+// Which constructor you use decides that:
 //
-// A subscription that dies logs an ERROR naming the queue, and Options
-// OnSubscriptionClosed is called so the app can alert or rebuild the bus on a
-// fresh connection. Supervise that callback if consumer downtime matters:
-// nothing below it will bring the subscription back.
+//   - NewWithDialer redials and rebuilds. A dropped subscription re-declares its
+//     exchange, queue, bindings and prefetch on a fresh channel and resumes,
+//     paced by Options.ReconnectBackoff. Prefer this for anything long-running.
+//   - New takes a *amqp.Connection you own and cannot replace it. A drop ends
+//     every subscription on it for the life of the process — the app keeps
+//     serving while the queue silently stops being consumed. The death is made
+//     loud instead: an ERROR naming the queue, and Options.OnSubscriptionClosed
+//     so you can alert or rebuild the bus yourself.
+//
+// Unacknowledged messages are requeued by the broker when the channel closes,
+// so a rebuild resumes from them rather than losing them.
 package rabbitmq
 
 import (
@@ -58,11 +64,13 @@ type Options struct {
 	// other than its Cancel being invoked — a connection or channel drop, or
 	// the queue being deleted from under it.
 	//
-	// This adapter does not reconnect: amqp091-go connections do not self-heal,
-	// and New is handed a connection it does not own and cannot redial. Without
-	// this callback a drop leaves the subscription dead while the process keeps
-	// running and looking healthy, which is the failure this exists to surface.
-	// Use it to alert, or to tear down and re-Subscribe on a fresh connection.
+	// It fires only on a bus built by New, which cannot redial a connection it
+	// does not own: without this callback a drop leaves the subscription dead
+	// while the process keeps running and looking healthy. Use it to alert, or
+	// to tear down and re-Subscribe on a fresh connection.
+	//
+	// A bus built by NewWithDialer rebuilds the subscription instead, so this is
+	// never called there — the reconnect attempts are logged.
 	//
 	// It is called once per subscription, from the subscription's own goroutine.
 	OnSubscriptionClosed func(queue string, err error)
@@ -70,14 +78,101 @@ type Options struct {
 	// ConfirmTimeout bounds how long Publish waits for the broker to confirm a
 	// message. Default: 5s.
 	ConfirmTimeout time.Duration
+
+	// Prefetch is how many unacknowledged messages the broker may have
+	// outstanding on a subscription's channel. Default: the subscription's
+	// Concurrency, so a worker is never holding more than one message.
+	//
+	// Raise it to keep workers fed when handlers are fast and the round trip to
+	// the broker is not; the cost is that many more messages in flight, which
+	// are redelivered if the consumer dies. There is deliberately no
+	// "unlimited": without a Qos the broker pushes the whole queue at one
+	// consumer, which is memory the process never agreed to spend.
+	Prefetch int
+
+	// ReconnectBackoff paces the redial attempts after a subscription's channel
+	// drops. Applies only to a bus built by NewWithDialer; the zero value uses
+	// the shared defaults in events.ReadBackoff.
+	ReconnectBackoff events.ReadBackoff
 }
 
 // Bus is an AMQP 0.9.1 event bus.
 type Bus struct {
-	conn  *amqp.Connection
+	// connMu guards conn on its own, not under mu: reopenPublishChannel holds
+	// mu while opening a channel, which has to read conn, so one mutex for both
+	// would deadlock the reconnect path.
+	connMu sync.RWMutex
+	conn   *amqp.Connection
+
 	opts  Options
 	mu    sync.Mutex
 	pubCh *amqp.Channel // shared publish channel (lazy-opened, re-opened on error)
+
+	// newConsumer opens the channel a subscription consumes on. Nil means the
+	// real AMQP channel; tests substitute a fake, which is the only way to
+	// reach the delivery, ack, and shutdown paths without a broker.
+	newConsumer func() (consumerChannel, error)
+
+	// dial redials the broker. Non-nil exactly when this bus owns its
+	// connection, which is what licenses it to rebuild a dropped subscription:
+	// a connection handed to New belongs to the caller and cannot be replaced
+	// from here.
+	dial func() (*amqp.Connection, error)
+}
+
+// consumerChannel is the set of AMQP operations one subscription performs on
+// its channel. It exists so the delivery loop can be driven by a fake, the way
+// events/redis drives its consumer through streamOps.
+type consumerChannel interface {
+	ExchangeDeclare() error
+	QueueDeclare(queue string) error
+	QueueBind(queue, bindingKey string) error
+	Qos(prefetch int) error
+	Consume(queue string) (<-chan amqp.Delivery, error)
+	NotifyClose() <-chan *amqp.Error
+	Close() error
+}
+
+// amqpConsumerChannel is the production consumerChannel, over a real channel.
+type amqpConsumerChannel struct{ ch *amqp.Channel }
+
+func (a amqpConsumerChannel) ExchangeDeclare() error { return declareExchange(a.ch) }
+
+func (a amqpConsumerChannel) QueueDeclare(queue string) error {
+	_, err := a.ch.QueueDeclare(queue, true, false, false, false, nil)
+	return err
+}
+
+func (a amqpConsumerChannel) QueueBind(queue, bindingKey string) error {
+	return a.ch.QueueBind(queue, bindingKey, exchangeName, false, nil)
+}
+
+// Qos applies per consumer rather than per channel (global=false): the bound
+// belongs to this subscription, not to whatever else shares the connection.
+func (a amqpConsumerChannel) Qos(prefetch int) error {
+	return a.ch.Qos(prefetch, 0, false)
+}
+
+func (a amqpConsumerChannel) Consume(queue string) (<-chan amqp.Delivery, error) {
+	return a.ch.Consume(queue, "", false, false, false, false, nil)
+}
+
+func (a amqpConsumerChannel) NotifyClose() <-chan *amqp.Error {
+	return a.ch.NotifyClose(make(chan *amqp.Error, 1))
+}
+
+func (a amqpConsumerChannel) Close() error { return a.ch.Close() }
+
+// openConsumer returns the channel a subscription will consume on.
+func (b *Bus) openConsumer() (consumerChannel, error) {
+	if b.newConsumer != nil {
+		return b.newConsumer()
+	}
+	ch, err := b.openChannel()
+	if err != nil {
+		return nil, err
+	}
+	return amqpConsumerChannel{ch: ch}, nil
 }
 
 // New creates a RabbitMQ Bus from an existing AMQP connection.
@@ -104,6 +199,71 @@ func New(conn *amqp.Connection, opts ...Options) (*Bus, error) {
 	}
 	b.pubCh = ch
 	return b, nil
+}
+
+// NewWithDialer creates a Bus that owns its connection, and therefore rebuilds
+// a subscription whose channel drops instead of reporting it dead.
+//
+// dial is called once now and again on every reconnect, so it must return a
+// fresh connection each time — typically a closure over amqp.Dial and your URL.
+// Close closes the connection the bus is currently holding.
+//
+//	bus, err := rabbitmq.NewWithDialer(func() (*amqp.Connection, error) {
+//	    return amqp.Dial(os.Getenv("AMQP_URL"))
+//	})
+//
+// Prefer this over New for anything long-running. amqp091-go connections do not
+// self-heal, so a bus built by New stops consuming for the life of the process
+// the first time its connection drops.
+func NewWithDialer(dial func() (*amqp.Connection, error), opts ...Options) (*Bus, error) {
+	if dial == nil {
+		return nil, fmt.Errorf("rabbitmq: NewWithDialer needs a dialer")
+	}
+	conn, err := dial()
+	if err != nil {
+		return nil, fmt.Errorf("rabbitmq: dial: %w", err)
+	}
+	b, err := New(conn, opts...)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	b.dial = dial
+	return b, nil
+}
+
+// redial replaces the connection this bus holds. Only a bus built by
+// NewWithDialer has one to replace.
+func (b *Bus) redial() error {
+	if b.dial == nil {
+		return fmt.Errorf("rabbitmq: this bus does not own its connection")
+	}
+	conn, err := b.dial()
+	if err != nil {
+		return fmt.Errorf("rabbitmq: dial: %w", err)
+	}
+
+	b.connMu.Lock()
+	old := b.conn
+	b.conn = conn
+	b.connMu.Unlock()
+
+	// The publish channel belonged to the old connection and died with it, so
+	// a reconnect that only restored consumers would leave Publish failing for
+	// ever against a channel that can never recover.
+	b.reopenPublishChannel()
+
+	if old != nil {
+		old.Close()
+	}
+	return nil
+}
+
+// currentConn returns the connection the bus is holding, which redial replaces.
+func (b *Bus) currentConn() *amqp.Connection {
+	b.connMu.RLock()
+	defer b.connMu.RUnlock()
+	return b.conn
 }
 
 // Publish routes e to the topic exchange with routing key = e.Type.
@@ -205,94 +365,216 @@ func (b *Bus) Subscribe(ctx context.Context, sub events.Subscription) (events.Ca
 		sub.Patterns = []string{"*"}
 	}
 
-	ch, err := b.openChannel()
-	if err != nil {
-		return nil, err
-	}
-	if err := declareExchange(ch); err != nil {
-		ch.Close()
-		return nil, err
-	}
-
-	// Declare a durable queue for this consumer group.
+	// A durable queue per consumer group.
 	queue := fmt.Sprintf("maniflex.%s", sub.Group)
-	if _, err := ch.QueueDeclare(queue, true, false, false, false, nil); err != nil {
-		ch.Close()
-		return nil, fmt.Errorf("rabbitmq: declare queue: %w", err)
-	}
 
-	// Bind the queue to each pattern.
-	for _, pattern := range sub.Patterns {
-		bindKey := patternToBindingKey(pattern)
-		if err := ch.QueueBind(queue, bindKey, exchangeName, false, nil); err != nil {
-			ch.Close()
-			return nil, fmt.Errorf("rabbitmq: bind %q: %w", bindKey, err)
-		}
-	}
-
-	deliveries, err := ch.Consume(queue, "", false, false, false, false, nil)
+	// The first attempt is the caller's to see: a queue that cannot be declared
+	// or bound is a configuration error, and reporting it as a failed Subscribe
+	// is more useful than retrying it forever in the background.
+	ch, deliveries, err := b.openSubscription(sub, queue)
 	if err != nil {
-		ch.Close()
-		return nil, fmt.Errorf("rabbitmq: consume: %w", err)
+		return nil, err
 	}
-
-	// The broker's reason for closing this channel. Read only after deliveries
-	// closes, by which point amqp091-go has already delivered the error (or
-	// closed the channel, giving nil for a clean shutdown).
-	closeErr := ch.NotifyClose(make(chan *amqp.Error, 1))
 
 	cctx, cancel := context.WithCancel(ctx)
-	sem := make(chan struct{}, sub.Concurrency)
-	var wg sync.WaitGroup
-
+	done := make(chan struct{})
 	go func() {
-		defer ch.Close()
-		for {
-			select {
-			case <-cctx.Done():
-				wg.Wait()
-				return
-			case msg, ok := <-deliveries:
-				if !ok {
-					// The delivery channel closed on us. Any connection or
-					// channel drop lands here, and this adapter does not
-					// reconnect — so the subscription is now dead for the life
-					// of the process while everything else keeps running.
-					// Returning quietly, as this used to, made a total consumer
-					// outage indistinguishable from a healthy idle service
-					// (audit EV-5).
-					wg.Wait()
-					b.reportSubscriptionClosed(cctx, queue, closeErr)
-					return
-				}
-				var e events.Event
-				if err := json.Unmarshal(msg.Body, &e); err != nil {
-					msg.Nack(false, false)
-					continue
-				}
-				if !matchesAny(sub.Patterns, e.Type) {
-					msg.Ack(false)
-					continue
-				}
-				sem <- struct{}{}
-				wg.Add(1)
-				go func() {
-					defer func() {
-						<-sem
-						wg.Done()
-					}()
-					if shouldAck(events.DeliverWithRetry(cctx, b, sub, e), cctx.Err()) {
-						msg.Ack(false)
-					}
-				}()
-			}
-		}
+		defer close(done)
+		b.consume(cctx, sub, queue, ch, deliveries)
 	}()
 
+	// Cancel waits for the loop, not merely for the handlers: with reconnection
+	// the loop can be between attempts, and returning early would leave it to
+	// open a channel after the caller believed the subscription was gone.
 	return func() {
 		cancel()
-		wg.Wait()
+		<-done
 	}, nil
+}
+
+// openSubscription opens a channel and gets it consuming: exchange, queue,
+// bindings, prefetch bound, Consume. Every reconnect repeats the whole
+// sequence, because a fresh channel knows none of it.
+func (b *Bus) openSubscription(sub events.Subscription, queue string) (consumerChannel, <-chan amqp.Delivery, error) {
+	ch, err := b.openConsumer()
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := ch.ExchangeDeclare(); err != nil {
+		ch.Close()
+		return nil, nil, err
+	}
+	if err := ch.QueueDeclare(queue); err != nil {
+		ch.Close()
+		return nil, nil, fmt.Errorf("rabbitmq: declare queue: %w", err)
+	}
+	for _, pattern := range sub.Patterns {
+		bindKey := patternToBindingKey(pattern)
+		if err := ch.QueueBind(queue, bindKey); err != nil {
+			ch.Close()
+			return nil, nil, fmt.Errorf("rabbitmq: bind %q: %w", bindKey, err)
+		}
+	}
+	// Bound what the broker may push at this consumer. Without it prefetch is
+	// unlimited: the broker sends the whole queue, the process holds every
+	// message it has not yet acked, and a backlog it never asked for becomes
+	// its memory problem (blocker B2).
+	if err := ch.Qos(b.prefetchFor(sub)); err != nil {
+		ch.Close()
+		return nil, nil, fmt.Errorf("rabbitmq: set prefetch: %w", err)
+	}
+	deliveries, err := ch.Consume(queue)
+	if err != nil {
+		ch.Close()
+		return nil, nil, fmt.Errorf("rabbitmq: consume: %w", err)
+	}
+	return ch, deliveries, nil
+}
+
+// consume runs the delivery loop, rebuilding the subscription when the broker
+// drops it and this bus owns its connection. A bus built by New does not, so
+// there it reports the death and stops — the old behaviour, kept because a
+// connection the caller owns cannot be replaced from here.
+func (b *Bus) consume(cctx context.Context, sub events.Subscription, queue string, ch consumerChannel, deliveries <-chan amqp.Delivery) {
+	backoff := b.opts.ReconnectBackoff
+	for {
+		// The broker's reason for closing this channel. Read only after
+		// deliveries closes, by which point amqp091-go has already delivered
+		// the error (or closed the channel, giving nil for a clean shutdown).
+		closeErr := ch.NotifyClose()
+		dropped := b.session(cctx, sub, ch, deliveries)
+		ch.Close()
+
+		switch afterSession(dropped, cctx.Err(), b.dial != nil) {
+		case stopQuietly:
+			return
+		case reportAndStop:
+			b.reportSubscriptionClosed(cctx, queue, closeErr)
+			return
+		}
+
+		next, nextDeliveries, ok := b.reopenSubscription(cctx, sub, queue, &backoff)
+		if !ok {
+			return
+		}
+		ch, deliveries = next, nextDeliveries
+	}
+}
+
+// sessionOutcome is what to do once a consume session has ended.
+type sessionOutcome int
+
+const (
+	// stopQuietly: the caller asked for this. Cancel closes the delivery
+	// channel too, so a shutdown can surface as a drop — and treating that as
+	// an outage would both alert falsely and open a channel after the caller
+	// believed the subscription was gone.
+	stopQuietly sessionOutcome = iota
+	// reportAndStop: the broker dropped us and this bus cannot redial, because
+	// its connection belongs to whoever passed it to New.
+	reportAndStop
+	// rebuild: the broker dropped us and this bus owns its connection.
+	rebuild
+)
+
+// afterSession decides what a finished session means. It is a function rather
+// than three conditions inline because the cancellation arm is unreachable to
+// test through the loop: Cancel and a channel drop can be ready at the same
+// instant, and which one a select picks is not the caller's to arrange.
+func afterSession(dropped bool, ctxErr error, canRedial bool) sessionOutcome {
+	if !dropped || ctxErr != nil {
+		return stopQuietly
+	}
+	if !canRedial {
+		return reportAndStop
+	}
+	return rebuild
+}
+
+// reopenSubscription redials and rebuilds until it succeeds or the context
+// ends. It never gives up on its own: a broker that is down is expected back,
+// and a consumer that stopped trying is the outage this blocker was about.
+func (b *Bus) reopenSubscription(cctx context.Context, sub events.Subscription, queue string, backoff *events.ReadBackoff) (consumerChannel, <-chan amqp.Delivery, bool) {
+	for {
+		attempt, delay, escalate := backoff.Next()
+		if !backoff.Wait(cctx, delay) {
+			return nil, nil, false
+		}
+		if err := b.redial(); err != nil {
+			logReconnectFailure(queue, attempt, escalate, err)
+			continue
+		}
+		ch, deliveries, err := b.openSubscription(sub, queue)
+		if err != nil {
+			logReconnectFailure(queue, attempt, escalate, err)
+			continue
+		}
+		slog.Default().Info("rabbitmq: subscription resumed",
+			slog.String("queue", queue),
+			slog.Int("attempt", attempt))
+		backoff.Reset()
+		return ch, deliveries, true
+	}
+}
+
+// logReconnectFailure reports a failed rebuild. It escalates once, when the
+// backoff first reaches its ceiling — the point at which a run of failures
+// stopped looking like a blip — and stays at WARN after, so a long outage does
+// not bury the logs in ERRORs. Same shape as the kafka and redis read loops.
+func logReconnectFailure(queue string, attempt int, escalate bool, err error) {
+	attrs := []any{
+		slog.String("queue", queue),
+		slog.Int("attempt", attempt),
+		slog.String("error", err.Error()),
+	}
+	if escalate {
+		slog.Default().Error("rabbitmq: subscription still down after repeated reconnects",
+			append(attrs, slog.String("impact", "events routed to this queue are not being consumed"))...)
+		return
+	}
+	slog.Default().Warn("rabbitmq: reconnect failed, retrying", attrs...)
+}
+
+// session consumes until the delivery channel closes or the context ends. It
+// reports true when the channel closed under it — the drop a reconnect answers.
+func (b *Bus) session(cctx context.Context, sub events.Subscription, ch consumerChannel, deliveries <-chan amqp.Delivery) (dropped bool) {
+	sem := make(chan struct{}, sub.Concurrency)
+	var wg sync.WaitGroup
+	defer wg.Wait()
+
+	for {
+		select {
+		case <-cctx.Done():
+			return false
+		case msg, ok := <-deliveries:
+			if !ok {
+				// Any connection or channel drop lands here. Returning quietly,
+				// as this used to, made a total consumer outage
+				// indistinguishable from a healthy idle service (audit EV-5).
+				return true
+			}
+			var e events.Event
+			if err := json.Unmarshal(msg.Body, &e); err != nil {
+				msg.Nack(false, false)
+				continue
+			}
+			if !matchesAny(sub.Patterns, e.Type) {
+				msg.Ack(false)
+				continue
+			}
+			sem <- struct{}{}
+			wg.Add(1)
+			go func() {
+				defer func() {
+					<-sem
+					wg.Done()
+				}()
+				if shouldAck(events.DeliverWithRetry(cctx, b, sub, e), cctx.Err()) {
+					msg.Ack(false)
+				}
+			}()
+		}
+	}
 }
 
 // reportSubscriptionClosed announces that a subscription has stopped consuming.
@@ -329,18 +611,29 @@ func (b *Bus) reportSubscriptionClosed(ctx context.Context, queue string, closeE
 	}
 }
 
-// Close closes the underlying AMQP connection.
+// Close closes the underlying AMQP connection — the one the bus is currently
+// holding, which for a NewWithDialer bus may not be the one it started with.
 func (b *Bus) Close() error {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	if b.pubCh != nil {
 		b.pubCh.Close()
+		b.pubCh = nil
 	}
-	return b.conn.Close()
+	b.mu.Unlock()
+
+	conn := b.currentConn()
+	if conn == nil {
+		return nil
+	}
+	return conn.Close()
 }
 
 func (b *Bus) openChannel() (*amqp.Channel, error) {
-	ch, err := b.conn.Channel()
+	conn := b.currentConn()
+	if conn == nil {
+		return nil, fmt.Errorf("rabbitmq: no connection")
+	}
+	ch, err := conn.Channel()
 	if err != nil {
 		return nil, fmt.Errorf("rabbitmq: open channel: %w", err)
 	}
@@ -369,18 +662,32 @@ func declareExchange(ch *amqp.Channel) error {
 
 // patternToBindingKey converts a glob pattern to an AMQP topic binding key.
 // "*" → "#" (all), "invoice.*" → "invoice.*", "invoice.created" → "invoice.created".
+// prefetchFor returns the unacknowledged-message bound for one subscription:
+// Options.Prefetch when set, otherwise the subscription's Concurrency, so a
+// worker holds at most one message and the bound rises with the workers that
+// have to drain it.
+func (b *Bus) prefetchFor(sub events.Subscription) int {
+	if b.opts.Prefetch > 0 {
+		return b.opts.Prefetch
+	}
+	return sub.Concurrency
+}
+
 // shouldAck decides whether a delivered message is acknowledged.
 //
 // As Kafka: an unsettled delivery on a consumer that keeps running is acked
-// anyway. The reason here is different, and contingent. This consumer sets no
-// Qos, so prefetch is unlimited and unacked messages left by a running consumer
-// accumulate without bound; on shutdown they are simply requeued when the
-// channel closes, which is the case worth fixing (audit C5).
+// anyway, and the event whose dead-lettering also failed is lost. Redis and
+// NATS withhold here and let the broker redeliver.
 //
-// Bounding prefetch (release blocker B2) removes that reason and makes
-// withholding possible — at which point whether to withhold becomes a real
-// choice, because with prefetch N a run of withheld messages stalls the
-// consumer entirely. Redis and NATS withhold here and redeliver.
+// The reason used to be that prefetch was unlimited, so withheld messages
+// accumulated without bound. Prefetch is now bounded (blocker B2), and the
+// answer did not change — it got worse. Withheld messages are redelivered only
+// when the channel closes, so with prefetch N a run of N unsettled deliveries
+// fills the window and the consumer receives nothing further, for the life of
+// the process. A handful of poison events would end consumption entirely, which
+// is a heavier failure than losing the events themselves. Per-message
+// acknowledgement is what lets redis and nats withhold one message without
+// blocking the next; AMQP's prefetch window does not.
 //
 // This is a published delivery guarantee — see the adapter matrix in
 // docs/src/advanced-topics/events-jobs.md — so a change here is a behaviour

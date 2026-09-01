@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.12.0 (2026-09-01)
 
 - **Feature:** `?count=false` declines the `COUNT` behind `meta.total`. It runs over the whole filtered set on every page and is often the more expensive half of a list request, yet a client that only pages forward never reads the number. The response then omits `total` and `pages` and carries `has_more`, derived from one row read past the page — absent keys rather than zeroes, so “not counted” cannot be read as “no rows”. `?cursor=` never counted, so `count=true` there is refused rather than answered with a shape that has no total in it.
 - **Performance:** an export no longer runs a `COUNT` it never reads. `/{table}/export` reuses the list query, so it counted the whole filtered set before streaming it — a second scan of the largest result set the framework serves, for a `meta.total` no export response has ever carried.

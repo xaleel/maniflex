@@ -119,7 +119,7 @@ Within v1.x, for the routes maniflex generates:
   `/{id}/restore`, `/{id}/history`, `/{id}/{field}`) — keep their paths and
   methods, under whatever `PathPrefix` you configure.
 - **Query parameters** keep their names and semantics: `filter` (and its
-  `filter[N]` group form), `sort`, `page`, `limit`, `cursor`, `include`,
+  `filter[N]` group form), `sort`, `page`, `limit`, `cursor`, `count`, `include`,
   `select`, `format`, `aggregate`, and `q`/`models` on global search. See
   [Querying](../using-the-api/querying.md).
 - **Envelopes** keep their shape: `{"data": ...}` on success, `{"meta": ...}` on

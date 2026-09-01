@@ -1839,25 +1839,27 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 		// pagination is disabled (Limit is overridden to MaxExportRows). The
 		// response step branches on Operation to choose the wire format.
 		q := ctx.Query
+		exportRows := 0
 		if ctx.Operation == OpExport {
-			cap := model.Config.MaxExportRows
-			if cap <= 0 {
-				cap = DefaultMaxExportRows
-			}
-			q = &QueryParams{
-				Page:     1,
-				Limit:    cap + 1, // +1 sentinel so we can detect overrun
-				Filters:  ctx.Query.Filters,
-				Sorts:    ctx.Query.Sorts,
-				Includes: ctx.Query.Includes,
-				Fields:   ctx.Query.Fields,
-				Search:   ctx.Query.Search, // honour ?q= full-text search on exports too
-			}
+			q, exportRows = exportQuery(model, ctx.Query)
 		}
 		var items []any
 		var total int64
-		items, total, dbErr = exec.findManyTyped(ctx.Ctx, model, q)
+		// A list that declined its count fetches one row past the page, so the
+		// response can still say whether a next page exists. An export carries no
+		// meta and has a +1 sentinel of its own, so it never takes the probe.
+		fetch := q
+		if ctx.Operation == OpList {
+			fetch = overFetch(q)
+		}
+		items, total, dbErr = exec.findManyTyped(ctx.Ctx, model, fetch)
+		hasMore := false
 		if dbErr == nil {
+			if ctx.Operation == OpList {
+				// Trimmed before the rows are decrypted or marshalled: the probe row
+				// exists to be counted, not to be rendered.
+				items, hasMore = trimOverFetch(items, q)
+			}
 			// Encrypted models decrypt on a map view; the common path keeps the
 			// typed *T records for marshalRecord.
 			if model.HasEncryptedFields() {
@@ -1874,18 +1876,12 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 					items[i] = row
 				}
 			}
-			if ctx.Operation == OpExport {
-				cap := model.Config.MaxExportRows
-				if cap <= 0 {
-					cap = DefaultMaxExportRows
-				}
-				if len(items) > cap {
-					ctx.Abort(http.StatusRequestEntityTooLarge, "EXPORT_TOO_LARGE",
-						fmt.Sprintf("export exceeds %d rows; tighten filters", cap))
-					return nil
-				}
+			if ctx.Operation == OpExport && len(items) > exportRows {
+				ctx.Abort(http.StatusRequestEntityTooLarge, "EXPORT_TOO_LARGE",
+					fmt.Sprintf("export exceeds %d rows; tighten filters", exportRows))
+				return nil
 			}
-			ctx.DBResult = &ListResult{Items: items, Total: total, Query: q}
+			ctx.DBResult = &ListResult{Items: items, Total: total, Query: q, HasMore: hasMore}
 		}
 
 	case OpReadHistory:
@@ -2423,6 +2419,15 @@ func (s *defaultSteps) listResponse(ctx *ServerContext, model *ModelMeta) {
 			Limit:      q.Limit,
 			NextCursor: c.NextCursor,
 			HasMore:    c.HasMore,
+		}
+	} else if q.SkipCount {
+		// ?count=false: no COUNT ran, so there is no total and no page count to
+		// derive from it. has_more comes from the probe row the DB step trimmed.
+		meta = &ResponseMeta{
+			Uncounted: true,
+			Page:      q.Page,
+			Limit:     q.Limit,
+			HasMore:   lr.HasMore,
 		}
 	} else {
 		pages := lr.Total / int64(q.Limit)

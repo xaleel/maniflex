@@ -98,6 +98,11 @@ type ListResult struct {
 	Items []any
 	Total int64
 	Query *QueryParams
+
+	// HasMore reports whether a row exists past this page. It is read only for
+	// a page whose Query declined the count (?count=false), where it takes the
+	// place of total and pages in the response meta. Total is -1 on those pages.
+	HasMore bool
 }
 
 // normalizeQuery fills in the pagination values the list response needs and

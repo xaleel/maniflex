@@ -1164,6 +1164,28 @@ func countQuerySQL(table, joinSQL, whereSQL string) string {
 	return fmt.Sprintf("SELECT COUNT(*) FROM %s%s%s", q(table), joinSQL, whereSQL)
 }
 
+// countMatches returns the total for meta.total, or -1 when the query does not
+// want one — in which case no statement is issued at all. That is the point:
+// the count scans the whole filtered set on every page, so it is often the more
+// expensive half of a list request, and skipping the number without skipping the
+// scan would save nothing.
+//
+// -1 rather than 0, because 0 is what an empty result set legitimately counts to.
+func (a *Adapter) countMatches(ctx context.Context, model *maniflex.ModelMeta, qp *maniflex.QueryParams, joinSQL string) (int64, error) {
+	if !qp.WantsTotal() {
+		return -1, nil
+	}
+	cp := &ph{driver: a.driver}
+	countConds := allWhereConds(model, qp.Filters, a.driver, cp)
+	countConds = appendSearchCond(countConds, model, qp, a.driver, cp)
+	countQuery := countQuerySQL(model.TableName, joinSQL, condToSQL(countConds))
+	var total int64
+	if err := a.readDb.QueryRowContext(ctx, countQuery, cp.args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count: %w", err)
+	}
+	return total, nil
+}
+
 func (a *Adapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp *maniflex.QueryParams) ([]any, int64, error) {
 	if model.GoType == nil {
 		results, total, err := a.findManyMap(ctx, model, qp)
@@ -1180,17 +1202,9 @@ func (a *Adapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp *m
 
 	joinSQL := buildJoins(model, qp.Filters, qp.Sorts) + ftsJoinSQL(model, qp, a.driver)
 
-	// ─ count ─ (skipped in cursor mode — keyset pagination reports has_more.)
-	total := int64(-1)
-	if qp.Cursor == nil {
-		cp := &ph{driver: a.driver}
-		countConds := allWhereConds(model, qp.Filters, a.driver, cp)
-		countConds = appendSearchCond(countConds, model, qp, a.driver, cp)
-		countWhere := condToSQL(countConds)
-		countQuery := countQuerySQL(model.TableName, joinSQL, countWhere)
-		if err := a.readDb.QueryRowContext(ctx, countQuery, cp.args...).Scan(&total); err != nil {
-			return nil, 0, fmt.Errorf("count: %w", err)
-		}
+	total, err := a.countMatches(ctx, model, qp, joinSQL)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// ─ data ─
@@ -1240,16 +1254,9 @@ func (a *Adapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp *m
 func (a *Adapter) findManyMap(ctx context.Context, model *maniflex.ModelMeta, qp *maniflex.QueryParams) ([]map[string]any, int64, error) {
 	joinSQL := buildJoins(model, qp.Filters, qp.Sorts) + ftsJoinSQL(model, qp, a.driver)
 
-	total := int64(-1)
-	if qp.Cursor == nil {
-		cp := &ph{driver: a.driver}
-		countConds := allWhereConds(model, qp.Filters, a.driver, cp)
-		countConds = appendSearchCond(countConds, model, qp, a.driver, cp)
-		countWhere := condToSQL(countConds)
-		countQuery := countQuerySQL(model.TableName, joinSQL, countWhere)
-		if err := a.readDb.QueryRowContext(ctx, countQuery, cp.args...).Scan(&total); err != nil {
-			return nil, 0, fmt.Errorf("count: %w", err)
-		}
+	total, err := a.countMatches(ctx, model, qp, joinSQL)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	dp := &ph{driver: a.driver}

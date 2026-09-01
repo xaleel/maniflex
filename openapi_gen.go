@@ -556,7 +556,7 @@ func exportQueryParameters(m *ModelMeta) []OASParameter {
 	var out []OASParameter
 	for _, p := range listParameters(m) {
 		switch p.Name {
-		case "page", "limit", "cursor":
+		case "page", "limit", "cursor", "count":
 			continue
 		}
 		out = append(out, p)
@@ -851,6 +851,14 @@ func listParameters(m *ModelMeta) []OASParameter {
 			Description: "Items per page (max 200)",
 			Schema:      &OASSchema{Type: "integer", Minimum: float64ptr(1), Maximum: float64ptr(200)},
 		},
+		{
+			Name: "count", In: "query",
+			Description: "Set false to skip the total-row count, which is a query over " +
+				"the whole filtered set on every page. The response then omits " +
+				"meta.total and meta.pages and carries meta.has_more instead. " +
+				"Cannot be combined with ?cursor=, which never counts.",
+			Schema: &OASSchema{Type: "boolean"},
+		},
 	}
 
 	// Cursor (keyset) pagination — only for models that declare a cursor field.
@@ -973,13 +981,19 @@ func listEnvelopeSchema(modelName string) *OASSchema {
 				Type:  "array",
 				Items: ref(modelName),
 			},
+			// meta is one of three shapes, so every key is optional: an offset page
+			// carries total/page/limit/pages, a cursor page carries
+			// limit/next_cursor/has_more, and an offset page that sent ?count=false
+			// carries page/limit/has_more.
 			"meta": {
 				Type: "object",
 				Properties: map[string]*OASSchema{
-					"total": {Type: "integer"},
-					"page":  {Type: "integer"},
-					"limit": {Type: "integer"},
-					"pages": {Type: "integer"},
+					"total":       {Type: "integer"},
+					"page":        {Type: "integer"},
+					"limit":       {Type: "integer"},
+					"pages":       {Type: "integer"},
+					"has_more":    {Type: "boolean"},
+					"next_cursor": {Type: "string"},
 				},
 			},
 		},

@@ -10,12 +10,12 @@ A successful single-row response — `OpRead`, `OpCreate`, `OpUpdate`:
 
 ```json
 {
-  "data": {
-    "id": "8c1a…",
-    "title": "First post",
-    "created_at": "2026-05-19T12:34:56Z",
-    "updated_at": "2026-05-19T12:34:56Z"
-  }
+	"data": {
+		"id": "8c1a…",
+		"title": "First post",
+		"created_at": "2026-05-19T12:34:56Z",
+		"updated_at": "2026-05-19T12:34:56Z"
+	}
 }
 ```
 
@@ -36,12 +36,12 @@ A successful list response carries the same `data` key plus a `meta` block:
 }
 ```
 
-| `meta` field | Meaning |
-|---|---|
-| `total` | total matching rows across all pages |
-| `page` | page number returned (1-based) |
-| `limit` | rows per page |
-| `pages` | total page count, computed as `ceil(total/limit)` |
+| `meta` field | Meaning                                           |
+| ------------ | ------------------------------------------------- |
+| `total`      | total matching rows across all pages              |
+| `page`       | page number returned (1-based)                    |
+| `limit`      | rows per page                                     |
+| `pages`      | total page count, computed as `ceil(total/limit)` |
 
 When a request uses [cursor (keyset) pagination](querying.md#cursor-keyset-pagination)
 (`?cursor=`), the `meta` block takes a different shape — no `total`/`page`/`pages`
@@ -51,6 +51,15 @@ When a request uses [cursor (keyset) pagination](querying.md#cursor-keyset-pagin
 { "data": [ ... ], "meta": { "limit": 20, "next_cursor": "eyJ2Ijoi...", "has_more": true } }
 ```
 
+With [`?count=false`](querying.md#count) - `total` and `pages` are absent since nothing is counted, replaced with `has_more`:
+
+```json
+{ "data": [ ... ], "meta": { "page": 2, "limit": 20, "has_more": true } }
+```
+
+So `meta` is a union of three shapes and a client should read its keys rather
+than assume them: `total` is present only when a count ran.
+
 `DELETE` returns `204 No Content` with no body.
 
 ## Error envelope
@@ -59,21 +68,21 @@ Every error response uses:
 
 ```json
 {
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "one or more fields failed validation",
-    "details": [
-      { "field": "email",    "message": "field \"email\" is required" },
-      { "field": "password", "message": "must be at least 8 characters" }
-    ]
-  }
+	"error": {
+		"code": "VALIDATION_ERROR",
+		"message": "one or more fields failed validation",
+		"details": [
+			{ "field": "email", "message": "field \"email\" is required" },
+			{ "field": "password", "message": "must be at least 8 characters" }
+		]
+	}
 }
 ```
 
-| Field | Meaning |
-|---|---|
-| `code` | machine-readable identifier (e.g. `NOT_FOUND`, `CONFLICT`) |
-| `message` | human-readable summary |
+| Field     | Meaning                                                                                       |
+| --------- | --------------------------------------------------------------------------------------------- |
+| `code`    | machine-readable identifier (e.g. `NOT_FOUND`, `CONFLICT`)                                    |
+| `message` | human-readable summary                                                                        |
 | `details` | optional structured payload — an **array** of `{field, message}` objects for per-field errors |
 
 `details` is an array wherever it is present, including on a `409 CONFLICT` from
@@ -85,11 +94,22 @@ A **composite** unique constraint contributes one entry per column, so a form ca
 highlight every input involved:
 
 ```json
-{"error": {"code": "CONFLICT", "message": "unique constraint violation",
-  "details": [
-    {"field": "phone_number", "message": "the combination of phone_number, owner_id is already taken"},
-    {"field": "owner_id",     "message": "the combination of phone_number, owner_id is already taken"}
-  ]}}
+{
+	"error": {
+		"code": "CONFLICT",
+		"message": "unique constraint violation",
+		"details": [
+			{
+				"field": "phone_number",
+				"message": "the combination of phone_number, owner_id is already taken"
+			},
+			{
+				"field": "owner_id",
+				"message": "the combination of phone_number, owner_id is already taken"
+			}
+		]
+	}
+}
 ```
 
 The message names the combination rather than a column because neither column is
@@ -99,13 +119,13 @@ The catalogue of built-in codes is in [Error Handling](../the-request-pipeline/e
 
 ## Status codes
 
-| Operation | Success | Notable errors |
-|---|---|---|
-| `OpList` | `200 OK` | `400 INVALID_QUERY` |
-| `OpRead` | `200 OK` | `404 NOT_FOUND` |
-| `OpCreate` | `201 Created` | `400 INVALID_JSON`, `409 CONFLICT`, `422 VALIDATION_ERROR` |
-| `OpUpdate` | `200 OK` | `404 NOT_FOUND`, `409 CONFLICT`, `422 VALIDATION_ERROR` |
-| `OpDelete` | `204 No Content` | `404 NOT_FOUND` |
+| Operation  | Success          | Notable errors                                             |
+| ---------- | ---------------- | ---------------------------------------------------------- |
+| `OpList`   | `200 OK`         | `400 INVALID_QUERY`                                        |
+| `OpRead`   | `200 OK`         | `404 NOT_FOUND`                                            |
+| `OpCreate` | `201 Created`    | `400 INVALID_JSON`, `409 CONFLICT`, `422 VALIDATION_ERROR` |
+| `OpUpdate` | `200 OK`         | `404 NOT_FOUND`, `409 CONFLICT`, `422 VALIDATION_ERROR`    |
+| `OpDelete` | `204 No Content` | `404 NOT_FOUND`                                            |
 
 `HEAD` mirrors the `GET` for the same URL with the body suppressed: same status
 (including `404` for a record that does not exist), same headers, same middleware
@@ -118,11 +138,11 @@ route accepts.
 
 Every response carries:
 
-| Header | Source |
-|---|---|
-| `Content-Type: application/json` | always |
-| `X-Request-Id` | echoed from chi's `RequestID` middleware |
-| `X-Service-Name` | when `Config.ServiceName` is set |
+| Header                           | Source                                   |
+| -------------------------------- | ---------------------------------------- |
+| `Content-Type: application/json` | always                                   |
+| `X-Request-Id`                   | echoed from chi's `RequestID` middleware |
+| `X-Service-Name`                 | when `Config.ServiceName` is set         |
 
 Custom middleware can add more — see [Response Middleware](../middleware-catalogue/response.md)
 for `AddHeader`, `CORSHeaders`, `Cache`, and friends.
@@ -171,6 +191,7 @@ Computed fields:
 > `ctx.Tx` when one is open, so a computed field that reads while the
 > request is in a transaction is exactly this case. Resolve such a field
 > with `AddBatchComputedField`, which runs once and sequentially.
+
 - **Appear in the OpenAPI spec** as read-only properties of the model's
   response schema (never in a create or update body).
 

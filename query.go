@@ -93,16 +93,47 @@ type QueryParams struct {
 	// with a WHERE bound instead of LIMIT/OFFSET, and skips the COUNT. Set by
 	// ParseQueryParams when ?cursor= is present on a cursor-enabled model.
 	Cursor *CursorParams
+
+	// SkipCount drops the COUNT that fills meta.total on an offset list, what
+	// ?count=false asks for. The count runs over the whole filtered set on every
+	// page, so on a large table it can cost more than the page itself, and a
+	// client that only pages forward never reads the number it paid for.
+	//
+	// False — the zero value — counts, which is what every QueryParams built
+	// outside the HTTP parser wants. Read it through WantsTotal rather than
+	// directly: cursor mode already skips the count for its own reasons.
+	SkipCount bool
+
+	// offset, when positive, is the row offset Offset() reports instead of the
+	// one Page and Limit imply. Set only by overFetch, whose probe query reads
+	// one row further than the page without starting one row later.
+	offset int
+}
+
+// WantsTotal reports whether a list query should run the COUNT that fills
+// meta.total. A DBAdapter that skips it returns -1 as the total, which is
+// distinguishable from the 0 an empty result set counts to.
+//
+// Both reasons to skip are collected here so an adapter has one question to
+// ask: keyset pagination reports has_more instead of a total, and ?count=false
+// declines the count on an offset page.
+func (q *QueryParams) WantsTotal() bool {
+	return q == nil || (q.Cursor == nil && !q.SkipCount)
 }
 
 // Offset returns the DB offset for the current page. Hand-built QueryParams
 // outside the HTTP parser saturate at MaxInt instead of wrapping negative.
 func (q *QueryParams) Offset() int {
-	if q == nil || q.Page <= 1 || q.Limit <= 0 {
+	if q == nil {
+		return 0
+	}
+	if q.offset > 0 {
+		return q.offset
+	}
+	if q.Page <= 1 || q.Limit <= 0 {
 		return 0
 	}
 	pageIndex := q.Page - 1
-	maxInt := int(^uint(0) >> 1)
 	if pageIndex > maxInt/q.Limit {
 		return maxInt
 	}
@@ -334,6 +365,25 @@ func parseQueryParams(r *http.Request, model *ModelMeta, reg RegistryAccessor, l
 		if len(q.Fields) > 0 {
 			q.Fields = ensureCols(q.Fields, model.CursorField, "id")
 		}
+	}
+
+	// ── count (total suppression) ──────────────────────────────────────────
+	// ?count=false drops the COUNT behind meta.total, and with it meta.pages;
+	// the page reports has_more instead. Parsed after the cursor block because
+	// the two overlap.
+	if raw, ok := query["count"]; ok {
+		want, valid := parseBoolWord(raw[len(raw)-1])
+		if !valid {
+			return nil, fmt.Errorf("invalid count %q (want true or false)", raw[len(raw)-1])
+		}
+		// Keyset pagination has no total to give. Skipping it is what already
+		// happens, so ?count=false agrees; ?count=true asks for a number the
+		// cursor response cannot carry, and answering it silently would look to
+		// the client exactly like a total that happened to be missing.
+		if want && q.Cursor != nil {
+			return nil, fmt.Errorf("?count=true cannot be combined with ?cursor= pagination, which reports has_more instead of a total")
+		}
+		q.SkipCount = !want
 	}
 
 	return q, nil

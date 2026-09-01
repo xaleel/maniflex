@@ -223,6 +223,25 @@ func (t *txAdapter) FindByIDForUpdate(ctx context.Context, model *maniflex.Model
 
 // ── FindMany ─────────────────────────────────────────────────────────────────
 
+// countMatches is Adapter.countMatches on the transaction's connection: the
+// total for meta.total, or -1 with no statement issued when the query does not
+// want one (cursor mode, or ?count=false). A list served inside a transaction
+// takes this path rather than the adapter's, so the gate has to exist twice.
+func (t *txAdapter) countMatches(ctx context.Context, model *maniflex.ModelMeta, qp *maniflex.QueryParams, joinSQL string) (int64, error) {
+	if !qp.WantsTotal() {
+		return -1, nil
+	}
+	cp := t.newPH()
+	countConds := allWhereConds(model, qp.Filters, t.driver, cp)
+	countConds = appendSearchCond(countConds, model, qp, t.driver, cp)
+	countQuery := countQuerySQL(model.TableName, joinSQL, condToSQL(countConds))
+	var total int64
+	if err := t.tx.QueryRowContext(ctx, countQuery, cp.args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("tx count: %w", err)
+	}
+	return total, nil
+}
+
 func (t *txAdapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp *maniflex.QueryParams) ([]any, int64, error) {
 	if model.GoType == nil {
 		results, total, err := t.findManyMap(ctx, model, qp)
@@ -239,16 +258,9 @@ func (t *txAdapter) FindMany(ctx context.Context, model *maniflex.ModelMeta, qp 
 
 	joinSQL := buildJoins(model, qp.Filters, qp.Sorts) + ftsJoinSQL(model, qp, t.driver)
 
-	total := int64(-1)
-	if qp.Cursor == nil {
-		cp := t.newPH()
-		countConds := allWhereConds(model, qp.Filters, t.driver, cp)
-		countConds = appendSearchCond(countConds, model, qp, t.driver, cp)
-		countWhere := condToSQL(countConds)
-		countQuery := countQuerySQL(model.TableName, joinSQL, countWhere)
-		if err := t.tx.QueryRowContext(ctx, countQuery, cp.args...).Scan(&total); err != nil {
-			return nil, 0, fmt.Errorf("tx count: %w", err)
-		}
+	total, err := t.countMatches(ctx, model, qp, joinSQL)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	dp := t.newPH()
@@ -295,16 +307,9 @@ func (t *txAdapter) findManyMap(ctx context.Context, model *maniflex.ModelMeta, 
 	joinSQL := buildJoins(model, qp.Filters, qp.Sorts) + ftsJoinSQL(model, qp, t.driver)
 
 	// ─ count ─ (skipped in cursor mode — keyset pagination reports has_more.)
-	total := int64(-1)
-	if qp.Cursor == nil {
-		cp := t.newPH()
-		countConds := allWhereConds(model, qp.Filters, t.driver, cp)
-		countConds = appendSearchCond(countConds, model, qp, t.driver, cp)
-		countWhere := condToSQL(countConds)
-		countQuery := countQuerySQL(model.TableName, joinSQL, countWhere)
-		if err := t.tx.QueryRowContext(ctx, countQuery, cp.args...).Scan(&total); err != nil {
-			return nil, 0, fmt.Errorf("tx count: %w", err)
-		}
+	total, err := t.countMatches(ctx, model, qp, joinSQL)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// ─ data ─

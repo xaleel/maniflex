@@ -26,17 +26,17 @@ Standard offset pagination.
 ?page=2&limit=20
 ```
 
-| Parameter | Default | Maximum |
-|---|---|---|
-| `page` | `1` | `1,000,000` |
-| `limit` | `20` | `200` |
+| Parameter | Default | Maximum     |
+| --------- | ------- | ----------- |
+| `page`    | `1`     | `1,000,000` |
+| `limit`   | `20`    | `200`       |
 
 Limits above the maximum are clamped silently. Pages above the maximum, values
 whose pagination arithmetic cannot fit, and negative or non-numeric values are
 rejected with `400 INVALID_QUERY`.
 
 The response carries `meta.total`, `meta.page`, `meta.limit`, and `meta.pages`
-— see [Response Envelope](responses.md).
+— see [Response Envelope](responses.md). The total is a second query; see [`count`](#count) to decline it.
 
 ## `cursor` (keyset pagination)
 
@@ -99,7 +99,7 @@ ascending; sort on the cursor field to reverse it:
 GET /events?cursor=&sort=created_at:desc
 ```
 
-Any `?sort=` on a *different* field is rejected with `400` in cursor mode, since
+Any `?sort=` on a _different_ field is rejected with `400` in cursor mode, since
 the keyset order is fixed to the cursor column.
 
 Cursor responses carry a different `meta` shape — no `total`/`page`/`pages`
@@ -119,9 +119,39 @@ fixed-width UTC representation so ordering is identical on SQLite and Postgres.
 Valid scalar unversioned tokens issued by earlier Maniflex releases remain
 accepted during upgrades.
 
+## `count`
+
+`meta.total` comes from a second query — a `COUNT` over the whole filtered set,
+run again on every page. On a large or heavily filtered table it is the
+more expensive half of a list request.
+
+```
+?count=false
+```
+
+No count query runs, and the response omits `total` and `pages`, carrying
+`has_more` in their place:
+
+```json
+{ "data": [ ... ], "meta": { "page": 2, "limit": 20, "has_more": true } }
+```
+
+The keys are absent rather than zero, to avoid reading "not counted" as
+"no rows". `has_more` comes from reading one row past the page — the same
+over-fetch cursor mode uses, and the cost of one row rather than a scan. For a
+“load more” button that is the whole of what `total` was for.
+
+`count=true` is the default spelled out. `1` and `0` are accepted for each; any
+other value is rejected with `400 INVALID_QUERY` rather than guessed at.
+
+It can be used with other query parameters (`?filter=`, `?q=`, `?sort=`, `?include=`)
+since it only changes the meta. The exception is `?cursor=`, which never counts, and
+`?count=false` in this case is a no-op. Combining `?cursor=..&count=true` is rejected with
+`400 INVALID_QUERY`.
+
 ## `filter`
 
-Each filter is a colon-separated triple — *field*, *operator*, *value*:
+Each filter is a colon-separated triple — _field_, _operator_, _value_:
 
 ```
 ?filter=status:eq:published
@@ -238,25 +268,25 @@ for the per-column allowlist.
 
 ### Operators
 
-| Operator | Effect | Value |
-|---|---|---|
-| `eq` | field = value | one value |
-| `neq` | field ≠ value | one value |
-| `gt`, `gte`, `lt`, `lte` | numeric and date comparisons | one value |
-| `like` | SQL `LIKE`, case-sensitive | one **pattern** — `%` and `_` are wildcards |
-| `ilike` | SQL `ILIKE`, case-insensitive | one **pattern** — `%` and `_` are wildcards |
-| `contains` | field contains the value, case-insensitive | one literal value |
-| `starts_with` | field starts with the value, case-insensitive | one literal value |
-| `ends_with` | field ends with the value, case-insensitive | one literal value |
-| `has` | JSON column holds this element / key=value pair | one value, or `key=value` |
-| `not_has` | JSON column does **not** hold it | one value, or `key=value` |
-| `in` | field IN (…) | at least one comma-separated value |
-| `not_in` | field NOT IN (…) | at least one comma-separated value |
-| `between` | field ≥ lo AND ≤ hi (inclusive) | exactly two comma-separated values `lo,hi` |
-| `is_null` | field IS NULL | no value |
-| `not_null` | field IS NOT NULL | no value |
-| `eq_field`, `neq_field` | field = / ≠ **another column** | the name of another column |
-| `gt_field`, `gte_field`, `lt_field`, `lte_field` | comparisons against **another column** | the name of another column |
+| Operator                                         | Effect                                          | Value                                       |
+| ------------------------------------------------ | ----------------------------------------------- | ------------------------------------------- |
+| `eq`                                             | field = value                                   | one value                                   |
+| `neq`                                            | field ≠ value                                   | one value                                   |
+| `gt`, `gte`, `lt`, `lte`                         | numeric and date comparisons                    | one value                                   |
+| `like`                                           | SQL `LIKE`, case-sensitive                      | one **pattern** — `%` and `_` are wildcards |
+| `ilike`                                          | SQL `ILIKE`, case-insensitive                   | one **pattern** — `%` and `_` are wildcards |
+| `contains`                                       | field contains the value, case-insensitive      | one literal value                           |
+| `starts_with`                                    | field starts with the value, case-insensitive   | one literal value                           |
+| `ends_with`                                      | field ends with the value, case-insensitive     | one literal value                           |
+| `has`                                            | JSON column holds this element / key=value pair | one value, or `key=value`                   |
+| `not_has`                                        | JSON column does **not** hold it                | one value, or `key=value`                   |
+| `in`                                             | field IN (…)                                    | at least one comma-separated value          |
+| `not_in`                                         | field NOT IN (…)                                | at least one comma-separated value          |
+| `between`                                        | field ≥ lo AND ≤ hi (inclusive)                 | exactly two comma-separated values `lo,hi`  |
+| `is_null`                                        | field IS NULL                                   | no value                                    |
+| `not_null`                                       | field IS NOT NULL                               | no value                                    |
+| `eq_field`, `neq_field`                          | field = / ≠ **another column**                  | the name of another column                  |
+| `gt_field`, `gte_field`, `lt_field`, `lte_field` | comparisons against **another column**          | the name of another column                  |
 
 ```
 ?filter=tag:in:go,rust,zig
@@ -343,7 +373,7 @@ record, instead of against a value you supply:
 
 The value is a **field name**, never a literal — that is why these are separate
 operators rather than a marker on the value. `?filter=note:eq:status` compares
-the `note` column against the *text* `"status"`; `?filter=note:eq_field:status`
+the `note` column against the _text_ `"status"`; `?filter=note:eq_field:status`
 compares it against the `status` **column**. Neither spelling can be mistaken for
 the other.
 
@@ -371,7 +401,7 @@ compare against as its own column.
 ### Filtering on related fields
 
 When a relation is declared on the model, you can filter by a field on the
-*related* table using dot notation:
+_related_ table using dot notation:
 
 ```
 ?filter=user.role:eq:admin
@@ -380,7 +410,7 @@ When a relation is declared on the model, you can filter by a field on the
 
 The related field must itself be `filterable`. The framework joins the related
 table for the query; no separate `?include=` is required to filter on it (but
-you still need `?include=` to *return* the related row).
+you still need `?include=` to _return_ the related row).
 
 ## `q` (full-text search)
 
@@ -394,7 +424,7 @@ and orders the results by match relevance:
 
 This is distinct from `filter`: full-text search uses the database's own
 ranking, stemming, and tokenisation rather than literal comparison, so `?q=run`
-also matches *running*, and the densest match ranks first. The backend's native
+also matches _running_, and the densest match ranks first. The backend's native
 machinery does the work — a `tsvector` column and GIN index on PostgreSQL, an
 FTS5 index on SQLite — both provisioned automatically during migration.
 

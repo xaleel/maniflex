@@ -1456,9 +1456,10 @@ type APIError struct {
 }
 
 // ResponseMeta carries pagination metadata for list responses. It serialises in
-// one of two shapes depending on the pagination mode (see MarshalJSON):
+// one of three shapes depending on the pagination mode (see MarshalJSON):
 // offset mode emits {total, page, limit, pages}; cursor (keyset) mode emits
-// {limit, next_cursor, has_more}.
+// {limit, next_cursor, has_more}; an offset page whose client sent ?count=false
+// emits {page, limit, has_more}.
 type ResponseMeta struct {
 	Total int64  `json:"total"`
 	Page  int    `json:"page"`
@@ -1466,16 +1467,24 @@ type ResponseMeta struct {
 	Pages int64  `json:"pages"`
 	Dir   string `json:"_dir,omitempty"` // "rtl" when the active locale uses right-to-left script
 
+	// Uncounted renders the offset shape without total and pages, which is what
+	// ?count=false asks for. The keys are absent rather than zero: a client
+	// reading {"total": 0} above a full page of rows is being told something
+	// false, and one reading a missing key cannot be.
+	Uncounted bool `json:"-"`
+
 	// Cursor-mode fields. Cursor is set to render the keyset shape; NextCursor is
-	// the token for the following page ("" on the last page).
+	// the token for the following page ("" on the last page). HasMore is also
+	// what an Uncounted offset page reports in place of a total.
 	Cursor     bool   `json:"-"`
 	NextCursor string `json:"-"`
 	HasMore    bool   `json:"-"`
 }
 
 // MarshalJSON renders the offset shape ({total, page, limit, pages}) by default,
-// and the cursor shape ({limit, next_cursor, has_more}) when Cursor is set, so a
-// keyset response never carries meaningless total/page/pages fields.
+// the cursor shape ({limit, next_cursor, has_more}) when Cursor is set, so a
+// keyset response never carries meaningless total/page/pages fields, and the
+// uncounted shape ({page, limit, has_more}) when the client sent ?count=false.
 func (m ResponseMeta) MarshalJSON() ([]byte, error) {
 	if m.Cursor {
 		return json.Marshal(struct {
@@ -1484,6 +1493,14 @@ func (m ResponseMeta) MarshalJSON() ([]byte, error) {
 			HasMore    bool   `json:"has_more"`
 			Dir        string `json:"_dir,omitempty"`
 		}{m.Limit, m.NextCursor, m.HasMore, m.Dir})
+	}
+	if m.Uncounted {
+		return json.Marshal(struct {
+			Page    int    `json:"page"`
+			Limit   int    `json:"limit"`
+			HasMore bool   `json:"has_more"`
+			Dir     string `json:"_dir,omitempty"`
+		}{m.Page, m.Limit, m.HasMore, m.Dir})
 	}
 	return json.Marshal(struct {
 		Total int64  `json:"total"`

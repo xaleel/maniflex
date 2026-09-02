@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"reflect"
 	"strconv"
@@ -259,12 +260,50 @@ type sqlExec interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
+func migrateLockKey(table string) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte("maniflex.automigrate:" + table))
+	return int64(h.Sum64())
+}
+
+const migrateRaceAttempts = 3
+
+func migrateWithRetry(attempt func() error) error {
+	var err error
+	for range migrateRaceAttempts {
+		err = attempt()
+		if err == nil || !isConcurrentDDLError(err) {
+			return err
+		}
+	}
+	return err
+}
+
 func (a *Adapter) migrateModel(ctx context.Context, m *maniflex.ModelMeta) error {
+	attempts := 0
+	return migrateWithRetry(func() error {
+		attempts++
+		if attempts > 1 {
+			a.getLogger().Debug("retrying migration after losing a concurrent DDL race",
+				"table", m.TableName, "attempt", attempts)
+		}
+		return a.migrateModelOnce(ctx, m)
+	})
+}
+
+func (a *Adapter) migrateModelOnce(ctx context.Context, m *maniflex.ModelMeta) error {
 	tx, err := a.writeDb.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin migrate tx for %s: %w", m.TableName, err)
 	}
 	defer tx.Rollback() //nolint:errcheck // committed on the happy path
+
+	if a.driver == maniflex.Postgres {
+		if _, err := tx.ExecContext(ctx, "SELECT pg_advisory_xact_lock($1)",
+			migrateLockKey(m.TableName)); err != nil {
+			return fmt.Errorf("lock migration of %s: %w", m.TableName, err)
+		}
+	}
 
 	if err := a.migrateModelTx(ctx, tx, m); err != nil {
 		return err
@@ -441,6 +480,9 @@ func (a *Adapter) migrateModelTx(ctx context.Context, exec sqlExec, m *maniflex.
 			// application still survives — so only the unique case is fatal.
 			if idx.Unique {
 				return uniqueIndexFailure(m.TableName, idx.Name, idx.Columns, err)
+			}
+			if isConcurrentDDLError(err) {
+				return fmt.Errorf("create index %s on %s: %w", idx.Name, m.TableName, err)
 			}
 			a.getLogger().Warn("AutoMigrate: could not create index",
 				slog.String("index", idx.Name),
@@ -690,6 +732,23 @@ func isDuplicateConstraintError(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "constraint") && strings.Contains(msg, "already exists")
+}
+
+func isConcurrentDDLError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	const dupKey = `duplicate key value violates unique constraint "`
+	if i := strings.Index(msg, dupKey); i >= 0 {
+		return strings.HasPrefix(msg[i+len(dupKey):], "pg_")
+	}
+	for _, kind := range []string{`type "`, `relation "`} {
+		if i := strings.Index(msg, kind); i >= 0 && strings.Contains(msg[i:], `" already exists`) {
+			return true
+		}
+	}
+	return false
 }
 
 func isDuplicateColumnError(err error) bool {

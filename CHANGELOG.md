@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- **Bugfix:** replicas booting together no longer fail their migration. `CREATE TABLE IF NOT EXISTS` is a catalog check and then a catalog insert, which Postgres documents as non-atomic, so the loser is told the relation, its row type, or a catalog index already exists — three errors for one race. Each model's migration now takes a transaction-scoped advisory lock on its table name, so replicas go one at a time instead of racing and recovering; all three are still recognised and retried, for a rolling upgrade from v0.12.0, which takes no lock.
+
 ## v0.12.0 (2026-09-01)
 
 - **Feature:** `?count=false` declines the `COUNT` behind `meta.total`. It runs over the whole filtered set on every page and is often the more expensive half of a list request, yet a client that only pages forward never reads the number. The response then omits `total` and `pages` and carries `has_more`, derived from one row read past the page — absent keys rather than zeroes, so “not counted” cannot be read as “no rows”. `?cursor=` never counted, so `count=true` there is refused rather than answered with a shape that has no total in it.

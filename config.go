@@ -582,6 +582,10 @@ type Config struct {
 	// StaticPrefix is the URL path prefix under which StaticDir is served.
 	// Default: "/static". Unlike model routes it is mounted at the router root,
 	// NOT under PathPrefix.
+	//
+	// Setting it to PathPrefix is refused at startup: the file server would take
+	// over that whole subtree and every API route under it would answer 404. A
+	// prefix nested inside PathPrefix, or at the root, is fine.
 	StaticPrefix string
 
 	// StaticDisabled turns off static file serving even when StaticDir is set.

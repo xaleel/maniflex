@@ -385,6 +385,23 @@ collides with the read route just as `GET /threads/{id}` does), while a method t
 model does not serve at that path is free to take (`POST /threads/{id}` is fine —
 the item route has no `POST`).
 
+The framework's own routes under `PathPrefix` are covered by the same rule, and
+reported when the router is built rather than at the `Action` call — global
+search can be enabled after the action is registered, so the full picture is only
+known at the end:
+
+```text
+maniflex: [route] action GET /live would replace the framework's probe route at
+/api/live — chi overwrites rather than collides, so the built-in endpoint would
+stop answering with nothing reported (set Config.Probes.Live.Disabled to serve
+this path yourself)
+```
+
+Each is reserved only while the feature that mounts it is on: the probes unless
+`Disabled`, `/openapi.json` and `/asyncapi.json` while the documentation is
+published, the search path after `EnableGlobalSearch`, and `/files` when
+`FilesConfig.MountEndpoints` is set. Turning the feature off frees the path.
+
 When you want to serve a model's collection path yourself — returning a custom
 shape, or composing several models — mark the model **headless** so it mounts no
 REST routes at all, freeing its path for the action:

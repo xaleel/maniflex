@@ -1238,6 +1238,12 @@ func (c *Server) ObserveRequests(observers ...RequestObserver) {
 //
 // Must be called before Start() or Handler(). Panics if the server has
 // already started or if the method+path conflicts with a registered model route.
+//
+// An action that would take over a route the framework itself mounts under
+// PathPrefix — a probe, a spec document, the global search path, the /files
+// endpoints — is refused when the router is built rather than here, because
+// which of those exist is not settled until then. Each is reserved only while
+// the feature that mounts it is on.
 func (c *Server) Action(cfg ActionConfig) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

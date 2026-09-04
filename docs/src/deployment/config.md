@@ -387,9 +387,25 @@ dependency, and connection strings live in those messages.
 Names must be non-empty, unique, and not `db`, which the framework reserves;
 anything else panics when the router is built rather than on a probe request.
 
-`live`, `ready`, and `health` are reserved path segments under `PathPrefix` — a
-custom action or route registered at one of them collides with the probe
-already mounted there.
+A mounted probe owns its path. An action or a model whose routes would answer
+`GET {prefix}/live`, `/ready` or `/health` is refused when the router is built,
+naming the probe it would have replaced — chi overwrites rather than collides, so
+without that check the endpoint an orchestrator polls quietly starts running
+application code.
+
+The reservation follows what is actually mounted, so `Disabled` is how you serve
+one of these paths yourself:
+
+```go
+Config{Probes: maniflex.ProbesConfig{Health: maniflex.ProbeConfig{Disabled: true}}}
+// GET /api/health is now free for your own action.
+```
+
+Only the methods the framework serves are reserved. The probes mount `GET`, so a
+`POST {prefix}/live` action is fine. The same rule covers the other built-in
+routes under `PathPrefix` — `/openapi.json`, `/asyncapi.json`, the global search
+path, and the `/files` endpoints — each reserved only while the feature that
+mounts it is switched on.
 
 ### Gating and unmounting the probes
 

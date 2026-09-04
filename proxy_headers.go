@@ -88,12 +88,15 @@ func (r proxyResolver) clientIP(peer string, header http.Header) (string, bool) 
 		return "", false
 	}
 
-	if raw := header.Get("X-Forwarded-For"); raw != "" {
+	if raw := joinedHeader(header, "X-Forwarded-For"); raw != "" {
 		return r.walkForwardedFor(raw)
 	}
 	// No chain to walk. X-Real-IP can only be believed wholesale, which a
-	// trusted peer has earned.
-	if raw := header.Get("X-Real-IP"); raw != "" {
+	// trusted peer has earned — but only when there is one of it. Two lines join
+	// into something that is not an address, so the parse fails and nothing is
+	// believed, which is the right answer: a single-valued header sent twice
+	// means one of the two came from someone other than the proxy.
+	if raw := joinedHeader(header, "X-Real-IP"); raw != "" {
 		return canonicalIP(raw)
 	}
 	// A trusted proxy that forwarded nothing is itself the client.
@@ -129,14 +132,38 @@ func (r proxyResolver) walkForwardedFor(raw string) (string, bool) {
 // entry, then X-Real-IP, from any peer. A malformed X-Forwarded-For fails closed
 // rather than falling back to the other client-controlled header.
 func (r proxyResolver) legacyClientIP(header http.Header) (string, bool) {
-	if raw := header.Get("X-Forwarded-For"); raw != "" {
+	if raw := joinedHeader(header, "X-Forwarded-For"); raw != "" {
 		first, _, _ := strings.Cut(raw, ",")
 		return canonicalIP(first)
 	}
-	if raw := header.Get("X-Real-IP"); raw != "" {
+	if raw := joinedHeader(header, "X-Real-IP"); raw != "" {
 		return canonicalIP(raw)
 	}
 	return "", false
+}
+
+// joinedHeader is the field value of name: every line under it, in the order
+// received, joined with commas.
+//
+// Header.Get returns only the first line, and a forwarding header often arrives
+// on more than one. HAProxy's `option forwardfor` adds a line rather than
+// extending the client's, as do several Java and Node proxies — so the client's
+// own forgery is line one and the address the proxy actually saw is line two.
+// Reading the first line alone hands the walk in walkForwardedFor a chain with
+// nothing in it but the forgery, and it has no trusted hop to walk back past.
+//
+// RFC 9110 §5.3 defines the combined value as exactly this join, so this is what
+// the header says rather than a reinterpretation of it.
+func joinedHeader(header http.Header, name string) string {
+	values := header.Values(name)
+	switch len(values) {
+	case 0:
+		return ""
+	case 1:
+		return values[0]
+	default:
+		return strings.Join(values, ",")
+	}
 }
 
 // parsePeer extracts the address from a RemoteAddr, which is "host:port" for a

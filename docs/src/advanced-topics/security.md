@@ -124,8 +124,10 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
   vouched for wins. A client connecting directly cannot forge its address at all,
   and one behind the proxy cannot forge it either: a proxy *appends* the address
   it saw, so anything the client wrote sits to the left of the truth and is
-  skipped. A non-empty list enables resolution on its own; `TrustProxyHeaders` is
-  not also required.
+  skipped. That holds whether the proxy extends the client's header line (nginx,
+  AWS ALB) or adds one of its own below it (HAProxy's `option forwardfor`) — every
+  line is joined into one chain before the walk. A non-empty list enables
+  resolution on its own; `TrustProxyHeaders` is not also required.
 
   `TrustProxyHeaders: true` **without** a list is the legacy mode: the leftmost
   `X-Forwarded-For` entry, from any peer — which is the entry a client controls.

@@ -132,6 +132,13 @@ client chose to send. A malformed entry anywhere in the chain fails closed —
 the request keeps its TCP peer — rather than being skipped past. An entry that
 does not parse is a startup error.
 
+The chain is every `X-Forwarded-For` line joined in the order received, not just
+the first. Proxies differ here: nginx and AWS ALB extend the client's line, while
+HAProxy's `option forwardfor` adds one of its own, leaving the client's value on
+the line above. Both are one chain per RFC 9110 §5.3, and both are walked whole.
+`X-Real-IP` names a single address, so more than one line of it is believed from
+nobody — the request keeps its TCP peer.
+
 `TrustProxyHeaders: true` with no list keeps the old behaviour for compatibility.
 It warns at startup and fails under `Strict`; prefer the allowlist.
 

@@ -169,3 +169,93 @@ func TestNewProxyResolver_AcceptsBareIPAndCIDR(t *testing.T) {
 		t.Errorf("newProxyResolver rejected valid entries: %v", err)
 	}
 }
+
+// hdrLines builds a header carrying name on several field lines, the way a proxy
+// that adds its own leaves one alongside the client's.
+func hdrLines(name string, values ...string) http.Header {
+	h := http.Header{}
+	for _, v := range values {
+		h.Add(name, v)
+	}
+	return h
+}
+
+// The same forgery as TestProxyResolver_ForgedLeftmostEntryIsIgnored, delivered
+// on two field lines instead of one. HAProxy's `option forwardfor` adds a line
+// rather than extending the client's, so the client's value is line one and the
+// address the proxy saw is line two. Reading only the first line hands the walk a
+// chain containing nothing but the forgery, with no trusted hop to walk back past
+// — so the allowlist mode, which exists to stop exactly this, returns the
+// attacker's address (audit HTTP-2).
+func TestProxyResolver_ForgedFirstLineIsIgnored(t *testing.T) {
+	r := mustResolver(t, "10.0.0.0/8")
+
+	got, ok := r.clientIP("10.0.0.9:443",
+		hdrLines("X-Forwarded-For", "6.6.6.6", "203.0.113.7"))
+
+	if !ok {
+		t.Fatal("a trusted peer's X-Forwarded-For was not honoured at all")
+	}
+	if got != "203.0.113.7" {
+		t.Errorf("client IP = %q, want %q — repeated field lines are one chain in "+
+			"order (RFC 9110 §5.3), so the walk must see every line, not the first",
+			got, "203.0.113.7")
+	}
+}
+
+// A chain split across lines is still one chain: the walk has to cross the line
+// boundary to reach the trusted hop and stop in front of it.
+func TestProxyResolver_ChainSplitAcrossLinesWalksPastTrustedHops(t *testing.T) {
+	r := mustResolver(t, "10.0.0.0/8")
+
+	got, ok := r.clientIP("10.0.0.9:443",
+		hdrLines("X-Forwarded-For", "6.6.6.6", "203.0.113.7, 10.0.0.4"))
+
+	if !ok {
+		t.Fatal("the split chain was not honoured at all")
+	}
+	if got != "203.0.113.7" {
+		t.Errorf("client IP = %q, want %q", got, "203.0.113.7")
+	}
+}
+
+// X-Real-IP names one address. Two lines mean one of them came from someone
+// other than the proxy, and there is nothing in the header to say which — so
+// nothing is believed and RemoteAddr stays the peer, as it does for a malformed
+// X-Forwarded-For.
+func TestProxyResolver_MultipleXRealIPLinesFailClosed(t *testing.T) {
+	r := mustResolver(t, "10.0.0.0/8")
+
+	got, ok := r.clientIP("10.0.0.9:443",
+		hdrLines("X-Real-Ip", "6.6.6.6", "203.0.113.7"))
+
+	if ok {
+		t.Errorf("client IP = %q from two X-Real-IP lines; a single-valued header "+
+			"sent twice cannot be believed", got)
+	}
+}
+
+// One line is still believed wholesale — the fail-closed rule above must not cost
+// the ordinary case.
+func TestProxyResolver_SingleXRealIPLineIsStillBelieved(t *testing.T) {
+	r := mustResolver(t, "10.0.0.0/8")
+
+	got, ok := r.clientIP("10.0.0.9:443", hdrLines("X-Real-Ip", "203.0.113.7"))
+
+	if !ok || got != "203.0.113.7" {
+		t.Errorf("client IP = %q ok=%v, want 203.0.113.7", got, ok)
+	}
+}
+
+// Legacy mode is unchanged by the join. It takes the leftmost entry from any
+// peer, and the leftmost of the joined chain is the same value Get returned from
+// the first line — which is the client's own, as that mode has always documented.
+func TestProxyResolver_LegacyModeUnaffectedByExtraLines(t *testing.T) {
+	got, ok := proxyResolver{}.clientIP("127.0.0.1:1234",
+		hdrLines("X-Forwarded-For", "6.6.6.6", "203.0.113.7"))
+
+	if !ok || got != "6.6.6.6" {
+		t.Errorf("legacy client IP = %q ok=%v, want 6.6.6.6 — adding an allowlist "+
+			"must not change what the allowlist-free mode does", got, ok)
+	}
+}

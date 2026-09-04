@@ -27,10 +27,22 @@ const serverBusyRetryAfter = 1
 // waiting for a connection until QueryTimeout fires, so latency climbs for
 // every request rather than being paid by the ones that are shed. This turns
 // that slow collapse into fast rejection the caller can retry.
-func concurrencyLimit(n int) func(http.Handler) http.Handler {
+//
+// Requests to a path in exempt are never shed. That is for the probe endpoints
+// (see mountedProbePaths): shedding one reports the process dead or unfit for
+// traffic when it is merely busy, so the orchestrator restarts it or takes it
+// out of the load balancer — escalating a spike this limit was absorbing into
+// an outage, across every replica at once since they saturate together. A probe
+// is cheap enough to answer anyway: /live returns a constant and the other two
+// collapse onto one dependency check through probeFlight.
+func concurrencyLimit(n int, exempt map[string]struct{}) func(http.Handler) http.Handler {
 	sem := make(chan struct{}, n)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, ok := exempt[r.URL.Path]; ok {
+				next.ServeHTTP(w, r)
+				return
+			}
 			select {
 			case sem <- struct{}{}:
 				// Deferred, so a panicking handler returns its slot. Leaking one

@@ -347,10 +347,11 @@ func TestServerBoot_BodyDeadlinePrecedesLoadShedding(t *testing.T) {
 	t.Cleanup(ts.Close)
 	t.Cleanup(closeOnce)
 
-	// Occupy the only slot, and wait until it actually is. Probing for a 503
-	// instead would race: a probe holding the slot is a probe that sheds the
-	// request meant to hold it, and then nothing is held at all.
-	go http.Get(ts.URL + "/api/live?hold=1") //nolint:errcheck // released at cleanup
+	// Occupy the only slot, and wait until it actually is. Polling for a 503
+	// instead would race: the polling request can take the slot meant for the
+	// holding one, and then nothing is held at all. A model route rather than a
+	// probe, since probes take no slot (see TestConcurrencyLimit_ProbesAreNotShed).
+	go http.Get(ts.URL + "/api/body_timeout_models?hold=1") //nolint:errcheck // released at cleanup
 	select {
 	case <-entered:
 	case <-time.After(5 * time.Second):

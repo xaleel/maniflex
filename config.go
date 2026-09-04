@@ -621,6 +621,11 @@ type Config struct {
 	// being paid by the ones that are shed. Size it against the pool rather
 	// than the traffic — a value far above MaxOpenConns only moves the queue.
 	//
+	// The probe endpoints are exempt. Shedding one tells an orchestrator the
+	// process is dead or unfit for traffic when it is only busy, so the pod is
+	// restarted or drained — and since replicas saturate together, all of them
+	// are. Use Probes.Middleware to bound a probe deliberately.
+	//
 	// Off by default because the right value depends on the pool and the
 	// hardware, and a wrong one refuses traffic the server could have served.
 	// Server.ValidateProduction requires a positive value.

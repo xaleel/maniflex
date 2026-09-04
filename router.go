@@ -60,9 +60,12 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 
 	// Shed load before anything expensive. After the observers, so a refused
 	// request still reaches them — load shedding you cannot see is worse than
-	// none — and before proxy resolution.
+	// none — and before proxy resolution. The probes are exempt: an orchestrator
+	// reads a shed probe as a dead or unfit process and restarts it or drains
+	// it, which is a worse answer to "the server is busy" than the 503 the
+	// shedder gives an ordinary caller.
 	if n := cfg.MaxConcurrentRequests; n > 0 {
-		r.Use(concurrencyLimit(n))
+		r.Use(concurrencyLimit(n, mountedProbePaths(cfg)))
 	}
 
 	if max := cfg.QueryLimits.MaxURLBytes; max > 0 {

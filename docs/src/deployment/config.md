@@ -164,6 +164,14 @@ queueing: a burst is not refused, it waits for a connection while holding a
 goroutine, a parsed body and a context, until `QueryTimeout` fires. Latency then
 climbs for every request instead of being paid by the ones that are shed.
 
+The probe endpoints are exempt. A shed `/live` tells Kubernetes to restart the
+container and a shed `/ready` tells it to take the pod out of the Service, so a
+spike the limit was absorbing becomes a restart or an empty endpoint list — and
+because replicas saturate at the same moment, it happens to all of them at once.
+The limit exists to shed individual requests, not the process. `/live` answers a
+constant and the other two collapse onto one dependency check, so answering them
+under load is cheap; use `Probes.Middleware` if you want a probe bounded anyway.
+
 Size it against the pool rather than against the traffic you hope to serve — a
 value far above the pool's `MaxOpenConns` only moves the queue. It is off by
 default because the right number depends on your pool and hardware, and a wrong

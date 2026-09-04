@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"path"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
@@ -98,6 +99,41 @@ func mountProbes(r chi.Router, cfg *Config, reg *Registry, phase func() readines
 	mount(probes.Live, "/live", liveHandler())
 	mount(probes.Ready, "/ready", readyHandler(cfg, reg, phase))
 	mount(probes.Health, "/health", healthHandler(cfg, reg))
+}
+
+// mountedProbePaths returns the absolute paths mountProbes will register, so a
+// router-level middleware can recognise a probe without reaching into chi's
+// routing.
+//
+// It exists for Config.MaxConcurrentRequests, which must not shed a probe: a
+// busy pod that answers 503 to /live is restarted by its orchestrator and one
+// that answers 503 to /ready leaves the load balancer, in both cases turning a
+// spike the shedder was handling into an outage — and, because every replica
+// saturates at the same moment, doing it to all of them at once. The limit is
+// there to shed individual requests, not the process.
+//
+// A disabled probe is absent, since nothing is mounted at that path.
+//
+// Caveat: this matches on path, and an Action registered at a probe path
+// currently replaces the probe route rather than colliding with it, so such an
+// action would inherit the exemption. Reserving those segments is the fix and
+// belongs with that finding, not here.
+func mountedProbePaths(cfg *Config) map[string]struct{} {
+	paths := make(map[string]struct{}, 3)
+	for _, p := range []struct {
+		probe ProbeConfig
+		path  string
+	}{
+		{cfg.Probes.Live, "/live"},
+		{cfg.Probes.Ready, "/ready"},
+		{cfg.Probes.Health, "/health"},
+	} {
+		if p.probe.Disabled {
+			continue
+		}
+		paths[path.Join(cfg.PathPrefix, p.path)] = struct{}{}
+	}
+	return paths
 }
 
 // validateProbeMiddleware panics on a nil entry, naming the field so the

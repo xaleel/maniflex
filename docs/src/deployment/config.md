@@ -95,8 +95,15 @@ goroutine and a file descriptor for as long as it liked.
 chunk, refreshed on every read — which is what makes it safe on by default where
 `ReadTimeout` is not: an upload that keeps making progress never trips it,
 however slow the link or however large the file. These are the semantics of
-nginx's `client_body_timeout`. No deadline outlives the read, so a handler that
-consumes its body and then streams for minutes is unaffected.
+nginx's `client_body_timeout`. No deadline outlives the body, so a handler that
+consumes it and then streams for minutes is unaffected.
+
+The bound stands from the moment the request arrives, not from the first read, so
+it covers a body no handler ever touches. It has to: Go's HTTP server drains what
+a client announced and never sent so the connection can be reused, and that drain
+is one more read from the same silent client. Without it, any route that answers
+without reading — a probe, a `401`, a `404`, an ordinary `GET` — could be held
+open indefinitely.
 
 It does **not** bound total upload time. A client that sends one byte just inside
 the timeout, forever, is still holding a connection; bounding that means

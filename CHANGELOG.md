@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Security:** an announced-but-unsent request body no longer holds a connection open on a route that does not read it. `BodyReadTimeout` armed its deadline inside the body's `Read`, so a handler answering without one — a probe, a 401, an ordinary `GET` — armed nothing, and Go's drain of the unread body then waited on the silent client forever. The bound now stands from when the request arrives and clears at EOF, and is installed ahead of `MaxConcurrentRequests` so a shed 503 is covered too.
 - **Bugfix:** replicas booting together no longer fail their migration. `CREATE TABLE IF NOT EXISTS` is a catalog check and then a catalog insert, which Postgres documents as non-atomic, so the loser is told the relation, its row type, or a catalog index already exists — three errors for one race. Each model's migration now takes a transaction-scoped advisory lock on its table name, so replicas go one at a time instead of racing and recovering; all three are still recognised and retried, for a rolling upgrade from v0.12.0, which takes no lock.
 
 ## v0.12.0 (2026-09-01)

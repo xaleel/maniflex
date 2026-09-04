@@ -746,6 +746,12 @@ type Config struct {
 	// keeps making progress refreshes the deadline and is never cut off. The
 	// semantics are nginx's client_body_timeout.
 	//
+	// The bound stands from the moment the request arrives rather than from the
+	// first read, so it also covers a body no handler ever touches: net/http
+	// drains an unread body so the connection can be reused, and that drain is
+	// one more read from the same client. It is cleared once the body reaches
+	// EOF, so a handler that consumes it and then streams is unaffected.
+	//
 	// It is ignored when ReadTimeout is set, since that is a stricter bound the
 	// caller chose deliberately.
 	//

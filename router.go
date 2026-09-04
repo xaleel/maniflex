@@ -46,10 +46,21 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 		}
 		r.Use(requestObservationMiddleware(cfg.logger(), cfg.RequestObservers))
 	}
+	// Bound the body phase. ReadHeaderTimeout stops at the headers and the size
+	// cap counts bytes, so without this a client could announce a legal
+	// Content-Length and then go silent, holding the connection (audit S4).
+	//
+	// Ahead of the load shedder, which answers 503 without reading a body and so
+	// leaves net/http one to drain from a client that may never speak again.
+	// Arming a deadline is not a read, so a shed request still has its body left
+	// alone.
+	if d := effectiveBodyReadTimeout(cfg); d > 0 {
+		r.Use(bodyReadDeadline(d))
+	}
+
 	// Shed load before anything expensive. After the observers, so a refused
 	// request still reaches them — load shedding you cannot see is worse than
-	// none — and before the body deadline and proxy resolution, so a shed
-	// request never has its body read.
+	// none — and before proxy resolution.
 	if n := cfg.MaxConcurrentRequests; n > 0 {
 		r.Use(concurrencyLimit(n))
 	}
@@ -69,13 +80,6 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 				next.ServeHTTP(w, req)
 			})
 		})
-	}
-
-	// Bound the body phase. ReadHeaderTimeout stops at the headers and the size
-	// cap counts bytes, so without this a client could announce a legal
-	// Content-Length and then go silent, holding the connection (audit S4).
-	if d := effectiveBodyReadTimeout(cfg); d > 0 {
-		r.Use(bodyReadDeadline(d))
 	}
 
 	// Resolve the client address from proxy headers only when the operator has

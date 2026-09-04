@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -203,5 +204,179 @@ func TestEffectiveBodyReadTimeout_NegativeDisables(t *testing.T) {
 	cfg := Config{BodyReadTimeout: -1}
 	if got := effectiveBodyReadTimeout(&cfg); got != 0 {
 		t.Fatalf("BodyReadTimeout = %v for a negative setting, want 0 (disabled)", got)
+	}
+}
+
+// nonReadingHandler answers without touching the body — an auth rejection, a
+// probe, a 404. Nothing in the wrapper runs on such a route, so anything the
+// bound depends on having been armed by a Read is not armed here.
+func nonReadingHandler(status int) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+	})
+}
+
+// A route that never reads the body must still be bounded. net/http drains what
+// the client announced and never sent so the connection can be reused, and that
+// drain reads from the same silent client — a slowloris an unauthenticated
+// caller can run against any GET, probe, 401, 404 or 405 (audit HTTP-1).
+func TestBodyReadDeadline_NonReadingHandlerIsBounded(t *testing.T) {
+	addr := bodyTimeoutServer(t, 200*time.Millisecond, nonReadingHandler(http.StatusUnauthorized))
+
+	conn := postHeaders(t, addr, 10) // ...and then nothing at all
+
+	start := time.Now()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("a silent body on a non-reading route was never resolved: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("took %v to answer; the drain net/http runs was not bounded", elapsed)
+	}
+	if status := string(buf[:n]); !strings.HasPrefix(status, "HTTP/1.1 401") {
+		t.Fatalf("got %q, want the handler's 401", status)
+	}
+}
+
+// The same client trick with no Content-Length at all: a chunked body whose
+// terminating chunk never arrives.
+func TestBodyReadDeadline_NonReadingHandlerBoundsAChunkedBody(t *testing.T) {
+	addr := bodyTimeoutServer(t, 200*time.Millisecond, nonReadingHandler(http.StatusOK))
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	fmt.Fprint(conn, "POST / HTTP/1.1\r\nHost: test\r\nTransfer-Encoding: chunked\r\n\r\n")
+
+	start := time.Now()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Read(make([]byte, 64)); err != nil {
+		t.Fatalf("a silent chunked body was never resolved: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("took %v to answer", elapsed)
+	}
+}
+
+// Once the response outgrows net/http's 2 KiB buffer the drain runs from inside
+// the handler rather than after it, so a bound armed on the way out arrives too
+// late. This is the shape of an ordinary list response: several kilobytes, and
+// not a byte of the request body read. Under a concurrency limit the stuck
+// handler also holds its slot.
+func TestBodyReadDeadline_LargeResponseFromANonReadingHandlerIsBounded(t *testing.T) {
+	done := make(chan time.Duration, 1)
+	h := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		start := time.Now()
+		w.Write(make([]byte, 8<<10))
+		done <- time.Since(start)
+	})
+	addr := bodyTimeoutServer(t, 200*time.Millisecond, h)
+
+	postHeaders(t, addr, 10)
+
+	select {
+	case took := <-done:
+		if took > 2*time.Second {
+			t.Fatalf("the handler spent %v inside net/http's mid-response drain", took)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handler is still blocked inside net/http's mid-response drain")
+	}
+}
+
+// A body read to EOF clears the bound, because net/http starts the background
+// read that would trip it at exactly that point. This is the same guarantee
+// TestBodyReadDeadline_DoesNotSeverAStreamingResponse asserts end to end, stated
+// against the wrapper itself so a change to the clearing rule is caught here.
+func TestBodyReadDeadline_ClearsTheDeadlineAtEOF(t *testing.T) {
+	var cleared bool
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.ReadAll(r.Body)
+		// A deadline still in force would bound the response; setting one far
+		// out and reading the body again is not observable from here, so assert
+		// on the wrapper's own state instead.
+		if b, ok := r.Body.(*deadlineBody); ok {
+			cleared = !b.unsupported
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	addr := bodyTimeoutServer(t, 300*time.Millisecond, h)
+
+	conn := postHeaders(t, addr, 2)
+	conn.Write([]byte("hi"))
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	if _, err := conn.Read(make([]byte, 64)); err != nil {
+		t.Fatalf("no response: %v", err)
+	}
+	if !cleared {
+		t.Fatal("the connection refused a deadline; this test proves nothing")
+	}
+}
+
+// The load shedder answers 503 without reading a body, so the same drain applies
+// to a shed request and the deadline has to be installed ahead of it.
+func TestServerBoot_BodyDeadlinePrecedesLoadShedding(t *testing.T) {
+	gate := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	hold := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Query().Get("hold") != "" {
+				entered <- struct{}{}
+				<-gate
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+	srv := New(Config{
+		BodyReadTimeout:       200 * time.Millisecond,
+		MaxConcurrentRequests: 1,
+		HTTPMiddlewares:       []HTTPMiddleware{hold},
+	})
+	srv.MustRegister(bodyTimeoutModel{})
+	h, err := srv.handler()
+	if err != nil {
+		t.Fatalf("handler(): %v", err)
+	}
+	ts := httptest.NewServer(h)
+	closeOnce := sync.OnceFunc(func() { close(gate) })
+	// Registered first so it runs last: Close waits for the held request.
+	t.Cleanup(ts.Close)
+	t.Cleanup(closeOnce)
+
+	// Occupy the only slot, and wait until it actually is. Probing for a 503
+	// instead would race: a probe holding the slot is a probe that sheds the
+	// request meant to hold it, and then nothing is held at all.
+	go http.Get(ts.URL + "/api/live?hold=1") //nolint:errcheck // released at cleanup
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the holding request never reached the middleware")
+	}
+
+	// Now the shed request, announcing a body it never sends.
+	conn, err := net.Dial("tcp", strings.TrimPrefix(ts.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	fmt.Fprint(conn, "POST /api/body_timeout_models HTTP/1.1\r\nHost: test\r\n"+
+		"Content-Type: application/json\r\nContent-Length: 64\r\n\r\n")
+
+	start := time.Now()
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	buf := make([]byte, 64)
+	n, err := conn.Read(buf)
+	if err != nil {
+		t.Fatalf("a shed request with a silent body was never resolved: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("took %v; the deadline is installed behind the load shedder", elapsed)
+	}
+	if status := string(buf[:n]); !strings.HasPrefix(status, "HTTP/1.1 503") {
+		t.Fatalf("got %q, want the shedder's 503", status)
 	}
 }

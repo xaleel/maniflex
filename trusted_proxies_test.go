@@ -12,7 +12,10 @@ package maniflex
 // past trusted hops so the first address a trusted proxy did not vouch for wins.
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -257,5 +260,133 @@ func TestProxyResolver_LegacyModeUnaffectedByExtraLines(t *testing.T) {
 	if !ok || got != "6.6.6.6" {
 		t.Errorf("legacy client IP = %q ok=%v, want 6.6.6.6 — adding an allowlist "+
 			"must not change what the allowlist-free mode does", got, ok)
+	}
+}
+
+// Several gateways append the source port to the entry they add — Azure Front
+// Door and Application Gateway do, as do some F5 and Java stacks. Rejecting such
+// a hop is not neutral: it fails the chain closed to the proxy's own address, so
+// every client behind that gateway shares one identity for rate limiting and
+// audit (audit HTTP-7).
+func TestProxyResolver_EntryCarryingAPortIsRead(t *testing.T) {
+	r := mustResolver(t, "10.0.0.0/8")
+
+	for _, tc := range []struct{ chain, want string }{
+		{"203.0.113.7:54321, 10.0.0.9", "203.0.113.7"},
+		{"[2001:db8::1]:54321, 10.0.0.9", "2001:db8::1"},
+		{"203.0.113.7, 10.0.0.9", "203.0.113.7"}, // bare, unchanged
+		{"2001:db8::1, 10.0.0.9", "2001:db8::1"}, // bare v6, unchanged
+	} {
+		got, ok := r.clientIP("10.0.0.9:443", hdr("X-Forwarded-For", tc.chain))
+		if !ok || got != tc.want {
+			t.Errorf("chain %q → %q ok=%v, want %q", tc.chain, got, ok, tc.want)
+		}
+	}
+}
+
+// The walk stops at the first address no trusted proxy vouched for; everything
+// left of that is what the client chose to send and is never consulted. Parsing
+// the whole chain up front let that tail fail a decision it has no part in — so
+// a caller could send "unknown" and put itself in the load balancer's shared
+// bucket, escaping per-IP limits and leaving audit records naming the balancer.
+func TestProxyResolver_JunkLeftOfTheDecisionPointIsIgnored(t *testing.T) {
+	r := mustResolver(t, "10.0.0.0/8")
+
+	for _, chain := range []string{
+		"unknown, 203.0.113.7, 10.0.0.9",
+		"_hidden, 203.0.113.7, 10.0.0.9",
+		"!!!, more junk, 203.0.113.7, 10.0.0.9",
+	} {
+		got, ok := r.clientIP("10.0.0.9:443", hdr("X-Forwarded-For", chain))
+		if !ok || got != "203.0.113.7" {
+			t.Errorf("chain %q → %q ok=%v, want 203.0.113.7 — the walk stops before "+
+				"reaching the client-controlled entries", chain, got, ok)
+		}
+	}
+}
+
+// The property the lazy walk must not cost: junk *at* the decision point fails
+// the chain closed. Skipping it would push the walk past the address the proxy
+// added and onto the client's forgery, which is what the walk exists to stop.
+func TestProxyResolver_JunkAtTheDecisionPointFailsClosed(t *testing.T) {
+	r := mustResolver(t, "10.0.0.0/8")
+
+	for _, chain := range []string{
+		"6.6.6.6, garbage, 10.0.0.9", // forgery hiding behind junk
+		"garbage, 10.0.0.9",
+		"6.6.6.6, unknown, 10.0.0.9",
+	} {
+		if got, ok := r.clientIP("10.0.0.9:443", hdr("X-Forwarded-For", chain)); ok {
+			t.Errorf("chain %q → %q; an unreadable entry at the decision point must fail "+
+				"closed or the walk lands on the client's own value", chain, got)
+		}
+	}
+}
+
+// A proxy that appends a port to its own hop is still recognised as trusted, so
+// the walk continues past it rather than stopping on it.
+func TestProxyResolver_TrustedHopWithAPortIsStillTrusted(t *testing.T) {
+	r := mustResolver(t, "10.0.0.0/8")
+
+	got, ok := r.clientIP("10.0.0.9:443",
+		hdr("X-Forwarded-For", "203.0.113.7, 10.0.0.4:5000, 10.0.0.9:443"))
+
+	if !ok || got != "203.0.113.7" {
+		t.Errorf("client IP = %q ok=%v, want 203.0.113.7", got, ok)
+	}
+}
+
+// A chain nothing can be read from is worth a line: every client behind that
+// proxy collapses into one identity, and no request or response says why.
+func TestProxyResolver_UnusableChainIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	r := mustResolver(t, "10.0.0.0/8").
+		withLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	if _, ok := r.clientIP("10.0.0.9:443", hdr("X-Forwarded-For", "garbage, 10.0.0.9")); ok {
+		t.Fatal("precondition: the chain was believed")
+	}
+	if !strings.Contains(buf.String(), "X-Forwarded-For") {
+		t.Errorf("nothing logged for an unusable chain: %q", buf.String())
+	}
+}
+
+// A direct client sending forwarding headers at a proxy-configured server is
+// refused too — that is the control working, and logging it would be a line per
+// request.
+func TestProxyResolver_UntrustedPeerIsNotLogged(t *testing.T) {
+	var buf bytes.Buffer
+	r := mustResolver(t, "10.0.0.0/8").
+		withLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	if _, ok := r.clientIP("203.0.113.7:443", hdr("X-Forwarded-For", "garbage")); ok {
+		t.Fatal("precondition: an untrusted peer was believed")
+	}
+	if buf.Len() != 0 {
+		t.Errorf("a direct client produced a warning: %q", buf.String())
+	}
+}
+
+// A broken gateway sends one of these per request; the log must not become the
+// load.
+func TestProxyResolver_UnusableChainLoggingIsThrottled(t *testing.T) {
+	var buf bytes.Buffer
+	r := mustResolver(t, "10.0.0.0/8").
+		withLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	for range 50 {
+		r.clientIP("10.0.0.9:443", hdr("X-Forwarded-For", "garbage, 10.0.0.9")) //nolint:errcheck
+	}
+	if n := strings.Count(buf.String(), "forwarding header"); n != 1 {
+		t.Errorf("logged %d times for 50 requests, want 1", n)
+	}
+}
+
+// A resolver with no sink attached must not panic — validation builds one that
+// way.
+func TestProxyResolver_NoLoggerIsSilentNotFatal(t *testing.T) {
+	r := mustResolver(t, "10.0.0.0/8")
+	if _, ok := r.clientIP("10.0.0.9:443", hdr("X-Forwarded-For", "garbage, 10.0.0.9")); ok {
+		t.Error("the chain was believed")
 	}
 }

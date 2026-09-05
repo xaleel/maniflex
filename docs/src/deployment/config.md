@@ -128,9 +128,20 @@ Config{TrustedProxies: []string{"10.0.0.0/8"}}
 Headers are believed only from those peers, and the `X-Forwarded-For` chain is
 walked **right-to-left** past them: a proxy appends the address it saw, so the
 rightmost entries come from infrastructure and the leftmost is whatever the
-client chose to send. A malformed entry anywhere in the chain fails closed —
-the request keeps its TCP peer — rather than being skipped past. An entry that
-does not parse is a startup error.
+client chose to send. An entry in `Config.TrustedProxies` that does not parse is
+a startup error.
+
+The walk stops at the first address no trusted proxy vouched for, and reads only
+that far. Entries further left are the client's to write and are never consulted,
+so junk among them changes nothing. An entry that **is** the stopping point and
+cannot be read fails the chain closed — the request keeps its TCP peer — rather
+than being skipped past, which would walk the search onto the client's own value.
+
+An entry may carry a source port (`203.0.113.7:54321`, or `[2001:db8::1]:443`);
+several gateways append one. When a chain from a trusted proxy yields nothing
+usable, a throttled warning says so — the symptom otherwise is silent, since
+every client behind that proxy collapses into one address for rate limiting and
+audit.
 
 The chain is every `X-Forwarded-For` line joined in the order received, not just
 the first. Proxies differ here: nginx and AWS ALB extend the client's line, while

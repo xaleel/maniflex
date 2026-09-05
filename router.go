@@ -104,7 +104,7 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 				"audit records",
 				slog.String("hint", `set Config.TrustedProxies to your load balancer's CIDRs, e.g. []string{"10.0.0.0/8"}`))
 		}
-		r.Use(trustedProxyHeaders(resolver))
+		r.Use(trustedProxyHeaders(resolver.withLogger(l)))
 	}
 	for i, mw := range cfg.HTTPMiddlewares {
 		if mw == nil {

@@ -31,6 +31,12 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 	// The cost of the order is that a panic inside RequestID itself no longer
 	// becomes a JSON envelope. It increments an atomic counter and stores the
 	// result in the context; there is nothing in it to panic.
+	//
+	// The sanitizer goes ahead of it because chi reads the header itself: it
+	// drops one the framework will not carry, so chi generates instead. Same
+	// argument as above for running before the recoverer — a bounded scan of a
+	// header value has nothing in it to panic.
+	r.Use(sanitizeRequestID)
 	r.Use(chiMiddleware.RequestID)
 
 	// PanicRecoverer replaces chi's built-in Recoverer. It catches panics,

@@ -147,6 +147,23 @@ Every response carries:
 Custom middleware can add more — see [Response Middleware](../middleware-catalogue/response.md)
 for `AddHeader`, `CORSHeaders`, `Cache`, and friends.
 
+### `X-Request-Id`
+
+A request that arrives with one keeps it, so an id assigned upstream stays the
+same value through the logs, the audit record and a versioned model's history
+row. A request without one is given a generated id.
+
+An incoming id is adopted only if it is at most 128 characters of alphanumerics
+and `- _ . : / + =` — which covers a UUID, plain hex, base64url, AWS X-Ray's
+`Root=1-…` and the framework's own `host/base64-000001`. Anything else is
+replaced with a generated id, because the value is echoed, logged on every line
+the request produces, and stored; an unbounded one is a client-chosen string in
+each of those places. The response header always says which id was actually used.
+
+It is a **correlation hint, not an identity**. Any client may send any acceptable
+id, including one it saw elsewhere, so two unrelated requests can report the same
+value. Never treat it as unique or as evidence of who made the call.
+
 ## Computed (virtual) fields
 
 `Server.AddComputedField` registers a derived field that appears in every

@@ -37,6 +37,10 @@ type defaultSteps struct {
 	maxUploadMem int64
 	queryLimits  QueryLimits
 	bg           *backgroundRunner
+	// draining is the Server's ShuttingDown channel, handed to every
+	// ServerContext so an action can watch it. Nil in a synthesised steps set;
+	// ServerContext.ShuttingDown reads that as "never".
+	draining <-chan struct{}
 }
 
 func newDefaultSteps(adapter DBAdapter, reg RegistryAccessor) *defaultSteps {

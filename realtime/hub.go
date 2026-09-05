@@ -83,6 +83,29 @@ type HubConfig struct {
 	// ResumeBuffer is a shortcut: when ResumeStore is nil and ResumeBuffer > 0,
 	// NewHub installs NewMemoryResumeStore(ResumeBuffer).
 	ResumeBuffer int
+
+	// ShuttingDown, when non-nil, is watched for the server beginning its
+	// shutdown; every connection is then told to close. Pass
+	// maniflex.Server.ShuttingDown():
+	//
+	//	realtime.NewHub(realtime.HubConfig{
+	//	    Bus:          bus,
+	//	    ShuttingDown: server.ShuttingDown(),
+	//	})
+	//
+	// Without it a hub wired the documented way deadlocks its own drain. A live
+	// stream is an in-flight request, and http.Server.Shutdown waits for every
+	// one of them without cancelling their contexts — so the drain waits on the
+	// connections that Hub.Shutdown was going to close, while Hub.Shutdown, run
+	// from Service.Stop, does not get to run until that drain gives up. The
+	// whole ShutdownTimeout is spent before Service.Stop, OnShutdown and the
+	// background-write drain see any of it (audit HTTP-6).
+	//
+	// This only signals: the hub is not marked closed and Shutdown still does
+	// the full sequence afterwards, so keep calling it from Service.Stop. That
+	// call is what waits for the connections to actually be gone, and it now has
+	// a budget to wait with.
+	ShuttingDown <-chan struct{}
 }
 
 // ReadTimeoutDisabled disables the inbound read deadline when assigned to
@@ -117,6 +140,12 @@ type Hub struct {
 	regMu  sync.Mutex
 	wg     sync.WaitGroup // WS read+write pumps and each SSE handler goroutine
 	resume ResumeStore    // nil when resume is disabled
+
+	// drainDone releases the HubConfig.ShuttingDown watcher when the hub is shut
+	// down first, so the goroutine does not outlive the hub waiting on a channel
+	// that may never close. nil when no watcher was started.
+	drainDone     chan struct{}
+	drainDoneOnce sync.Once
 }
 
 // register publishes a client to the hub and counts its goroutines under regMu,
@@ -207,6 +236,20 @@ func NewHub(cfg HubConfig) (*Hub, error) {
 		return nil, fmt.Errorf("realtime: bus subscribe: %w", err)
 	}
 	h.cancel = cancel
+
+	if cfg.ShuttingDown != nil {
+		// Not tracked by h.wg: that counts client handlers, and Shutdown waits
+		// on it. This goroutine outlives none of them — it ends at the first of
+		// the server shutting down or the hub closing on its own.
+		h.drainDone = make(chan struct{})
+		go func() {
+			select {
+			case <-cfg.ShuttingDown:
+				h.signalClients()
+			case <-h.drainDone:
+			}
+		}()
+	}
 	return h, nil
 }
 
@@ -243,21 +286,23 @@ func (h *Hub) admit() bool {
 // up before its steady-state decrement is in place.
 func (h *Hub) release() { h.connN.Add(-1) }
 
-// Shutdown closes all client connections, cancels the bus subscription, and
-// waits for every WS pump and SSE handler goroutine to exit (or ctx to expire).
-// Safe to call multiple times.
-func (h *Hub) Shutdown(ctx context.Context) error {
-	if !h.closed.CompareAndSwap(false, true) {
-		return nil
-	}
-	h.cancel()
-
-	// Signal all clients to close, under the same lock that gates registration.
-	// Ordering matters: closed was set above, so a registration still in flight
-	// either finished before this lock (and is therefore in the map below and
-	// counted in wg) or will refuse once it acquires the lock. Past this point
-	// the client set is final and no further wg.Add can race the wg.Wait below.
+// signalClients tells every connected client to close, under the same lock that
+// gates registration.
+//
+// Ordering matters where Shutdown calls it: closed is set first, so a
+// registration still in flight either finished before this lock — and is
+// therefore in the map below and counted in wg — or will refuse once it acquires
+// the lock. Past that point the client set is final and no further wg.Add can
+// race Shutdown's wg.Wait.
+//
+// HubConfig.ShuttingDown calls it without setting closed, which is the whole
+// point of that path: connections end and the HTTP drain can finish, while the
+// hub stays able to run the bounded Shutdown that follows.
+//
+// Both per-client signals are once-guarded, so signalling twice is harmless.
+func (h *Hub) signalClients() {
 	h.regMu.Lock()
+	defer h.regMu.Unlock()
 	h.clients.Range(func(k, _ any) bool {
 		switch c := k.(type) {
 		case *hubClient:
@@ -267,7 +312,21 @@ func (h *Hub) Shutdown(ctx context.Context) error {
 		}
 		return true
 	})
-	h.regMu.Unlock()
+}
+
+// Shutdown closes all client connections, cancels the bus subscription, and
+// waits for every WS pump and SSE handler goroutine to exit (or ctx to expire).
+// Safe to call multiple times.
+func (h *Hub) Shutdown(ctx context.Context) error {
+	if !h.closed.CompareAndSwap(false, true) {
+		return nil
+	}
+	h.cancel()
+	if h.drainDone != nil {
+		h.drainDoneOnce.Do(func() { close(h.drainDone) })
+	}
+
+	h.signalClients()
 
 	done := make(chan struct{})
 	go func() { h.wg.Wait(); close(done) }()

@@ -383,6 +383,36 @@ separate goroutine.
 
 `AddService` must be called before `Start`.
 
+### Hub shutdown
+
+`AddService` alone isn't enough and can cause a deadlock during shutdow.
+An active WebSocket connection is treated as an in-flight HTTP request and
+`http.Server.Shutdown` waits for all in-flight requests to finish without
+canceling them - it blocks `Hub.Shutdown` from running via `Service.Stop`. 
+This creates a deadlock: the server drains connections that only `Hub.Shutdown`
+can close. As a result, a single active client can stall the shutdown until 
+`ShutdownTimeout` expires, causing `Service.Stop`, `OnShutdown`, and the 
+background-write drain to time out.
+
+Hand the hub `Server.ShuttingDown()` so it hears about shutdown before the wait
+begins:
+
+```go
+hub, err := realtime.NewHub(realtime.HubConfig{
+    Bus:          bus,
+    ShuttingDown: server.ShuttingDown(), // closed before the drain starts
+})
+```
+
+Every connection is then told to close as shutdown begins, the handlers return,
+and the HTTP drain finishes in milliseconds. Keep the `hubService` registration:
+the signal only tells connections to go, while `Hub.Shutdown` in `Stop` is what
+waits for them to actually be gone — and it now has a budget to wait with.
+
+`Server.ShuttingDown()` is a plain `<-chan struct{}`, closed once. Any streaming
+handler you write yourself should select on it too; see
+[Graceful Shutdown](../deployment/shutdown.md).
+
 Every SSE write carries a bounded deadline, so a client that has stopped reading
 cannot pin its handler goroutine — and therefore cannot hold `Shutdown` open —
 past that deadline. This applies to the live stream, the keepalive comment, and

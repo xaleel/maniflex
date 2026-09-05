@@ -128,6 +128,9 @@ type Server struct {
 
 	exited   chan struct{} // closed when the accepted startup entrypoint returns
 	exitOnce sync.Once
+
+	draining     chan struct{} // closed when shutdown begins — see ShuttingDown
+	drainingOnce sync.Once
 }
 
 // New creates a Server with the given configuration.
@@ -155,6 +158,7 @@ func New(cfg Config) *Server {
 		steps:     steps,
 		lifecycle: newLifecycle(),
 		exited:    make(chan struct{}),
+		draining:  make(chan struct{}),
 	}
 
 	// The OpenAPI generator must read the Config the server actually serves from —
@@ -686,6 +690,7 @@ func (c *Server) finishServicesStart(err error) {
 // markStopping makes the terminal direction visible before graceful shutdown
 // begins, so a concurrent Start gets ErrStopped rather than claiming a restart.
 func (c *Server) markStopping() {
+	c.markDraining()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.state == serverStarting || c.state == serverRunning ||
@@ -693,6 +698,52 @@ func (c *Server) markStopping() {
 		c.state = serverStopping
 	}
 }
+
+// markDraining closes the ShuttingDown channel, at most once.
+//
+// It is deliberately not under c.mu: ShuttingDown is read from request handlers,
+// and a shutdown that has to take the server's lock to announce itself would
+// serialise every one of them behind it.
+func (c *Server) markDraining() {
+	c.drainingOnce.Do(func() { close(c.draining) })
+}
+
+// ShuttingDown returns a channel closed when the server begins shutting down,
+// before it starts waiting for in-flight requests.
+//
+// It exists for handlers that would otherwise never return on their own — a
+// Server-Sent Events stream, a WebSocket pump, a long poll. http.Server.Shutdown
+// waits for every in-flight request and does not cancel their contexts, so such
+// a handler holds the whole drain open; and because Service.Stop and OnShutdown
+// run after that drain, whatever would have closed those streams does not run
+// until the budget is already spent. The realtime hub is the case in point: the
+// documented wiring calls Hub.Shutdown from Service.Stop, so the drain waits on
+// the very connections that Stop was going to close (audit HTTP-6).
+//
+// Select on it alongside the request context and return when either fires:
+//
+//	for {
+//	    select {
+//	    case <-r.Context().Done():   // this client went away
+//	        return
+//	    case <-server.ShuttingDown(): // the server is going away
+//	        return
+//	    case ev := <-events:
+//	        writeEvent(w, ev)
+//	    }
+//	}
+//
+// Nothing is cancelled by this: a handler that ignores it behaves exactly as
+// before, and keeps the whole ShutdownTimeout to finish in. Returning promptly
+// is what leaves the rest of the budget for Service.Stop, OnShutdown, the
+// Server.Go drain and in-flight ctx.GoBackground writes.
+//
+// Inside the pipeline, ServerContext.ShuttingDown reaches the same channel.
+//
+// It is closed once and never reopened, so a server that has shut down keeps
+// reporting so. Reading it before shutdown blocks, which is what makes it usable
+// in a select.
+func (c *Server) ShuttingDown() <-chan struct{} { return c.draining }
 
 // finishStart records the terminal result of the one accepted start.
 func (c *Server) finishStart(err error) {
@@ -791,6 +842,13 @@ func newHTTPServer(addr string, h http.Handler, cfg *Config) *http.Server {
 // explicit Shutdown method, so the order holds however shutdown is triggered.
 func (c *Server) gracefulShutdown(ctx context.Context) error {
 	var firstErr error
+
+	// 0. Announce it, before anything waits. srv.Shutdown below blocks on every
+	// in-flight request and does not cancel their contexts, so a stream that is
+	// never told to wind down holds the whole budget — and the Service.Stop that
+	// would have closed it runs in step 2, after that budget is gone. Handlers
+	// watching ShuttingDown return here instead (audit HTTP-6).
+	c.markDraining()
 
 	// 1. Stop accepting new connections; let in-flight requests finish.
 	if srv := c.httpServer(); srv != nil {
@@ -895,6 +953,12 @@ func (c *Server) abortGoroutines() {
 // listener will not open one, whether it is already booting or has yet to be
 // called. A Server is not restartable.
 func (c *Server) Shutdown(ctx context.Context) error {
+	// Announced before the state lock and before anything waits on a request:
+	// a stream watching ShuttingDown has to hear about this while there is still
+	// budget for it to matter. Idempotent, so the signal path reaching here
+	// through markStopping first is fine.
+	c.markDraining()
+
 	c.mu.Lock()
 	srv := c.httpSrv
 	booting := false
@@ -1021,6 +1085,9 @@ func (c *Server) handler() (http.Handler, error) {
 		// middleware set must stop changing. Last, because the file-cleanup hooks
 		// above register middleware of their own (PERF-2).
 		c.Pipeline.freeze()
+		// Hand the shutdown signal to the steps so every ServerContext built from
+		// them can offer ctx.ShuttingDown().
+		c.steps.draining = c.draining
 		h := newHandlers(c.Pipeline, c.steps, &c.cfg)
 		h.globalSearch = c.globalSearch
 		c.router = buildRouter(&c.cfg, c.registry, h, c.Pipeline, c.cfg.logger(), c.actions, c.asyncCfg, c.readinessPhase)

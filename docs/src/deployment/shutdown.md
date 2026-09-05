@@ -23,6 +23,39 @@ If the deadline passes with requests still running, the underlying TCP
 connections are closed — those requests fail mid-flight but the process exits
 cleanly.
 
+## Long-lived handlers
+
+Step 2 waits for every in-flight request and does **not** cancel their contexts.
+A handler that only returns when its client goes away, e.g. Server-Sent Events, a
+WebSocket pump, or a long poll, therefore holds the whole drain, and steps 5 to 7
+get whatever is left of the budget, which for one such connection is nothing.
+
+`Server.ShuttingDown()` returns a channel closed at the very
+start of shutdown, before any waiting begins:
+
+```go
+for {
+    select {
+    case <-r.Context().Done():    // this client went away
+        return
+    case <-server.ShuttingDown(): // the server is going away
+        return
+    case ev := <-events:
+        writeEvent(w, ev)
+    }
+}
+```
+
+Inside an action, `ctx.ShuttingDown()` is the same channel.
+
+Nothing is cancelled by it: a handler that ignores it keeps the whole
+`ShutdownTimeout` to finish in, exactly as before. Returning promptly is what
+leaves the rest of the budget for services, hooks and background writes.
+
+The realtime hub is the case this matters most for, and it has a dedicated
+wiring — see
+[Let the hub hear the shutdown coming](../advanced-topics/realtime.md#let-the-hub-hear-the-shutdown-coming).
+
 ## Embedding `Handler()` in your own server
 
 An embedding owns the HTTP listener, while Maniflex still owns its registered

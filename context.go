@@ -340,6 +340,11 @@ type ServerContext struct {
 	// custom action wrappers); GoBackground falls back to a bare goroutine.
 	bg *backgroundRunner
 
+	// draining is the Server's ShuttingDown channel. Nil in a ServerContext
+	// synthesised outside the framework, which ShuttingDown reports as a server
+	// that is not shutting down.
+	draining <-chan struct{}
+
 	// abortSite is the file:line of the most recent Abort() call.
 	// Populated only when trace.Aborts is true; cleared after it is logged by
 	// the innermost middleware wrapper so outer wrappers do not re-log it.
@@ -1112,6 +1117,43 @@ func (a *ModelAccessor) Delete(id string) error {
 func (c *ServerContext) GoBackground(fn func(context.Context)) {
 	c.bg.Go(fn)
 }
+
+// ShuttingDown returns a channel closed when the server begins shutting down,
+// before it starts waiting for in-flight requests. It is Server.ShuttingDown,
+// reachable from inside the pipeline; see there for what it is for.
+//
+// An action that streams — Server-Sent Events, a long poll — should select on it
+// alongside its request context and return when either fires. Nothing cancels
+// such a handler otherwise: http.Server.Shutdown waits for it and leaves its
+// context alone, so it holds the whole shutdown budget, and the Service.Stop
+// that might have ended it does not run until that budget is spent.
+//
+//	for {
+//	    select {
+//	    case <-ctx.Ctx.Done():
+//	        return nil
+//	    case <-ctx.ShuttingDown():
+//	        return nil
+//	    case ev := <-events:
+//	        // write and flush
+//	    }
+//	}
+//
+// A ServerContext synthesised outside the framework has no server to report on,
+// so this returns a channel that is never closed — a select on it simply never
+// takes that branch.
+func (c *ServerContext) ShuttingDown() <-chan struct{} {
+	if c.draining == nil {
+		return neverClosed
+	}
+	return c.draining
+}
+
+// neverClosed backs ShuttingDown on a ServerContext with no server behind it. A
+// nil channel would also never fire in a select, but returning one invites a
+// caller to write `if ch == nil` and branch on it; this keeps the contract to
+// "it never closes".
+var neverClosed = make(chan struct{})
 
 // Set stores a value that later pipeline steps or middleware can retrieve.
 func (c *ServerContext) Set(key string, val any) {

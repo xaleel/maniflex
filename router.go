@@ -210,6 +210,18 @@ func collectRouterIssues(cfg *Config, issues *issueList) {
 		issues.add("proxy", "Config.TrustedProxies: %s", err.Error())
 	}
 
+	// Also not Strict-gated. The field documents a default and no way to switch
+	// the bound off, so a negative value is a mistake rather than a choice — and
+	// it read as two different mistakes: an already-expired deadline on /health,
+	// which then reports a database it never reached as degraded, and no bound at
+	// all on /ready. Refusing keeps the option of giving it a meaning later;
+	// picking one now would freeze it (audit HTTP-4).
+	if cfg.HealthTimeout < 0 {
+		issues.add("probes",
+			"Config.HealthTimeout is %s; a dependency-check budget must be positive. "+
+				"Leave it zero for the 3s default", cfg.HealthTimeout)
+	}
+
 	if !cfg.Strict {
 		return
 	}

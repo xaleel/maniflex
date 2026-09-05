@@ -44,7 +44,8 @@ type Pinger interface {
 // endpoint disagreeing with the other about whether the database is reachable
 // would be a bug with nowhere to hide. Concurrent requests share one ping (see
 // probeFlight), so an unauthenticated probe cannot be used to amplify traffic
-// against the database.
+// against the database, and the context that ping runs on comes from
+// probeContext, shared for the same reason.
 //
 // The "db" key is not gated by Config.Probes.PublishReadinessChecks: it is a
 // name the framework owns rather than one the application chose, so unlike
@@ -62,7 +63,7 @@ func healthHandler(cfg *Config, reg *Registry) http.HandlerFunc {
 			return
 		}
 
-		ctx, cancel := context.WithTimeout(r.Context(), cfg.HealthTimeout)
+		ctx, cancel := probeContext(r, cfg)
 		defer cancel()
 
 		db := flight.do(func() string { return pingAdapters(ctx, cfg, reg) })

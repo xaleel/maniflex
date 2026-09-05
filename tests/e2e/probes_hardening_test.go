@@ -612,3 +612,104 @@ func TestProbeFlight_HealthTimeoutStillBoundsTheFlight(t *testing.T) {
 			"bounds the flight, which is now the only thing that does", elapsed, budget)
 	}
 }
+
+// The same guarantee for /health, which runs its own flight. It kept the
+// request context where /ready severed it, so the fix above reached one of the
+// two endpoints and the gap was invisible: every test here drove /ready
+// (audit HTTP-4).
+func TestProbeFlight_HealthCheckOutlivesTheRequestThatOpenedIt(t *testing.T) {
+	t.Parallel()
+
+	const grace = 1500 * time.Millisecond
+
+	pinger := &ctxCapturingPinger{
+		ctxCh:   make(chan context.Context, 1),
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	srv := testutil.NewServer(t, testutil.Options{
+		HealthCheckDB: true,
+		HealthTimeout: 30 * time.Second,
+		DBAdapter: func(reg maniflex.RegistryAccessor) (maniflex.DBAdapter, error) {
+			real, err := sqlite.Open(":memory:", reg)
+			if err != nil {
+				return nil, err
+			}
+			pinger.DBAdapter = real
+			return pinger, nil
+		},
+	})
+
+	reqCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, srv.APIPath("/health"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if resp, err := srv.Client().Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}()
+
+	<-pinger.started // the flight is open and the ping is running
+	pingCtx := <-pinger.ctxCh
+	cancel() // the orchestrator gives up on its probe and drops the connection
+	<-done
+
+	select {
+	case <-pingCtx.Done():
+		t.Errorf("the /health ping context was cancelled when the request that opened the "+
+			"flight went away (%v); every request coalesced onto it is handed that failure, "+
+			"so a healthy database is reported degraded", context.Cause(pingCtx))
+	case <-time.After(grace):
+	}
+
+	close(pinger.release)
+}
+
+// Both endpoints read one Config.HealthTimeout, so they must not disagree about
+// what a value means. They did: -1 was "no bound" on /ready and "already
+// expired" on /health, which then called a reachable database degraded. It is
+// refused at startup now, which is the assertion — one answer, not two.
+func TestProbes_NegativeHealthTimeoutIsRefusedAtStartup(t *testing.T) {
+	t.Parallel()
+
+	server := maniflex.New(maniflex.Config{
+		PathPrefix:         "/api",
+		DisableAutoMigrate: true,
+		HealthCheckDB:      true,
+		HealthTimeout:      -1,
+	})
+	server.MustRegister(testutil.DefaultModels()...)
+
+	err := server.ValidateProduction()
+	if err == nil {
+		t.Fatal("a negative HealthTimeout was accepted")
+	}
+	if !strings.Contains(err.Error(), "HealthTimeout") {
+		t.Errorf("error does not name the field: %v", err)
+	}
+}
+
+// ctxCapturingPinger hands its Ping context out once, then blocks until
+// released, so a test can watch what happens to that context.
+type ctxCapturingPinger struct {
+	maniflex.DBAdapter
+	once    sync.Once
+	ctxCh   chan context.Context
+	started chan struct{}
+	release chan struct{}
+}
+
+func (p *ctxCapturingPinger) Ping(ctx context.Context) error {
+	p.once.Do(func() {
+		p.ctxCh <- ctx
+		close(p.started)
+	})
+	<-p.release
+	return nil
+}

@@ -929,6 +929,10 @@ type Config struct {
 	// on GET {prefix}/ready and on /health when HealthCheckDB is true, plus
 	// every ReadinessChecks entry. Default: 3s.
 	//
+	// Unlike the connection timeouts there is no "disable" spelling: a negative
+	// value is refused at startup rather than read as unbounded. The budget is
+	// what stops an unauthenticated probe from holding a dependency check open.
+	//
 	// Choose a value smaller than your probe's timeoutSeconds so the handler
 	// can return a clean 503 before the probe itself times out:
 	//

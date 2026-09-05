@@ -364,7 +364,9 @@ balancer after its database has gone away.
 | `HealthCheckDB` | `false` | when true, `GET /health` pings every distinct registered adapter (Config.DB plus any per-model overrides) and returns `503` on failure. Governs `/health` alone — `/ready` always checks the database |
 
 Set `HealthTimeout` shorter than your probe's `timeoutSeconds` so the handler
-can return `503` cleanly before the probe times out.
+can return `503` cleanly before the probe times out. It must be positive —
+unlike the connection timeouts there is no negative "disable" spelling, and a
+negative value is refused at startup.
 
 Add a dependency of your own with `ReadinessChecks`:
 

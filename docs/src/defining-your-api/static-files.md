@@ -85,6 +85,36 @@ A few details follow from how the route is mounted (the `buildRouter` block in
   one it answers `404`, unless `StaticDirectoryListing` is set — a listing names
   every file in the directory, including ones nothing links to, so it is opt-in.
 
+### Behind `maniflex.Mount`
+
+`maniflex.Mount` forwards `PathPrefix` and nothing else, so the second bullet
+above has a consequence: a mounted server answers `404` for every asset it
+serves standalone. `Mount` warns about it at startup, naming the prefix that
+went dark, whenever `StaticDir` is set and `StaticDisabled` is not.
+
+Forward the prefix yourself to fix it, reusing the server's own handler rather
+than an `http.FileServer` — which has none of the limits below:
+
+```go
+r := chi.NewRouter()
+maniflex.Mount(r, server)
+
+// Static lives outside PathPrefix, so Mount does not carry it across.
+inner := server.Handler()
+r.Handle("/static/*", http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+    req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, chi.NewRouteContext()))
+    inner.ServeHTTP(w, req)
+}))
+```
+
+The fresh `chi.RouteContext` is the working part: it lets the inner router
+re-route from the URL. `r.Mount("/static", server.Handler())` reads as the
+obvious equivalent and answers `404`, because chi hands a mounted handler an
+already-stripped route path.
+
+Set `StaticDisabled` when something else serves the assets — a CDN, or the outer
+router's own file handler — and the warning goes with it.
+
 ## What is reachable
 
 The mount is deliberately narrower than a plain file server, so pointing

@@ -54,6 +54,12 @@ is set, and **before** the server starts handling requests. It panics early if
 neither `Config.Auth` nor `Config.AllowUnauthenticated` is set, so an
 unprotected panel can never be shipped by accident.
 
+`maniflex.Mount` forwards `PathPrefix` only. If this server also sets
+`Config.StaticDir`, its files are served outside that prefix and will `404` here
+— `Mount` warns, and
+[Behind `maniflex.Mount`](../defining-your-api/static-files.md#behind-maniflexmount)
+has the two-line fix.
+
 ## Config reference
 
 | Field                  | Type                              | Default            | Description                                                                            |

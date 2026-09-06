@@ -46,6 +46,7 @@ field unset never turns anything off — not that the feature is on by default.
 | `StaticDir` | `""` | filesystem directory served as static files; empty serves nothing (opt-in). Relative paths resolve against cwd |
 | `StaticPrefix` | `/static` | URL prefix the static directory is mounted under, at the router root |
 | `StaticDisabled` | `false` | turn static file serving off even when `StaticDir` is set |
+| `StaticDirectoryListing` | `false` | serve a listing for a static directory with no `index.html`; `404` otherwise |
 | `HTTPAccessControlled` | `false` | assert that non-empty `HTTPMiddlewares` protects every route for `ValidateProduction`; does not install auth |
 
 `PathPrefix` does **not** affect `/static` or `/files`; those are mounted at the

@@ -291,21 +291,31 @@ func mountStatic(r chi.Router, cfg *Config, l *slog.Logger) {
 
 	prefix := staticPrefix(cfg)
 
-	if _, err := os.Stat(cfg.StaticDir); err == nil {
-		fileServer(r, prefix, http.Dir(cfg.StaticDir))
-	} else {
+	if _, err := os.Stat(cfg.StaticDir); err != nil {
 		l.Warn("Static file path does not exist; skip mounting static",
 			slog.String("path", cfg.StaticDir), slog.String("prefix", prefix))
+		return
 	}
+	h, err := newStaticHandler(cfg.StaticDir, cfg.StaticDirectoryListing, l)
+	if err != nil {
+		l.Warn("Static file path could not be opened; skip mounting static",
+			slog.String("path", cfg.StaticDir), slog.String("prefix", prefix),
+			slog.String("error", err.Error()))
+		return
+	}
+	fileServer(r, prefix, h)
 }
 
-func fileServer(r chi.Router, path string, root http.FileSystem) {
+// fileServer mounts h under path for GET and HEAD only.
+//
+// Handle would register every method, and http.FileServer answers them all with
+// the file's contents — so DELETE /static/app.js returned 200 and the body. No
+// method other than these two has a meaning here, and one that reads as a write
+// should not come back looking like it worked (audit HTTP-9).
+func fileServer(r chi.Router, path string, h http.Handler) {
 	if strings.ContainsAny(path, "{}*") {
 		panic("FileServer does not permit any URL parameters.")
 	}
-
-	// Create a new file server handler
-	fs := http.FileServer(root)
 
 	// If the path is not a trailing slash, add one
 	if path != "/" && path[len(path)-1] != '/' {
@@ -313,8 +323,9 @@ func fileServer(r chi.Router, path string, root http.FileSystem) {
 		path += "/"
 	}
 
-	// Mount the file server handler
-	r.Handle(path+"*", http.StripPrefix(path, fs))
+	stripped := http.StripPrefix(path, h)
+	r.Method(http.MethodGet, path+"*", stripped)
+	r.Method(http.MethodHead, path+"*", stripped)
 }
 
 // mountModel registers five REST endpoints for one model under its table name.

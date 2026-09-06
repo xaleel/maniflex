@@ -577,6 +577,21 @@ type Config struct {
 	// the default prefix, public/app.js is reachable at /static/app.js, and a
 	// single-page app under public/admin/ (with its own index.html) is served in
 	// full at /static/admin/, nested assets included.
+	//
+	// Three limits apply to what is reachable, so pointing this at a directory
+	// that is also a working tree does not publish its contents:
+	//
+	//   - Only GET and HEAD are answered.
+	//   - A path component beginning with a dot is refused — .env, .git/config,
+	//     .htpasswd and their kind. The exception is .well-known, the
+	//     IANA-registered prefix (RFC 8615) ACME challenges, security.txt and
+	//     apple-app-site-association are fetched from.
+	//   - Every path is resolved inside the directory through os.Root, so a
+	//     symlink under StaticDir cannot read outside it, and neither can "..".
+	//
+	// A directory request serves its index.html, or answers 404 — see
+	// StaticDirectoryListing. None of this makes an unsafe directory safe: it is
+	// still the operator's call which directory is published.
 	StaticDir string
 
 	// StaticPrefix is the URL path prefix under which StaticDir is served.
@@ -592,6 +607,19 @@ type Config struct {
 	// It exists so an app that configures StaticDir unconditionally can still
 	// flip serving off from an env var or flag without clearing the field.
 	StaticDisabled bool
+
+	// StaticDirectoryListing serves a listing for a static directory that has no
+	// index.html. Default: false, which answers 404.
+	//
+	// Off by default because a listing is an information leak wherever it is not
+	// deliberate: it names every file in the directory, including ones nothing
+	// links to. This used to be on — Go's http.FileServer lists by default — so a
+	// directory added later, or one whose index.html was renamed, began
+	// publishing its own contents with nothing said about it.
+	//
+	// Dot-prefixed entries are omitted from a listing and refused on request
+	// either way; see StaticDir.
+	StaticDirectoryListing bool
 
 	// MaxConcurrentExports caps how many export requests may run at once across
 	// the whole server. 0 means DefaultMaxConcurrentExports (4); a negative value

@@ -61,6 +61,7 @@ server := maniflex.New(maniflex.Config{
 | `StaticDir`      | `""`      | filesystem directory served; empty serves nothing. A relative path resolves against cwd |
 | `StaticPrefix`   | `/static` | URL prefix the directory is mounted under (at the router root)    |
 | `StaticDisabled` | `false`   | set `true` to turn serving off even when `StaticDir` is set       |
+| `StaticDirectoryListing` | `false` | serve a listing for a directory with no `index.html`; `404` otherwise |
 
 `StaticDisabled` exists so an app that sets `StaticDir` unconditionally can still
 flip serving off from an env var or flag without clearing the field.
@@ -80,10 +81,31 @@ A few details follow from how the route is mounted (the `buildRouter` block in
   router root.
 - **Trailing-slash redirect.** A request to `/static` (no trailing slash) is
   `301`-redirected to `/static/`. Requests below it are served directly.
-- **Directory listing.** Because it is backed by Go's `http.FileServer`, a
-  request for a directory with no `index.html` returns a file listing. Add an
-  `index.html` to each directory you do not want browsable — and only point
-  `StaticDir` at a directory whose whole contents are safe to publish.
+- **Directory listing.** A directory request serves its `index.html`. Without
+  one it answers `404`, unless `StaticDirectoryListing` is set — a listing names
+  every file in the directory, including ones nothing links to, so it is opt-in.
+
+## What is reachable
+
+The mount is deliberately narrower than a plain file server, so pointing
+`StaticDir` at a directory that is also a working tree does not publish it:
+
+| | Behaviour |
+|---|---|
+| Methods | `GET` and `HEAD` only; anything else is `405` |
+| Dotfiles | any path component starting with `.` is `404` — `.env`, `.git/config`, `.htpasswd`, `.ssh` |
+| `.well-known` | the one exception, so ACME renewal and `security.txt` keep working |
+| Directories | `index.html`, else `404` (see `StaticDirectoryListing`) |
+| Symlinks | resolved inside the directory through `os.Root`; a link out of it is `404` |
+
+Relative symlinks within the tree are followed normally. A symlink with an
+**absolute** target is refused even when it happens to point back inside, because
+`os.Root` cannot confirm that without resolving the path outside its own walk —
+which is the race it exists to remove. Use a relative link.
+
+None of this makes an unsafe directory safe. It is still your call which
+directory is published; these limits only stop the most common ways one leaks
+more than intended.
 
 ## Static files vs. file uploads
 

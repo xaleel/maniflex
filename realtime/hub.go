@@ -168,7 +168,6 @@ func (h *Hub) register(c any, delta int) bool {
 	return true
 }
 
-
 // logThrottled emits msg at WARN on the first occurrence and every 128th after,
 // carrying the running count. Connection-refusal reasons (a full hub, a hostile
 // Origin) can arrive at the event rate under load or attack — exactly when
@@ -754,14 +753,14 @@ type hubClient struct {
 	br         *bufio.Reader
 	logger     *slog.Logger
 	principal  *Principal
-	out        chan []byte       // encoded WS frames; never closed by sender
-	done       chan struct{}     // closed by close() to wake the write loop
-	kickCh     chan uint16       // close code the write loop should send, then exit
-	writeMu    sync.Mutex       // serialises writes to conn
-	closeOnce  sync.Once        // ensures the teardown in close() runs once
-	frameOnce  sync.Once        // ensures the courtesy close frame is written once
-	removeOnce sync.Once        // ensures remove runs once
-	kickOnce   sync.Once        // counts a slow-consumer kick at most once
+	out        chan []byte         // encoded WS frames; never closed by sender
+	done       chan struct{}       // closed by close() to wake the write loop
+	kickCh     chan uint16         // close code the write loop should send, then exit
+	writeMu    sync.Mutex          // serialises writes to conn
+	closeOnce  sync.Once           // ensures the teardown in close() runs once
+	frameOnce  sync.Once           // ensures the courtesy close frame is written once
+	removeOnce sync.Once           // ensures remove runs once
+	kickOnce   sync.Once           // counts a slow-consumer kick at most once
 	subs       map[string][]string // subID → []pattern
 	subMu      sync.RWMutex
 	subSeq     atomic.Uint64
@@ -1244,17 +1243,17 @@ func encodeSSEEvent(eventType, id string, data []byte) []byte {
 // ── WebSocket frame encoding (server → client, no masking) ───────────────────
 
 const (
-	wsContinuation byte = 0x0
-	wsText         byte = 0x1
-	wsBinary       byte = 0x2
-	wsClose        byte = 0x8
-	wsPing         byte = 0x9
-	wsPong         byte = 0xA
-	wsClose1000 uint16 = 1000
-	wsClose1001 uint16 = 1001
-	wsClose1002 uint16 = 1002 // Protocol Error
-	wsClose1009 uint16 = 1009 // Message Too Big
-	wsClose1013 uint16 = 1013
+	wsContinuation byte   = 0x0
+	wsText         byte   = 0x1
+	wsBinary       byte   = 0x2
+	wsClose        byte   = 0x8
+	wsPing         byte   = 0x9
+	wsPong         byte   = 0xA
+	wsClose1000    uint16 = 1000
+	wsClose1001    uint16 = 1001
+	wsClose1002    uint16 = 1002 // Protocol Error
+	wsClose1009    uint16 = 1009 // Message Too Big
+	wsClose1013    uint16 = 1013
 )
 
 // errFrameTooLarge is returned by recvFrame when an inbound frame's advertised

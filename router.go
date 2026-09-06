@@ -193,19 +193,32 @@ func buildRouter(cfg *Config, reg *Registry, h *handlers, p *Pipeline, l *slog.L
 //
 // Under Strict, both become errors: in an environment where a boot failure costs
 // a CI re-run rather than an outage, "probably wrong" is worth stopping for.
+// normalisePrefix puts a configured URL prefix into the one shape chi accepts:
+// exactly one leading slash, no trailing one, with "/" preserved as itself.
+//
+// chi panics on a pattern that does not begin with a slash, so PathPrefix: "api"
+// used to take down Start() from inside buildRouter — after Config validation had
+// already reported no problem, which is the promise StartWithContext makes. The
+// quieter shape was "//api": no panic, every route mounted a doubled slash deep,
+// and since no client sends one the whole API answered 404 (audit HTTP-12).
+func normalisePrefix(prefix string) string {
+	trimmed := strings.Trim(prefix, "/")
+	if trimmed == "" {
+		return "/"
+	}
+	return "/" + trimmed
+}
+
 // staticPrefix resolves the URL prefix static files are served under,
-// guaranteeing a leading slash so a bare prefix ("assets") does not panic chi.
-// Shared by the mount and its validation so the two cannot disagree about what
-// the configuration means.
+// normalised so a bare prefix ("assets") does not panic chi. Shared by the mount
+// and its validation so the two cannot disagree about what the configuration
+// means.
 func staticPrefix(cfg *Config) string {
 	prefix := cfg.StaticPrefix
 	if prefix == "" {
 		prefix = "/static"
 	}
-	if !strings.HasPrefix(prefix, "/") {
-		prefix = "/" + prefix
-	}
-	return prefix
+	return normalisePrefix(prefix)
 }
 
 func collectRouterIssues(cfg *Config, issues *issueList) {
@@ -226,6 +239,31 @@ func collectRouterIssues(cfg *Config, issues *issueList) {
 		issues.add("probes",
 			"Config.HealthTimeout is %s; a dependency-check budget must be positive. "+
 				"Leave it zero for the 3s default", cfg.HealthTimeout)
+	}
+
+	// Also not Strict-gated, and for the reason the whole seam exists: the address
+	// is built after migration and after services have started, so an out-of-range
+	// port ran the schema and brought up every dependency before net.Listen refused
+	// it. env.go has range-checked PORT all along; a Config set in code did not
+	// (audit HTTP-12).
+	// Zero is legal and means 8080 — ApplyDefaults has already replaced it by the
+	// time a Server gets here, and a Config checked without it should read the
+	// field the way the field is documented.
+	if cfg.Port < 0 || cfg.Port > 65535 {
+		issues.add("listener",
+			"Config.Port is %d; a TCP port must be 1-65535. Leave it zero for 8080", cfg.Port)
+	}
+
+	// fileServer panics on these rather than mounting a route that would capture
+	// path segments as parameters. Nothing can guess what "/as{sets" meant, so it
+	// is refused — but here, with every other startup problem, instead of from
+	// inside buildRouter.
+	if !cfg.StaticDisabled && cfg.StaticDir != "" {
+		if prefix := staticPrefix(cfg); strings.ContainsAny(prefix, "{}*") {
+			issues.add("static",
+				"Config.StaticPrefix %q contains a routing character ({, } or *); the static "+
+					"mount serves a literal path prefix and takes no URL parameters", prefix)
+		}
 	}
 
 	if !cfg.Strict {

@@ -523,10 +523,16 @@ const DefaultMaxConcurrentExports = 4
 
 // Config is the top-level configuration passed to New().
 type Config struct {
-	// Port the HTTP server listens on. Default: 8080.
+	// Port the HTTP server listens on. Default: 8080. A value outside 1-65535 is
+	// refused at startup rather than at net.Listen, which runs after migration
+	// and after services have started.
 	Port int
 
 	// PathPrefix is prepended to every generated route. Default: "/api".
+	//
+	// It is normalised to one leading slash and no trailing one, so "api",
+	// "/api/" and "//api" all mean "/api" and "/" mounts the API at the router
+	// root. Read it back from the Config for the canonical form.
 	PathPrefix string
 
 	// Documentation controls the generated OpenAPI and AsyncAPI endpoints.
@@ -596,7 +602,9 @@ type Config struct {
 
 	// StaticPrefix is the URL path prefix under which StaticDir is served.
 	// Default: "/static". Unlike model routes it is mounted at the router root,
-	// NOT under PathPrefix.
+	// NOT under PathPrefix. Normalised like PathPrefix; a prefix containing a
+	// chi routing character ({, } or *) is refused at startup, since the mount
+	// serves a literal path and takes no URL parameters.
 	//
 	// Setting it to PathPrefix is refused at startup: the file server would take
 	// over that whole subtree and every API route under it would answer 404. A
@@ -1050,6 +1058,7 @@ func (c *Config) ApplyDefaults() {
 	if c.PathPrefix == "" {
 		c.PathPrefix = "/api"
 	}
+	c.PathPrefix = normalisePrefix(c.PathPrefix)
 	c.QueryLimits = resolveQueryLimits(defaultQueryLimits, c.QueryLimits)
 	if c.StaticPrefix == "" {
 		c.StaticPrefix = "/static"

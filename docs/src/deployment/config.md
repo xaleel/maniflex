@@ -39,8 +39,8 @@ field unset never turns anything off — not that the feature is on by default.
 
 | Field | Default | Purpose |
 |---|---|---|
-| `Port` | `8080` | TCP port the HTTP server binds to |
-| `PathPrefix` | `/api` | URL prefix prepended to generated model and documentation routes |
+| `Port` | `8080` | TCP port the HTTP server binds to; outside 1–65535 is refused at startup |
+| `PathPrefix` | `/api` | URL prefix prepended to generated model and documentation routes; normalised |
 | `Documentation` | zero value (unmounted) | explicitly publish generated OpenAPI/AsyncAPI documents or protect both with shared middleware |
 | `ServiceName` | `""` | service identifier added to logs, audit records, and the `X-Service-Name` response header |
 | `StaticDir` | `""` | filesystem directory served as static files; empty serves nothing (opt-in). Relative paths resolve against cwd |
@@ -48,6 +48,14 @@ field unset never turns anything off — not that the feature is on by default.
 | `StaticDisabled` | `false` | turn static file serving off even when `StaticDir` is set |
 | `StaticDirectoryListing` | `false` | serve a listing for a static directory with no `index.html`; `404` otherwise |
 | `HTTPAccessControlled` | `false` | assert that non-empty `HTTPMiddlewares` protects every route for `ValidateProduction`; does not install auth |
+
+Both prefixes are normalised to one leading slash and no trailing one, so
+`"api"`, `"/api/"` and `"//api"` all mean `/api`, and `"/"` mounts the API at the
+router root — chi panics on a pattern with no leading slash, and `//api` would
+otherwise mount every route a doubled slash deep, where no client would find it.
+Read the value back from the `Config` for the canonical form. A `StaticPrefix`
+containing `{`, `}` or `*` cannot be guessed at and is refused at startup
+instead: the static mount serves a literal path and takes no URL parameters.
 
 `PathPrefix` does **not** affect `/static` or `/files`; those are mounted at the
 router root. The probe endpoints — `/live`, `/ready`, and `/health` — do sit

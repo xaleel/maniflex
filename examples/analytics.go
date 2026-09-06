@@ -216,7 +216,9 @@ func main() {
 	registerActions(server, rsaPub, eventMeta)
 
 	printHelp(privateKey)
-	log.Fatal(server.Start())
+	if err := server.Start(); err != nil {
+		log.Fatal(err)
+	}
 }
 
 // ─── Middleware ───────────────────────────────────────────────────────────────

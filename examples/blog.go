@@ -116,7 +116,9 @@ func main() {
 	registerMiddleware(server)
 
 	printHelp()
-	log.Fatal(server.Start())
+	if err := server.Start(); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func printHelp() {

@@ -35,7 +35,9 @@ func main() {
         log.Fatal(err)
     }
 
-    log.Fatal(server.Start())
+    if err := server.Start(); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 
@@ -97,7 +99,9 @@ func main() {
 
     middleware.Register(server)   // all pipeline hooks, in one place
 
-    log.Fatal(server.Start())
+    if err := server.Start(); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 

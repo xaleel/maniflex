@@ -325,6 +325,8 @@ type DBAdapter interface {
 	// Returns ErrNotFound when absent.
 	Delete(ctx context.Context, model *ModelMeta, id string) error
 
-	// Close releases any resources held by the adapter.
+	// Close releases any resources held by the adapter. The server never calls
+	// it — the adapter belongs to whoever opened it, and shutting the server
+	// down leaves the pool open for anything else sharing it.
 	Close() error
 }

@@ -72,7 +72,9 @@ func main() {
     server.SetDB(db)
 
     // 4. Serve.
-    log.Fatal(server.Start())
+    if err := server.Start(); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 

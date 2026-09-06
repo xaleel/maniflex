@@ -140,7 +140,9 @@ func main() {
 	)
 
 	printHelp()
-	log.Fatal(server.Start())
+	if err := server.Start(); err != nil {
+		log.Fatal(err)
+	}
 }
 
 // ── Middleware ────────────────────────────────────────────────────────────────

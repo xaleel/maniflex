@@ -82,7 +82,9 @@ func main() {
 
     registerMiddleware(server)
 
-    log.Fatal(server.Start())
+    if err := server.Start(); err != nil {
+        log.Fatal(err)
+    }
 }
 ```
 

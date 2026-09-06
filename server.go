@@ -1260,6 +1260,11 @@ func (c *Server) KeyProvider() KeyProvider { return c.cfg.KeyProvider }
 // Start, StartServices, or MigrateOnly seals the server; a late call panics.
 // See [Server] for why this panics where Register returns an error.
 //
+// The server borrows the adapter, it does not own it: shutdown never calls
+// Close, so the pool stays usable by a jobs queue or your own queries. Close it
+// yourself once Start (or Shutdown) has returned — earlier pulls the pool out
+// from under in-flight background writes.
+//
 //	server := maniflex.New(maniflex.Config{...})
 //	server.MustRegister(User{}, Post{})
 //	db, _ := sqlite.Open(":memory:", server.Registry())

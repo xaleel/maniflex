@@ -13,11 +13,12 @@ new connections and gives in-flight requests up to
 3. The listener stops accepting new connections immediately.
 4. In-flight requests are allowed to complete — including their pipeline
    middleware, transaction commits, and Response writes.
-5. Background work spawned by the request — audit writes, cache invalidations,
-   event publishes — is waited for on the same budget.
-6. When all requests have finished, or the deadline elapses, the database
-   adapter's `Close()` is called.
-7. `Start()` returns.
+5. Services are stopped in reverse registration order and `Config.OnShutdown`
+   runs, on what is left of the same budget.
+6. `Server.Go` loops and background work spawned by requests — audit writes,
+   cache invalidations, event publishes — are waited for, still on that budget.
+7. `Start()` returns. The database adapter is **not** closed for you — see
+   [Database adapters](#database-adapters).
 
 If the deadline passes with requests still running, the underlying TCP
 connections are closed — those requests fail mid-flight but the process exits
@@ -94,6 +95,28 @@ An embedding with no services or lifecycle hooks may omit `StartServices`.
 It must still call `Server.Shutdown` after its own `http.Server.Shutdown`;
 Maniflex will cancel and drain `Server.Go` and `ctx.GoBackground` work without
 running lifecycle phases that never started.
+
+## Database adapters
+
+`SetDB` takes an opened handle, and its lifetime isn't the server's — which is 
+what lets a jobs queue or the admin panel share the same pool. Closing it should be as follows:
+
+```go
+db, err := sqlite.Open("./app.db", server.Registry())
+if err != nil {
+    log.Fatal(err)
+}
+defer db.Close()
+server.SetDB(db)
+
+if err := server.Start(); err != nil {
+    log.Fatal(err)
+}
+```
+
+Closing the database before `Server.Shutdown` completes terminates active database connections while `Service.Stop` and in-flight audit writes are still executing.
+
+Since `Server.Start()` blocks until those operations finish, placing `db.Close()` in a defer guarantees it runs only after they complete. If the server components are orchestrated manually instead of through `Server.Start()`, the rule remains the same: `db.Close()` must be called after `Server.Shutdown` returns, never before.
 
 ## Event buses
 

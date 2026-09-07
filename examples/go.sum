@@ -46,6 +46,8 @@ github.com/xaleel/maniflex v0.11.0 h1:eqrcz+EX/kEfYi8fKALEKrBtYSoRVwR1Qtyiku58su
 github.com/xaleel/maniflex v0.11.0/go.mod h1:jXddnFYN59dsOgxrJDDb6S1mwISy56RA7ogP5H5Ihh4=
 github.com/xaleel/maniflex v0.12.0 h1:LKCNlIx7ZX1RZC4K4I/WsyH+UwQtyt/HwEdg+hZZKoY=
 github.com/xaleel/maniflex v0.12.0/go.mod h1:jXddnFYN59dsOgxrJDDb6S1mwISy56RA7ogP5H5Ihh4=
+github.com/xaleel/maniflex v0.13.0 h1:7iWkfnuJNPtuz2wWWq67N/cqcEeACukT1zqo7gj6v18=
+github.com/xaleel/maniflex v0.13.0/go.mod h1:jXddnFYN59dsOgxrJDDb6S1mwISy56RA7ogP5H5Ihh4=
 github.com/xaleel/maniflex/db/sqlite v0.10.0 h1:l0ySOpX+MycX2Jm5PYzhmjSivlwXq5SimoopJO9nsZA=
 github.com/xaleel/maniflex/db/sqlite v0.10.0/go.mod h1:FxGKYQeLquamnvSmGnUMXwe3hke40tz/Mq+MYPRYBtI=
 github.com/xaleel/maniflex/db/sqlite v0.11.0 h1:wtbwjdC8xR0FQR7DyU7FTGhlhUmy2qPkEvjIfuBC8I0=

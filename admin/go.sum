@@ -52,3 +52,5 @@ github.com/xaleel/maniflex v0.11.0 h1:eqrcz+EX/kEfYi8fKALEKrBtYSoRVwR1Qtyiku58su
 github.com/xaleel/maniflex v0.11.0/go.mod h1:jXddnFYN59dsOgxrJDDb6S1mwISy56RA7ogP5H5Ihh4=
 github.com/xaleel/maniflex v0.12.0 h1:LKCNlIx7ZX1RZC4K4I/WsyH+UwQtyt/HwEdg+hZZKoY=
 github.com/xaleel/maniflex v0.12.0/go.mod h1:jXddnFYN59dsOgxrJDDb6S1mwISy56RA7ogP5H5Ihh4=
+github.com/xaleel/maniflex v0.13.0 h1:7iWkfnuJNPtuz2wWWq67N/cqcEeACukT1zqo7gj6v18=
+github.com/xaleel/maniflex v0.13.0/go.mod h1:jXddnFYN59dsOgxrJDDb6S1mwISy56RA7ogP5H5Ihh4=

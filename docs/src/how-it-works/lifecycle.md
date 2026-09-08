@@ -99,7 +99,10 @@ status, _ := ctx.Field("status") // "pending"
 ```
 
   The same values are bound to the typed record `ctx.Record`; middleware mutate
-  either through `ctx.SetField` / `ctx.DeleteField`.
+  either through `ctx.SetField` / `ctx.DeleteField`. The two are not the same
+  gesture: `SetField(name, nil)` writes the column as `NULL`, which is how you
+  discard a value the client sent, while `DeleteField(name)` leaves the column
+  out of the write entirely.
 
 If the `Content-Type` had been `multipart/form-data`, the default handler
 would route through `parseMultipart` instead, populating `ctx.ParsedBody`

@@ -14,6 +14,18 @@ import "reflect"
 // SetField sets a request-body field by its JSON name, writing through to
 // ctx.ParsedBody and (when a typed record is bound) the matching struct field on
 // ctx.Record, marking it present. Use it from create/update middleware.
+//
+// A nil value is a value, not an absence: it clears the field and the column is
+// written as NULL, which is how a middleware discards whatever the client sent
+// for it. Use DeleteField to leave the column alone instead.
+//
+//	ctx.SetField("owner_id", nil)  // stored as NULL
+//	ctx.DeleteField("owner_id")    // not written at all
+//
+// Clearing a field whose Go type cannot hold nil — a string, an int — leaves the
+// record untouched and lets the body decide, which the Validate step then
+// refuses with a message naming the field. Make the field a pointer to allow
+// null.
 func (c *ServerContext) SetField(jsonName string, value any) {
 	if c.ParsedBody == nil {
 		c.ParsedBody = NewRequestBody(nil)
@@ -69,7 +81,7 @@ func (c *ServerContext) DeleteField(jsonName string) {
 // authoritative for the column and the write path does not source a stale
 // record value — see the type-mismatch note below.
 func (c *ServerContext) syncRecordField(jsonName string, value any) {
-	if c.Record == nil || c.Model == nil || value == nil {
+	if c.Record == nil || c.Model == nil {
 		return
 	}
 	f := c.Model.FieldByJSONName(jsonName)
@@ -80,28 +92,43 @@ func (c *ServerContext) syncRecordField(jsonName string, value any) {
 	if !fv.CanSet() {
 		return
 	}
-	rv := reflect.ValueOf(value)
-	switch {
-	case rv.Type().AssignableTo(fv.Type()):
-		fv.Set(rv)
-	case numericKind(fv.Kind()) && numericKind(rv.Kind()) && rv.Type().ConvertibleTo(fv.Type()):
-		fv.Set(rv.Convert(fv.Type()))
-	default:
-		// The value can't be represented in the field's Go type. Leaving the
-		// record's field untouched while keeping its present-flag set would let
-		// recordSourcedWrite source the *old* record value for an already-present
-		// key, silently dropping this SetField. Clear the present-flag instead:
-		// the record's present-set no longer matches the body keys, so the DB step
-		// falls back to toDBMap(ParsedBody) and the SetField value (written above)
-		// wins deterministically. (A new key was never present, so this is a no-op
-		// for it and the ParsedBody fallback already carried the value.)
-		if rm, ok := c.Record.(recordMeta); ok {
-			if p := rm.mfxPresent(); p != nil {
-				delete(p, f.Tags.DBName)
-			}
+
+	if value == nil {
+		// nil is a value, not an absence. This used to return early, leaving the
+		// record's field holding whatever bindRecord had bound from the client's
+		// body while its present-flag stayed set — so recordSourcedWrite emitted
+		// the client's value for a key the server had just cleared, and
+		// SetField("owner_id", nil) stored the id the client sent (audit STEP-3).
+		if !nilableKind(fv.Kind()) {
+			// No nil to store in this Go type. Same remedy as a type mismatch:
+			// drop the present-flag so the write falls back to ParsedBody, which
+			// carries the nil. The Validate step usually refuses it first, with a
+			// message naming the field.
+			c.clearRecordPresent(f)
+			return
 		}
-		return
+		fv.Set(reflect.Zero(fv.Type()))
+	} else {
+		rv := reflect.ValueOf(value)
+		switch {
+		case rv.Type().AssignableTo(fv.Type()):
+			fv.Set(rv)
+		case numericKind(fv.Kind()) && numericKind(rv.Kind()) && rv.Type().ConvertibleTo(fv.Type()):
+			fv.Set(rv.Convert(fv.Type()))
+		default:
+			// The value can't be represented in the field's Go type. Leaving the
+			// record's field untouched while keeping its present-flag set would let
+			// recordSourcedWrite source the *old* record value for an already-present
+			// key, silently dropping this SetField. Clear the present-flag instead:
+			// the record's present-set no longer matches the body keys, so the DB step
+			// falls back to toDBMap(ParsedBody) and the SetField value (written above)
+			// wins deterministically. (A new key was never present, so this is a no-op
+			// for it and the ParsedBody fallback already carried the value.)
+			c.clearRecordPresent(f)
+			return
+		}
 	}
+
 	if rm, ok := c.Record.(recordMeta); ok {
 		p := rm.mfxPresent()
 		if p == nil {
@@ -110,6 +137,28 @@ func (c *ServerContext) syncRecordField(jsonName string, value any) {
 		}
 		p[f.Tags.DBName] = struct{}{}
 	}
+}
+
+// clearRecordPresent drops a column from the typed record's present-set, which
+// makes the record's key set disagree with the body's and sends the write path
+// down the toDBMap(ParsedBody) fallback for the whole record.
+func (c *ServerContext) clearRecordPresent(f *FieldMeta) {
+	if rm, ok := c.Record.(recordMeta); ok {
+		if p := rm.mfxPresent(); p != nil {
+			delete(p, f.Tags.DBName)
+		}
+	}
+}
+
+// nilableKind reports whether a Go type of this kind can hold nil, and so can
+// represent a SetField(name, nil) on the typed record itself.
+func nilableKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface,
+		reflect.Chan, reflect.Func, reflect.UnsafePointer:
+		return true
+	}
+	return false
 }
 
 func numericKind(k reflect.Kind) bool {

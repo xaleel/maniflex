@@ -86,9 +86,14 @@ Every error response uses:
 | `details` | optional structured payload — an **array** of `{field, message}` objects for per-field errors |
 
 `details` is an array wherever it is present, including on a `409 CONFLICT` from
-a unique violation. That one was a bare object until v0.3.0, so a duplicate value
-answered in two shapes depending on whether the database or `validate.UniqueField`
-caught it; a client that ranged over `details` had to type-switch first.
+a unique violation and on the `422` a database-side `NOT NULL` violation raises.
+Each was a bare object once — the 409 until v0.3.0, so a duplicate value answered
+in two shapes depending on whether the database or `validate.UniqueField` caught
+it; a client that ranged over `details` had to type-switch first.
+
+The `field` on that 422 names the JSON field the client sent, as the Validate
+step's own required check does, not the database column the driver reported — so
+a model with `db:"headline_col" json:"headline"` answers with `headline`.
 
 A **composite** unique constraint contributes one entry per column, so a form can
 highlight every input involved:

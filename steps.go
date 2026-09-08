@@ -2149,17 +2149,12 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 			// conflict — surface it as a 422 validation error (matching the
 			// validate middleware) instead of an opaque 500 or a misleading 409.
 			if constraintErr.Kind == ConstraintNotNull {
-				details := map[string]string{"message": "value is required"}
-				if constraintErr.Column != "" {
-					details["field"] = constraintErr.Column
-					details["message"] = constraintErr.Column + " is required"
-				}
 				ctx.Response = &APIResponse{
 					StatusCode: http.StatusUnprocessableEntity,
 					Error: &APIError{
 						Code:    "VALIDATION_ERROR",
 						Message: "missing required field",
-						Details: details,
+						Details: notNullDetails(model, constraintErr.Column),
 					},
 				}
 				return nil
@@ -3097,6 +3092,31 @@ func enrichLocaleQueryParams(q *QueryParams, ctx *ServerContext, model *ModelMet
 			f.LocaleKey = chain[0]
 		}
 	}
+}
+
+// notNullDetails renders a NOT NULL violation the database caught in the one
+// details shape every other framework error uses: an array of {field, message}.
+// This branch was a bare object until audit STEP-5, so a missing value answered
+// in one shape here and another from the Validate step's own required check.
+//
+// The column comes from the driver, so it is a database name; resolve it back to
+// the JSON name the client sent, and fall back to the raw column only when the
+// constraint is on something the model does not describe — a column a
+// hand-written migration added — where there is no JSON name to give.
+func notNullDetails(model *ModelMeta, column string) []map[string]string {
+	if column == "" {
+		return []map[string]string{{"message": "value is required"}}
+	}
+	name := column
+	if model != nil {
+		if f := model.FieldByDBName(column); f != nil && f.Tags.JSONName != "" {
+			name = f.Tags.JSONName
+		}
+	}
+	return []map[string]string{{
+		"field":   name,
+		"message": fmt.Sprintf("field %q is required", name),
+	}}
 }
 
 // uniqueConflictDetails turns a unique violation into the per-field details of a

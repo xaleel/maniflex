@@ -23,6 +23,12 @@ import "fmt"
 // For returns the request's typed record (*T) and true when one is bound to
 // ctx.Record, or (nil, false) otherwise — e.g. a read with no body, a model
 // whose body failed to decode, or a T that doesn't match the bound record.
+//
+// The record is decoded from the client's body in Deserialize and sanitised in
+// Validate: from Validate onwards, readonly and hidden fields — and immutable
+// ones on an update — hold their zero value rather than whatever the client
+// sent. Read it on Deserialize to see what was attempted; read it later to see
+// what will be written.
 func For[T any](ctx *ServerContext) (*T, bool) {
 	if ctx == nil {
 		return nil, false

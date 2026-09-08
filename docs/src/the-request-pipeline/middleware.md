@@ -56,6 +56,15 @@ struct, so the write reaches both the body and the record (see
 [ServerContext › The request body](context.md)). For an ad-hoc typed read inside
 a plain middleware, use `maniflex.For[T](ctx)` / `maniflex.Bind[T](ctx)`.
 
+**Where the record is bound matters.** Deserialize decodes the client's body into
+`*T` before Validate runs, so a middleware registered on **Deserialize** sees the
+raw request: `readonly`, `hidden` and `immutable` fields still hold whatever the
+client sent, because nothing has refused them yet. From **Validate onwards** —
+which is where the example above sits — those fields have been reset, so `u.Role`
+is the empty string rather than the `"admin"` a client tried to send. Register
+body-inspecting middleware on Validate or later unless you specifically want to
+see what was attempted.
+
 ## Registration
 
 Each pipeline step exposes a `*StepRegistry` on `server.Pipeline`. Register a

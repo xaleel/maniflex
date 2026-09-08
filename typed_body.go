@@ -57,20 +57,39 @@ func (c *ServerContext) Field(jsonName string) (any, bool) {
 	return c.ParsedBody.Get(jsonName)
 }
 
-// DeleteField removes a request-body field by its JSON name from ParsedBody and
-// clears it from the typed record's present set, so the write path skips it.
-// Use it from middleware that strip a field before the DB step.
+// DeleteField removes a request-body field by its JSON name from ParsedBody,
+// clears it from the typed record's present set so the write path skips it, and
+// resets the record's struct field to its zero value. Use it from middleware
+// that strip a field before the DB step.
+//
+// The struct field is reset because the Deserialize step decodes the whole
+// client body into ctx.Record before Validate runs — including keys Validate is
+// about to strip, and matching them case-insensitively, so {"ROLE":"admin"}
+// lands in a json:"role" field. Clearing only the present set left the written
+// row correct while For, Bind, Handle and ctx.Record still handed application
+// middleware the client's Role, Balance or TenantID, with nothing to mark them
+// as refused — and Create[T], which deliberately trusts its caller rather than
+// re-applying readonly, would persist them (audit STEP-4).
 func (c *ServerContext) DeleteField(jsonName string) {
 	c.ParsedBody.del(jsonName)
 	if c.Model == nil {
 		return
 	}
-	if f := c.Model.FieldByJSONName(jsonName); f != nil {
-		if rm, ok := c.Record.(recordMeta); ok {
-			if p := rm.mfxPresent(); p != nil {
-				delete(p, f.Tags.DBName)
-			}
+	f := c.Model.FieldByJSONName(jsonName)
+	if f == nil {
+		return
+	}
+	if rm, ok := c.Record.(recordMeta); ok {
+		if p := rm.mfxPresent(); p != nil {
+			delete(p, f.Tags.DBName)
 		}
+	}
+	if c.Record == nil {
+		return
+	}
+	fv := reflect.ValueOf(c.Record).Elem().FieldByIndex(f.Index)
+	if fv.CanSet() {
+		fv.Set(reflect.Zero(fv.Type()))
 	}
 }
 

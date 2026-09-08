@@ -420,7 +420,17 @@ func (s *defaultSteps) validate(ctx *ServerContext, next func() error) error {
 	// matches any locking condition. Create is exempt (there is no prior state)
 	// but a record could be created already in a "locked" state — that's a
 	// caller decision, not something we enforce here.
-	if ctx.Operation == OpUpdate && len(ctx.Model.LockWhen) > 0 {
+	//
+	// It runs here only when the request's forced filters are already in place.
+	// A scope registered on the DB step (the conventional spelling for
+	// db.Tenancy / db.ForceFilter) has not been applied yet, and this guard reads
+	// the row by id — so answering here would report 422 RECORD_LOCKED for a row
+	// the caller's own reads 404 on, leaking both its existence and its state.
+	// The DB step re-runs the guard after enforceWriteScope in that case; the
+	// abort simply arrives a step later. maniflex.ProvidesScope hoists a scope to
+	// run before Validate, which is what keeps the early abort here (audit STEP-1).
+	if ctx.Operation == OpUpdate && len(ctx.Model.LockWhen) > 0 && scopeApplied(ctx) {
+		ctx.lockChecked = true
 		if resp := s.checkRecordLocked(ctx); resp != nil {
 			ctx.Response = resp
 			return nil
@@ -1002,8 +1012,17 @@ func (s *defaultSteps) checkRecordLocked(ctx *ServerContext) *APIResponse {
 		return nil
 	}
 	exec := dbExec{adapter: adapter, tx: ctx.Tx}
-	existing, err := exec.FindByID(ctx.Ctx, ctx.Model,
-		ctx.ResourceID, &QueryParams{Limit: 1, Page: 1})
+	// Read through the request's forced filters, not by id alone. Unscoped, this
+	// guard answered 422 RECORD_LOCKED for a row the caller's own reads 404 on —
+	// telling one tenant that another's row exists *and* that it has reached the
+	// locked state, by id enumeration. A miss falls through to the nil below and
+	// the write path returns the same 404 an absent record gets, which is the
+	// contract enforceWriteScope documents (audit STEP-1).
+	locking := &QueryParams{Limit: 1, Page: 1}
+	if ctx.Query != nil {
+		locking.Filters = forcedFilters(ctx.Query.Filters)
+	}
+	existing, err := exec.FindByID(ctx.Ctx, ctx.Model, ctx.ResourceID, locking)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil // nothing to lock — the downstream step returns its 404
@@ -1039,6 +1058,67 @@ func (s *defaultSteps) checkRecordLocked(ctx *ServerContext) *APIResponse {
 						"record is locked: %s=%q", cond.JSONName, cond.Value),
 				},
 			}
+		}
+	}
+	return nil
+}
+
+// scopeApplied reports whether the request's server-imposed filters are already
+// on ctx.Query. It is the difference between a scope hoisted by
+// maniflex.ProvidesScope, which runs before Validate, and one registered on the
+// DB step, which has not run yet — and therefore between a guard that can read
+// the target row through the caller's scope and one that would read it by id
+// alone (audit STEP-1).
+func scopeApplied(ctx *ServerContext) bool {
+	return ctx.Query != nil && len(forcedFilters(ctx.Query.Filters)) > 0
+}
+
+// checkLockScopeVisible refuses a lock_scope target the caller could not read.
+//
+// lock_scope names a row of a *different* model, by an id the client supplies in
+// the body, and takes a FOR UPDATE lock on it. Nothing scoped that: a caller
+// could probe any row of the referenced model for existence and hold a lock on
+// another tenant's row until this transaction ended.
+//
+// The scope to apply is the request's own forced filters, but only those the
+// referenced model actually carries a column for — a filter on a column it lacks
+// describes the child's scope, not the parent's, and applying it would 404 every
+// legitimate reference. When none of them apply, this returns nil and the
+// unscoped lookup below stands, which is the documented limit (audit STEP-1).
+func (s *defaultSteps) checkLockScopeVisible(ctx *ServerContext, refMeta *ModelMeta, refModel, refID string) *APIResponse {
+	if ctx.Query == nil {
+		return nil
+	}
+	var applicable []*FilterExpr
+	for _, f := range forcedFilters(ctx.Query.Filters) {
+		if f.IsNested || f.IsLocale || f.Group > 0 {
+			continue // says nothing about a single column of the referenced model
+		}
+		if refMeta.FieldByDBName(f.Field) == nil {
+			continue
+		}
+		applicable = append(applicable, f)
+	}
+	if len(applicable) == 0 {
+		return nil
+	}
+
+	scoped := &QueryParams{Page: 1, Limit: 1, Filters: applicable}
+	if _, err := ctx.Tx.FindByID(ctx.Ctx, refMeta, refID, scoped); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			// The same answer a scoped read of that row would give, so a row in
+			// another scope is indistinguishable from one that is not there.
+			return &APIResponse{
+				StatusCode: http.StatusNotFound,
+				Error: &APIError{
+					Code:    "NOT_FOUND",
+					Message: fmt.Sprintf("%s with id %q not found", refModel, refID),
+				},
+			}
+		}
+		return &APIResponse{
+			StatusCode: http.StatusInternalServerError,
+			Error:      &APIError{Code: "DB_ERROR", Message: err.Error()},
 		}
 	}
 	return nil
@@ -1702,10 +1782,49 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 		}
 	}
 
-	// lock_when: a delete on a record matching any lock condition is rejected
-	// just like an update. The Validate step covers updates but does not run
-	// for OpDelete, so we mirror the check here just before the adapter call.
-	if ctx.Operation == OpDelete && len(model.LockWhen) > 0 {
+	// ownTx is the transaction the first guard below opened (nil when the request
+	// already had one from WithTransaction, which they join instead). At most one
+	// of them opens it — whichever gets there first leaves ctx.Tx set — so there
+	// stays exactly one owner, one commit below, and one rollback in this defer:
+	// a transaction opened here but committed nowhere would roll back at return
+	// and silently discard the very write it just authorised.
+	var ownTx Tx
+	defer func() {
+		if ownTx != nil {
+			_ = ownTx.Rollback() // no-op once committed
+			ctx.Tx = nil
+		}
+	}()
+
+	// Row-level scoping: a forced filter (db.Tenancy, db.ForceFilter) constrains
+	// reads through ctx.Query, but the adapter's Update/Delete take no filter, so
+	// without this the write reaches a row the same filter hides.
+	//
+	// It runs first, ahead of every other guard, because a guard that answers
+	// before it answers about a row the caller cannot see: the If-Match check
+	// below returned 412 for another tenant's record where an out-of-scope one
+	// must be indistinguishable from an absent one, and took a FOR UPDATE lock on
+	// it for the rest of the transaction (audit STEP-1/STEP-2).
+	var scopeTx Tx
+	var scopeErr error
+	exec, scopeTx, scopeErr = s.enforceWriteScope(ctx, exec, model)
+	if scopeTx != nil {
+		ownTx = scopeTx
+	}
+	if scopeErr != nil {
+		return scopeErr
+	}
+	if ctx.Response != nil {
+		return nil // 404 was set — the record is out of scope
+	}
+
+	// lock_when: a record matching any lock condition refuses the write. Delete
+	// is always checked here — the Validate step does not run for it — and update
+	// is checked here too whenever Validate had to skip it for want of a scope.
+	// Either way it now sits after enforceWriteScope, so it only ever answers
+	// about a row the caller can see.
+	if len(model.LockWhen) > 0 && !ctx.lockChecked &&
+		(ctx.Operation == OpDelete || ctx.Operation == OpUpdate) {
 		if resp := s.checkRecordLocked(ctx); resp != nil {
 			ctx.Response = resp
 			return nil
@@ -1719,46 +1838,17 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 	// transaction, so a concurrent writer holding the same ETag cannot pass its
 	// own check until this one commits — at which point it sees the new ETag and
 	// gets its 412 instead of silently overwriting us.
-	//
-	// ownTx is the transaction this step opened for that guard (nil when the
-	// request already had one from WithTransaction, which we join instead).
-	var ownTx Tx
-	defer func() {
-		if ownTx != nil {
-			_ = ownTx.Rollback() // no-op once committed
-			ctx.Tx = nil
-		}
-	}()
+	var lockTx Tx
 	var lockErr error
-	exec, ownTx, lockErr = s.enforceOptimisticLock(ctx, exec, model)
+	exec, lockTx, lockErr = s.enforceOptimisticLock(ctx, exec, model)
+	if lockTx != nil {
+		ownTx = lockTx
+	}
 	if lockErr != nil {
 		return lockErr
 	}
 	if ctx.Response != nil {
 		return nil // 412 or 404 was set
-	}
-
-	// Row-level scoping: a forced filter (db.Tenancy, db.ForceFilter) constrains
-	// reads through ctx.Query, but the adapter's Update/Delete take no filter, so
-	// without this the write reaches a row the same filter hides.
-	//
-	// Runs after the If-Match guard, and at most one of the two opens a
-	// transaction — whichever gets there first leaves ctx.Tx set, and the other
-	// joins it. Its tx folds into ownTx so there stays exactly one owner, one
-	// commit below, and one rollback in the defer above: a transaction opened
-	// here but committed nowhere would roll back at return and silently discard
-	// the very write it just authorised.
-	var scopeTx Tx
-	var scopeErr error
-	exec, scopeTx, scopeErr = s.enforceWriteScope(ctx, exec, model)
-	if scopeTx != nil {
-		ownTx = scopeTx
-	}
-	if scopeErr != nil {
-		return scopeErr
-	}
-	if ctx.Response != nil {
-		return nil // 404 was set — the record is out of scope
 	}
 
 	// A scope that runs through a parent (db.ForceFilterVia) hangs off a foreign
@@ -1937,6 +2027,16 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 				if !ok {
 					ctx.Abort(http.StatusInternalServerError, "LOCK_SCOPE_ERROR",
 						fmt.Sprintf("lock_scope model %q not registered", ls.Model))
+					return nil
+				}
+				// refID comes from the request body, and the lock below is taken
+				// on whatever it names. Unscoped, that let a caller 404-probe any
+				// row of the referenced model by id and hold a FOR UPDATE lock on
+				// another tenant's row for the rest of this transaction. Read it
+				// through the request's own scope first, where the referenced
+				// model carries the column to do so (audit STEP-1).
+				if resp := s.checkLockScopeVisible(ctx, refMeta, ls.Model, refID); resp != nil {
+					ctx.Response = resp
 					return nil
 				}
 				if _, err := ctx.Tx.FindByIDForUpdate(ctx.Ctx, refMeta, refID); err != nil {

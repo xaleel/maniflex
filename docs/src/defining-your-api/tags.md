@@ -289,8 +289,18 @@ The transition into a locked state is _itself_ allowed — when the request
 arrives, the loaded record is still in its previous state. After that
 update commits, the record becomes frozen.
 
-`lock_when` is checked before the default Validate step's other rules on
-update, and before the adapter's Delete call on delete. Creates are
+`lock_when` is checked before the write reaches the adapter. On update it runs in
+the Validate step, ahead of that step's other rules — but only when the request's
+scope is already in place. A forced filter registered on the DB step
+(`db.Tenancy`, `db.ForceFilter`) has not been applied at that point, and a guard
+reading the row by id alone would answer `422 RECORD_LOCKED` for a record the
+caller's own reads `404` on, disclosing both that it exists and that it has
+reached the locked state. So the check moves to the DB step in that case, after
+the scope is enforced: the same refusal, one step later. Declaring
+[`maniflex.ProvidesScope()`](../middleware-catalogue/db.md#providesscope--running-the-scope-before-validate)
+hoists the scope ahead of Validate and keeps the early abort.
+
+On delete it always runs in the DB step, likewise after the scope. Creates are
 exempt: there is no prior state to check.
 
 The guard fails closed. It reads the record through the request's transaction
@@ -323,6 +333,12 @@ type Dispense struct {
 - The referenced model name must be registered. A typo is caught at startup
   (in `Handler()`), so it never reaches production silently.
 - If the referenced row does not exist, the create returns `404 NOT_FOUND`.
+- The referenced row must be **in the request's scope**. When a forced filter
+  names a column the referenced model also carries, the row is looked up through
+  that filter first, so a create naming another tenant's row gets the same `404`
+  as one naming a row that is not there — without it, the id was a probe and the
+  lock landed on a row the caller cannot see. A referenced model that carries no
+  such column cannot be scoped this way and is still located by id alone.
 
 ```go
 server.Pipeline.Service.Register(

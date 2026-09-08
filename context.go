@@ -387,6 +387,14 @@ type ServerContext struct {
 	// Update. Read it from middleware with IsRestore.
 	restore bool
 
+	// lockChecked records that the Validate step already ran the lock_when guard,
+	// so the DB step does not repeat the read. Validate can only run it when the
+	// request's forced filters are already in place — a scope registered on the DB
+	// step is not applied yet, and an unscoped guard answers 422 for a row the
+	// caller cannot see (audit STEP-1). When it skips, the DB step runs the guard
+	// after enforceWriteScope instead.
+	lockChecked bool
+
 	// redactedFields names response fields this request must not disclose,
 	// declared through RedactResponseField (audit MS-11).
 	//

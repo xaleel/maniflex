@@ -96,6 +96,12 @@ its scope is: `validate.UniqueField` then excludes the record under edit by a
 placeholder that matches nothing, the row collides with itself, and every `PATCH`
 is refused with `422 "<field> is already taken"` (audit 13.12).
 
+`lock_when` is the other case, and it degrades rather than breaking: without the
+hoist the guard cannot read the row through your scope, so it moves to the DB
+step and refuses the update there instead — correctly, one step later. Hoisting
+restores the early abort, before the Service step's transaction and business
+logic run.
+
 Anything that needs the record a request addresses should ask
 `ctx.ResolveResourceID()` rather than reading `ctx.ResourceID` directly — see
 [the context reference](../the-request-pipeline/context.md).

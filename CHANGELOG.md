@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Security:** the pre-write guards no longer disclose rows outside the caller's scope. `lock_when`, `If-Match` and `lock_scope` each read the target by id with no forced filters and answered before the write-scope check, so a tenant probing another's id got `422 RECORD_LOCKED` (it exists, and is locked), `412` (it exists, now row-locked) or a create holding a lock on a foreign row — where `404` was the documented answer. All three now run after the scope, or through it.
 - **Bugfix (behaviour change):** model operations document the statuses their pipeline produces. Responses were hard-coded from the model's shape, so a server with auth on `Pipeline.Auth` documented 401 on a custom action but not on the model route behind the same guard; 409, 412, 503 and 504 were absent everywhere. Each is now derived from config, so a server without auth documents neither. Declare your own middleware's statuses with `maniflex.DocumentsResponse`.
 - **Breaking:** `GenerateSpec` takes the `*Pipeline` as its fourth argument, before the variadic search config — that is what lets an operation document the statuses its middleware answers with. `OASResponse` gained `Headers`, and the new `OASHeader` makes `ETag` and `Retry-After` expressible at all. **Migrate:** pass `server.Pipeline`, or `nil` to describe the models alone.
 

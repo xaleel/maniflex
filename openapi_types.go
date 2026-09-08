@@ -58,10 +58,10 @@ type OASOperation struct {
 	Security []map[string][]string `json:"security,omitempty"`
 }
 
-// OASParameter is a Parameter Object (path or query).
+// OASParameter is a Parameter Object.
 type OASParameter struct {
 	Name        string     `json:"name"`
-	In          string     `json:"in"` // "path" | "query"
+	In          string     `json:"in"` // "path" | "query" | "header" | "cookie"
 	Required    bool       `json:"required,omitempty"`
 	Description string     `json:"description,omitempty"`
 	Schema      *OASSchema `json:"schema,omitempty"`
@@ -92,6 +92,22 @@ type OASEncoding struct {
 type OASResponse struct {
 	Description string                  `json:"description"`
 	Content     map[string]OASMediaType `json:"content,omitempty"`
+
+	// Headers documents the response headers this status carries, keyed by
+	// header name. Without it ETag, Location, Retry-After and
+	// Content-Disposition were unexpressible even by hand, which left optimistic
+	// locking and idempotency — both documented HTTP contract — invisible in the
+	// generated contract (audit OAS-2).
+	Headers map[string]OASHeader `json:"headers,omitempty"`
+}
+
+// OASHeader is a Header Object: a parameter without a name or location, since
+// the map key names it and the location is always the response header.
+type OASHeader struct {
+	Description string     `json:"description,omitempty"`
+	Required    bool       `json:"required,omitempty"`
+	Deprecated  bool       `json:"deprecated,omitempty"`
+	Schema      *OASSchema `json:"schema,omitempty"`
 }
 
 // OpenAPIComponents holds reusable component objects.

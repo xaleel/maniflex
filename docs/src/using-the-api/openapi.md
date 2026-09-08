@@ -73,11 +73,75 @@ For every registered model, the spec includes:
   for example a bare `RelatedID` field with no `Related` model — is omitted
   rather than emitting a dangling reference that would break spec validators
   and client generators.
-- **Error response shapes** for `400`, `404`, `409`, `422`, and `500`.
+- **Response statuses** beyond the obvious ones, derived from what this
+  deployment can actually answer with — see
+  [Statuses the pipeline produces](#statuses-the-pipeline-produces).
 
 `hidden` fields are excluded entirely from every schema. `writeonly` fields
 appear in the create and update schemas with `writeOnly: true`, but not in the
 response shape.
+
+## Statuses the pipeline produces
+
+An operation's own shape gives it the obvious statuses: `201` and `422` on a
+create, `404` on a read. Everything else a request can meet comes from the
+pipeline and the configuration, so it is derived per operation rather than
+assumed:
+
+| Status | Documented when |
+|---|---|
+| `401`, `403` | any `Pipeline.Auth` middleware applies to that model and operation |
+| `409` | a write on a model with a unique field or a relation; a delete on a model with a `restrict` relation |
+| `412` | `ModelConfig.OptimisticLock`, on `PATCH` and `DELETE` |
+| `500` | always |
+| `503` | `Config.MaxConcurrentRequests` is set — carries a `Retry-After` header |
+| `504` | `Config.QueryTimeout` is set |
+
+Auth is not special-cased: a middleware on the `Auth` step implies `401`/`403`
+because refusing is what that step is for, so `auth.JWTAuth` needs no OpenAPI
+awareness of its own. A server with no auth middleware documents neither — which
+is the point. A fixed list would tell clients to handle a `401` that cannot
+happen, and a reviewer reading the spec as a security inventory would be misled
+in one direction or the other.
+
+With `OptimisticLock` set, both halves of the conditional-write handshake are
+documented: the item `GET` carries an `ETag` response header, and `PATCH` /
+`DELETE` take an optional `If-Match` request header. Optional because a request
+without it writes unconditionally rather than failing.
+
+### Statuses your own middleware produces
+
+The framework cannot know that your guard answers `402`. Declare it on the
+registration, where it inherits the same `ForModel` / `ForOperation` filters that
+decide where the middleware runs:
+
+```go
+server.Pipeline.Validate.Register(stockGuard,
+    maniflex.ForModel("Order"),
+    maniflex.ForOperation(maniflex.OpCreate),
+    maniflex.DocumentsResponse(409, "Out of stock", nil),
+)
+```
+
+That `409` appears on `POST /orders` and nowhere else. A declaration replaces the
+derived entry for the same status, so this is also how to say what your `409`
+means rather than accepting the generic wording.
+
+For a status no registered middleware produces — one a handler returns itself, or
+one a proxy in front of the server can return — use `openapi.AddResponse`:
+
+```go
+server.Pipeline.OpenAPI.Generate.Register(
+    openapi.AddResponse(
+        openapi.OperationTarget{Path: "/orders", Method: "post"},
+        402, "Payment required", nil),
+    maniflex.After,
+)
+```
+
+Prefer `DocumentsResponse` when a middleware you register is what produces the
+status. The `Path` above is a literal, so it stops matching silently if the
+model's table name or the route ever changes.
 
 ## Schemas for custom types
 

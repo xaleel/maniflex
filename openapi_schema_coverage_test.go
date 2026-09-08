@@ -70,7 +70,7 @@ func scSpec(t *testing.T, model any) (*OpenAPISpec, string) {
 	for _, m := range s.Registry().All() {
 		name = m.Name
 	}
-	return GenerateSpec(s.Registry(), &Config{}, nil), name
+	return GenerateSpec(s.Registry(), &Config{}, nil, s.Pipeline), name
 }
 
 func scProps(t *testing.T, spec *OpenAPISpec, schema string) map[string]*OASSchema {

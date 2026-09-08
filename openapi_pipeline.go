@@ -314,6 +314,12 @@ type oasDefaultSteps struct {
 	cfg          *Config
 	actions      []ActionConfig      // appended by Server.Action()
 	globalSearch *GlobalSearchConfig // set by Server.EnableGlobalSearch()
+
+	// pipeline is the request pipeline, read to document the statuses each
+	// model operation's middleware can answer with (audit OAS-2). Held as a
+	// pointer to the live Pipeline rather than a snapshot, since middleware is
+	// registered after the server is built and the spec is generated per request.
+	pipeline *Pipeline
 }
 
 func newOASDefaultSteps(reg RegistryAccessor, cfg *Config) *oasDefaultSteps {
@@ -327,7 +333,7 @@ func (s *oasDefaultSteps) auth(ctx *OpenAPIContext, next func() error) error {
 
 // generate builds the OpenAPISpec from the registry and stores it on ctx.Spec.
 func (s *oasDefaultSteps) generate(ctx *OpenAPIContext, next func() error) error {
-	ctx.Spec = GenerateSpec(s.reg, s.cfg, s.actions, s.globalSearch)
+	ctx.Spec = GenerateSpec(s.reg, s.cfg, s.actions, s.pipeline, s.globalSearch)
 	return next()
 }
 

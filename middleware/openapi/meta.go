@@ -3,6 +3,8 @@
 package openapi
 
 import (
+	"strconv"
+
 	"github.com/xaleel/maniflex"
 )
 
@@ -225,6 +227,48 @@ func AddExtension(patcher SpecPatcher) maniflex.OpenAPIMiddlewareFunc {
 		if ctx.Spec != nil {
 			patcher(ctx.Spec)
 		}
+		return nil
+	}
+}
+
+// AddResponse documents a status on one operation, for a response no
+// registered middleware produces — a handler that answers 402 itself, or a
+// reverse proxy in front of the server that can return 429.
+//
+//	server.Pipeline.OpenAPI.Generate.Register(
+//	    openapi.AddResponse(
+//	        openapi.OperationTarget{Path: "/orders", Method: "post"},
+//	        402, "Payment required", nil),
+//	    maniflex.After,
+//	)
+//
+// Prefer maniflex.DocumentsResponse when a middleware you register is what
+// produces the status: the declaration then inherits that middleware's ForModel
+// and ForOperation filters, whereas the Path here is a literal that goes stale
+// silently if the model's table name or the route ever changes.
+//
+// A nil schema documents a response with no body. An existing entry for the same
+// status is replaced, so this can also correct a generated one.
+func AddResponse(target OperationTarget, status int, description string, schema *maniflex.OASSchema) maniflex.OpenAPIMiddlewareFunc {
+	return func(ctx *maniflex.OpenAPIContext, next func() error) error {
+		if err := next(); err != nil {
+			return err
+		}
+		if ctx.Spec == nil {
+			return nil
+		}
+		op := getOperation(ctx.Spec, target)
+		if op == nil {
+			return nil
+		}
+		if op.Responses == nil {
+			op.Responses = make(map[string]maniflex.OASResponse, 1)
+		}
+		r := maniflex.OASResponse{Description: description}
+		if schema != nil {
+			r.Content = map[string]maniflex.OASMediaType{"application/json": {Schema: schema}}
+		}
+		op.Responses[strconv.Itoa(status)] = r
 		return nil
 	}
 }

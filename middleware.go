@@ -44,6 +44,12 @@ type MiddlewareConfig struct {
 	// row scope, declared with ProvidesScope. Such middleware is hoisted out of
 	// its own step and run immediately after Deserialize — see that option.
 	ProvidesScope bool
+
+	// DocumentedResponses are the statuses this middleware can answer with,
+	// declared with DocumentsResponse. The OpenAPI generator adds them to every
+	// model operation the middleware applies to — the same Models/Operations
+	// filters, so what is documented and what runs cannot drift apart.
+	DocumentedResponses map[int]OASResponse
 }
 
 // MiddlewareOption is a functional option applied to a MiddlewareConfig.
@@ -68,6 +74,39 @@ func ForOperation(ops ...Operation) MiddlewareOption {
 //	pipeline.Response.Register(addHeaders, maniflex.AtPosition(maniflex.After))
 func AtPosition(p Position) MiddlewareOption {
 	return func(c *MiddlewareConfig) { c.Position = p }
+}
+
+// DocumentsResponse declares a status this middleware can answer with, so the
+// generated OpenAPI document says so. Pass a nil schema for a response with no
+// body; otherwise the schema describes the body.
+//
+//	server.Pipeline.Validate.Register(stockGuard,
+//	    maniflex.ForModel("Order"),
+//	    maniflex.ForOperation(maniflex.OpCreate),
+//	    maniflex.DocumentsResponse(409, "Out of stock", nil),
+//	)
+//
+// The declaration inherits this registration's ForModel and ForOperation
+// filters, so the status is documented on exactly the operations the middleware
+// runs on. Declaring it anywhere else — on the model, or by patching the spec by
+// path — means copying that scoping by hand and watching it go stale.
+//
+// Statuses the framework already knows about need no declaration: an Auth step
+// middleware implies 401 and 403, ModelConfig.OptimisticLock implies 412, and
+// the configured limits imply 503 and 504. Use this for what your own code adds.
+// For a status that no registered middleware produces, see
+// middleware/openapi.AddResponse.
+func DocumentsResponse(status int, description string, schema *OASSchema) MiddlewareOption {
+	return func(c *MiddlewareConfig) {
+		if c.DocumentedResponses == nil {
+			c.DocumentedResponses = make(map[int]OASResponse, 1)
+		}
+		r := OASResponse{Description: description}
+		if schema != nil {
+			r.Content = map[string]OASMediaType{"application/json": {Schema: schema}}
+		}
+		c.DocumentedResponses[status] = r
+	}
 }
 
 // ProvidesScope declares that this middleware establishes the request's row

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- **Bugfix (behaviour change):** model operations document the statuses their pipeline produces. Responses were hard-coded from the model's shape, so a server with auth on `Pipeline.Auth` documented 401 on a custom action but not on the model route behind the same guard; 409, 412, 503 and 504 were absent everywhere. Each is now derived from config, so a server without auth documents neither. Declare your own middleware's statuses with `maniflex.DocumentsResponse`.
+- **Breaking:** `GenerateSpec` takes the `*Pipeline` as its fourth argument, before the variadic search config — that is what lets an operation document the statuses its middleware answers with. `OASResponse` gained `Headers`, and the new `OASHeader` makes `ETag` and `Retry-After` expressible at all. **Migrate:** pass `server.Pipeline`, or `nil` to describe the models alone.
+
 ## v0.13.0 (2026-09-06)
 
 - **Bugfix:** `Config.PathPrefix` is normalised, and `Port` and `StaticPrefix` validated at startup. `PathPrefix: "api"` panicked inside chi from `Start()`, after validation reported no problem, and `"//api"` mounted every route a doubled slash deep where no client finds it; both now mean `/api`. A port outside 1-65535 reached `net.Listen` only after migrating and starting services, and a `StaticPrefix` holding `{`, `}` or `*` panicked in the file server — both are refused up front.

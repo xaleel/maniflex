@@ -18,7 +18,7 @@ func TestOpenAPIFilterDescriptionListsEveryOperator(t *testing.T) {
 	if err := s.Register(jtValid{}); err != nil {
 		t.Fatalf("register: %v", err)
 	}
-	spec := GenerateSpec(s.Registry(), &Config{}, nil)
+	spec := GenerateSpec(s.Registry(), &Config{}, nil, s.Pipeline)
 
 	desc := filterParamDescription(t, spec)
 	head, rest, ok := strings.Cut(desc, "Operators: ")

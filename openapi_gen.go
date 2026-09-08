@@ -18,7 +18,14 @@ import (
 // The optional trailing search argument documents the built-in /search endpoint
 // when the app enabled it via Server.EnableGlobalSearch; it is variadic only so
 // existing direct callers keep compiling.
-func GenerateSpec(reg RegistryAccessor, cfg *Config, actions []ActionConfig, search ...*GlobalSearchConfig) *OpenAPISpec {
+// GenerateSpec builds the OpenAPI document for a registry.
+//
+// p is the request pipeline, consulted so each model operation documents the
+// statuses its middleware can answer with — 401 and 403 wherever an Auth step
+// middleware applies, plus anything declared with [DocumentsResponse]. Pass nil
+// to describe the models alone; the document is then narrower than the server's
+// real behaviour (audit OAS-2).
+func GenerateSpec(reg RegistryAccessor, cfg *Config, actions []ActionConfig, p *Pipeline, search ...*GlobalSearchConfig) *OpenAPISpec {
 	models := reg.All()
 
 	spec := &OpenAPISpec{
@@ -51,7 +58,7 @@ func GenerateSpec(reg RegistryAccessor, cfg *Config, actions []ActionConfig, sea
 		if m.Config.Headless {
 			continue
 		}
-		buildModelPaths(spec, m, cfg)
+		buildModelPaths(spec, m, cfg, p)
 	}
 
 	// Add standalone file endpoints when storage is configured
@@ -240,7 +247,7 @@ func addComputedProperties(full *OASSchema, m *ModelMeta) {
 
 // ── Path generation ───────────────────────────────────────────────────────────
 
-func buildModelPaths(spec *OpenAPISpec, m *ModelMeta, cfg *Config) {
+func buildModelPaths(spec *OpenAPISpec, m *ModelMeta, cfg *Config, p *Pipeline) {
 	tag := m.Name
 	collectionPath := "/" + m.TableName
 	itemPath := "/" + m.TableName + "/{id}"
@@ -347,6 +354,35 @@ func buildModelPaths(spec *OpenAPISpec, m *ModelMeta, cfg *Config) {
 			},
 		},
 	}
+
+	// ── Pipeline-derived responses ────────────────────────────────────────────
+	// The five operations above document what their own shape implies. What the
+	// pipeline can answer with — 401/403 from the Auth step, 412 from
+	// OptimisticLock, 409, 503, 504, and anything an application declared with
+	// DocumentsResponse — is derived per operation, since it depends on
+	// middleware filters and configuration rather than on the model (audit OAS-2).
+	collection := spec.Paths[collectionPath]
+	mergeResponses(collection.Get, pipelineResponses(p, cfg, m, OpList))
+	mergeResponses(collection.Post, pipelineResponses(p, cfg, m, OpCreate))
+	spec.Paths[collectionPath] = collection
+
+	item := spec.Paths[itemPath]
+	mergeResponses(item.Get, pipelineResponses(p, cfg, m, OpRead))
+	mergeResponses(item.Patch, pipelineResponses(p, cfg, m, OpUpdate))
+	mergeResponses(item.Delete, pipelineResponses(p, cfg, m, OpDelete))
+
+	// The conditional-write handshake, both halves: a read hands back the ETag,
+	// and the write sends it as If-Match. Documented only where the DB step
+	// actually compares one, so the spec does not describe a check that is off.
+	if m.Config.OptimisticLock {
+		if r, ok := item.Get.Responses["200"]; ok {
+			r.Headers = etagHeader()
+			item.Get.Responses["200"] = r
+		}
+		item.Patch.Parameters = append(item.Patch.Parameters, ifMatchParameter())
+		item.Delete.Parameters = append(item.Delete.Parameters, ifMatchParameter())
+	}
+	spec.Paths[itemPath] = item
 
 	// ── Opt-in collection routes ──────────────────────────────────────────────
 	// Each mirrors a branch in mountModel; the condition must match it exactly,

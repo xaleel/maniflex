@@ -168,6 +168,9 @@ func New(cfg Config) *Server {
 	// (BUG-10). The router and handlers already take &srv.cfg for the same reason.
 	srv.oasSteps = newOASDefaultSteps(reg, &srv.cfg)
 	srv.Pipeline = newPipeline(steps, srv.oasSteps)
+	// After newPipeline, which is what builds it: the generator reads the live
+	// pipeline to document each operation's middleware statuses (audit OAS-2).
+	srv.oasSteps.pipeline = srv.Pipeline
 	return srv
 }
 

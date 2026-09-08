@@ -165,7 +165,7 @@ func walkMountedRoutes(t *testing.T, s *Server) []routeKey {
 func specRoutes(t *testing.T, s *Server) []routeKey {
 	t.Helper()
 
-	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.globalSearch)
+	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.Pipeline, s.globalSearch)
 	var out []routeKey
 	for path, item := range spec.Paths {
 		for method, op := range map[string]*OASOperation{
@@ -244,7 +244,7 @@ func TestOpenAPISpecDescribesNoPhantomRoutes(t *testing.T) {
 
 func TestOpenAPIExportPathIsDocumented(t *testing.T) {
 	s := parityServer(t)
-	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.globalSearch)
+	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.Pipeline, s.globalSearch)
 
 	item, ok := spec.Paths["/parcels/export"]
 	if !ok {
@@ -271,7 +271,7 @@ func TestOpenAPIExportPathIsDocumented(t *testing.T) {
 
 func TestOpenAPIAggregatePathIsDocumented(t *testing.T) {
 	s := parityServer(t)
-	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.globalSearch)
+	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.Pipeline, s.globalSearch)
 
 	item, ok := spec.Paths["/parcels/aggregate"]
 	if !ok {
@@ -302,7 +302,7 @@ func TestOpenAPIAggregatePathIsDocumented(t *testing.T) {
 
 func TestOpenAPIRestorePathIsDocumented(t *testing.T) {
 	s := parityServer(t)
-	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.globalSearch)
+	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.Pipeline, s.globalSearch)
 
 	item, ok := spec.Paths["/parcels/{id}/restore"]
 	if !ok {
@@ -324,7 +324,7 @@ func TestOpenAPIRestorePathIsDocumented(t *testing.T) {
 
 func TestOpenAPIPresignUploadPathIsDocumented(t *testing.T) {
 	s := parityServer(t)
-	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.globalSearch)
+	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.Pipeline, s.globalSearch)
 
 	item, ok := spec.Paths["/parcels/scanned/upload-url"]
 	if !ok {
@@ -363,7 +363,7 @@ func TestOpenAPIOptInRoutesAreAbsentWhenNotEnabled(t *testing.T) {
 	if err := s.Register(plainParcel{}, ModelConfig{TableName: "plains"}); err != nil {
 		t.Fatalf("registering plainParcel: %v", err)
 	}
-	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.globalSearch)
+	spec := GenerateSpec(s.registry, &s.cfg, s.actions, s.Pipeline, s.globalSearch)
 
 	for _, path := range []string{
 		"/plains/export",

@@ -16,7 +16,7 @@ Auth → Deserialize → Validate → Service → DB → Response
 |---|---|
 | **Auth** | Pass-through. Populates nothing by default. User middleware sets `ctx.Auth` here. |
 | **Deserialize** | Parses URL query parameters (`page`, `limit`, `filter`, `sort`, `include`) into `ctx.Query`. On `POST`/`PATCH`, reads the JSON body into `ctx.ParsedBody` (limit: 4 MB), or parses `multipart/form-data` into `ctx.ParsedBody` and `ctx.Files`. |
-| **Validate** | For create and update, enforces the `mfx:` tag rules: strips `readonly` and `id`, strips `immutable` on update, checks `required`, `enum`, `min`, `max`. |
+| **Validate** | For create and update, enforces the `mfx:` tag rules: strips `readonly` and `id`, strips `immutable` on update, checks `required`, `enum`, `min`, `max`, and that each value is one the field's type can hold. |
 | **Service** | Pass-through. Reserved for business logic supplied by user middleware. |
 | **DB** | Dispatches to the configured adapter for the current operation — `FindMany`, `FindByID`, `Create`, `Update`, or `Delete`. Routes through `ctx.Tx` when a transaction is active. |
 | **Response** | Builds the JSON envelope from `ctx.DBResult` and writes it to the `http.ResponseWriter`. |
@@ -71,7 +71,9 @@ The Deserialize step assembles request input from three sources:
   `400 BODY_READ_ERROR`.
 - A multipart body populates both `ctx.ParsedBody` (the form fields) and
   `ctx.Files` (the file parts). The form-field-to-file-field mapping is by
-  name.
+  name. A form carries only strings, so a value bound for a number, boolean or
+  timestamp column is converted here — see
+  [How uploads work](../defining-your-api/files.md#how-uploads-work).
 
 Reads carry no body, so only `ctx.Query` is populated for `OpList` / `OpRead`.
 
@@ -84,6 +86,14 @@ declared by `mfx:` tags to `ctx.ParsedBody`:
 - `immutable` fields are stripped on update.
 - `required` fields must be present on create.
 - `enum`, `min`, `max` are checked when the value is present.
+- Each value must be one the field's Go type can hold: `{"age": "abc"}` for an
+  `int` column is `422`, as are `1.5` for an `int`, a number for a `string`, and
+  a timestamp that is not RFC 3339.
+
+The type check applies to the columns whose type accepts one shape. A type that
+brings its own — a `LocaleString`, or a `SQLTyper` such as `money.Amount`, which
+takes both `{"amount", "currency"}` and a bare `12.34` — is asked whether it can
+read the value rather than measured against a rule this step invented.
 
 Validation failures abort the pipeline with `422 Unprocessable Entity` and a
 `details` payload listing every offending field.

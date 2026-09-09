@@ -181,8 +181,9 @@ func (s *defaultSteps) deserialize(ctx *ServerContext, next func() error) error 
 			// explicit {"x": null} as present while an omitted key is absent —
 			// the distinction Phase-4 PATCH relies on. Additive: ParsedBody is
 			// still populated exactly as before.
-			if present, err := presentKeysFromJSON(body); err == nil {
-				ctx.present = present
+			if raw, err := rawFieldsFromJSON(body); err == nil {
+				ctx.present = presentKeys(raw)
+				ctx.bodyRaw = raw
 			}
 
 			// Bind the body into the typed record carrier (ctx.Record) alongside
@@ -204,20 +205,39 @@ func (s *defaultSteps) deserialize(ctx *ServerContext, next func() error) error 
 	return next()
 }
 
-// presentKeysFromJSON returns the set of top-level keys in a JSON object body.
-// It decodes into map[string]json.RawMessage so an explicit null value counts
+// rawFieldsFromJSON splits a JSON object body into its top-level keys and the
+// raw bytes each arrived as.
+//
+// Decoding into map[string]json.RawMessage is what makes an explicit null count
 // as present (the key exists) — unlike a value-typed decode where null and
-// absent both yield the zero value. A non-object body yields a nil set + error.
-func presentKeysFromJSON(body []byte) (map[string]struct{}, error) {
+// absent both yield the zero value. Keeping the values as well lets Validate
+// decode one field at a time into that field's Go type, which is how a body
+// whose shape the model cannot hold is named rather than written (audit STEP-6).
+// A non-object body yields a nil map + error.
+func rawFieldsFromJSON(body []byte) (map[string]json.RawMessage, error) {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return nil, err
 	}
+	return raw, nil
+}
+
+// presentKeys reduces a raw field map to the key set the carrier records.
+func presentKeys(raw map[string]json.RawMessage) map[string]struct{} {
 	keys := make(map[string]struct{}, len(raw))
 	for k := range raw {
 		keys[k] = struct{}{}
 	}
-	return keys, nil
+	return keys
+}
+
+// presentKeysFromJSON returns the set of top-level keys in a JSON object body.
+func presentKeysFromJSON(body []byte) (map[string]struct{}, error) {
+	raw, err := rawFieldsFromJSON(body)
+	if err != nil {
+		return nil, err
+	}
+	return presentKeys(raw), nil
 }
 
 // bindRecord decodes a JSON body into a typed record carrier (*T for
@@ -231,6 +251,11 @@ func (s *defaultSteps) bindRecord(ctx *ServerContext, body []byte) {
 	}
 	rec := reflect.New(ctx.Model.GoType).Interface()
 	if err := json.Unmarshal(body, rec); err != nil {
+		// The map write path takes over from here, and it writes whatever the
+		// body held — so this is also the only signal that the body carries a
+		// value the model's Go types cannot hold. Validate attributes it to a
+		// field rather than letting it reach a column (audit STEP-6).
+		ctx.bodyDecodeFailed = true
 		return
 	}
 	rm, ok := rec.(recordMeta)
@@ -389,6 +414,8 @@ func (s *defaultSteps) parseMultipartBuffered(ctx *ServerContext) error {
 	}
 	ctx.Files = files
 
+	coerceFormValues(ctx)
+
 	return nil
 }
 
@@ -509,6 +536,23 @@ func (s *defaultSteps) validate(ctx *ServerContext, next func() error) error {
 					"field %q cannot be null; its type has no null value — "+
 						"send a value, omit the field, or make it a pointer to allow null", jn),
 			})
+			continue
+		}
+
+		// The value has to be one the field's Go type can hold. Without this the
+		// write fell through to the map path and stored it verbatim, and on SQLite
+		// one such row failed the typed scan for the whole collection — every list
+		// and every read of that model answered 500, for every caller, until the
+		// row was found and repaired by id (audit STEP-6).
+		if msg := bodyTypeError(ctx, &field); msg != "" {
+			errs = append(errs, map[string]string{"field": jn, "message": msg})
+			continue
+		}
+		// The same rule for a multipart form, decided when it was parsed: its
+		// values are strings, so they are converted to the column's type there and
+		// only the ones that would not convert arrive here.
+		if msg, bad := ctx.formTypeErrs[jn]; bad {
+			errs = append(errs, map[string]string{"field": jn, "message": msg})
 			continue
 		}
 

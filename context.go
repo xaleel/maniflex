@@ -366,6 +366,24 @@ type ServerContext struct {
 	present    map[string]struct{}
 	selectKeys map[string]struct{}
 
+	// bodyRaw holds each top-level key of a JSON write body as the raw bytes it
+	// arrived as, so Validate can decode one field at a time into that field's Go
+	// type and say which key is the wrong shape. Deserialize already splits the
+	// body this way to record presence; keeping the values costs nothing more.
+	// Nil for multipart requests and for reads.
+	bodyRaw map[string]json.RawMessage
+
+	// bodyDecodeFailed records that the whole-body decode into the typed record
+	// did not succeed, which is the only thing that makes the per-field pass in
+	// Validate worth running: when the body decodes, no field can be mistyped.
+	bodyDecodeFailed bool
+
+	// formTypeErrs maps a JSON name to why its multipart value could not be read
+	// as that field's type. Recorded rather than aborted on, so a field Validate
+	// goes on to strip (readonly, immutable on update) never reports an error for
+	// a value that was never going to be written (audit STEP-6).
+	formTypeErrs map[string]string
+
 	// aggregate marks a request as the auto-generated GET /:model/aggregate
 	// endpoint (ModelConfig.AggregateEnabled). The handler dispatches it as
 	// OpList so list auth/tenancy middleware apply, then this flag routes the

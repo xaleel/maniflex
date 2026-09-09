@@ -360,6 +360,22 @@ create and update, in addition to JSON:
 - Form *file* parts named after a `file` field are streamed to storage; the
   resulting key is written to the column.
 
+A form carries only strings, so a value bound for a column that is not one is
+converted before it is written, and a string that will not convert is `422`
+rather than stored:
+
+| Column | Accepted | Note |
+| --- | --- | --- |
+| number | `7`, `1.5` | out of range for the column's width is refused |
+| boolean | `true` / `false`, `1` / `0`, `on` / `off` | `on` is what a checked checkbox posts; an unchecked one posts nothing, which is absence |
+| timestamp | RFC 3339 (`2020-01-02T03:04:05Z`) | a bare date is refused |
+| string | anything | passed through, so `01234` stays `"01234"` |
+
+An **empty** value for a non-string column is read as no value at all, because
+a browser posts every input in the form including the ones nobody filled in. A
+nullable column (`*int`) stores `NULL`; one whose type has no null is refused
+by name, the same answer the same body gets as JSON.
+
 Conceptually:
 
 ```

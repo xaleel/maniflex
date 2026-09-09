@@ -182,6 +182,7 @@ func (s *defaultSteps) parseMultipartStreaming(ctx *ServerContext) error {
 
 	ctx.present = present
 	ctx.Files = files
+	coerceFormValues(ctx)
 	return nil
 }
 

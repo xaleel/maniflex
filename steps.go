@@ -2487,10 +2487,19 @@ func (s *defaultSteps) response(ctx *ServerContext, next func() error) error {
 	}
 
 	// Needed in case of `maniflex.Pipeline.DB.Register(..., maniflex.AtPosition(maniflex.Replace))`
-	// and ctx.DBResult wasn't manually set
+	// and ctx.DBResult wasn't manually set.
+	//
+	// Only a list has an honest empty answer. The fallback used to apply to every
+	// operation, so a read, create or update whose Replace middleware set nothing
+	// was handed an empty *ListResult and rendered it as a record — a reflect
+	// panic, and had the guard below caught it, a message naming a type the
+	// developer never set. Left nil, the guard says what actually happened
+	// (audit STEP-8).
 	if ctx.DBResult == nil {
 		ctx.Logger().Warn("Response step reached with ctx.DBResult == nil")
-		ctx.DBResult = &ListResult{Items: []any{}, Total: 0, Query: ctx.Query}
+		if ctx.Operation == OpList || ctx.Operation == OpReadHistory {
+			ctx.DBResult = &ListResult{Items: []any{}, Total: 0, Query: ctx.Query}
+		}
 	}
 	model := ctx.Model
 
@@ -2520,8 +2529,8 @@ func (s *defaultSteps) response(ctx *ServerContext, next func() error) error {
 
 // recordResponse builds the single-record envelope for create, read, and update.
 func (s *defaultSteps) recordResponse(ctx *ServerContext, model *ModelMeta, status int) {
-	if !marshalableRecord(ctx.DBResult) {
-		abortInvalidDBResult(ctx, "a record — map[string]any or *T", ctx.DBResult)
+	if !marshalableRecord(ctx.DBResult, model) {
+		abortInvalidDBResult(ctx, "a record — "+recordShape(model), ctx.DBResult)
 		return
 	}
 	row := s.marshalRecord(model, ctx.DBResult, ctx)
@@ -2539,6 +2548,10 @@ func (s *defaultSteps) listResponse(ctx *ServerContext, model *ModelMeta) {
 	lr, ok := ctx.DBResult.(*ListResult)
 	if !ok {
 		abortInvalidDBResult(ctx, "*maniflex.ListResult", ctx.DBResult)
+		return
+	}
+	if i, row := firstUnmarshalableRow(lr.Items, model); i >= 0 {
+		abortInvalidDBResult(ctx, fmt.Sprintf("ListResult.Items[%d] to be %s", i, recordShape(model)), row)
 		return
 	}
 	// A hand-built ListResult from a Replace middleware typically carries only
@@ -2595,20 +2608,54 @@ func (s *defaultSteps) listResponse(ctx *ServerContext, model *ModelMeta) {
 	}
 }
 
-// marshalableRecord reports whether v is something marshalRecord can render: a
-// map[string]any, or a non-nil pointer to a record struct. Anything else — a
-// value struct, an int, a nil pointer — used to reach reflect.Value.Elem and
-// panic the Response step, which a Replace middleware could trigger from Go code
-// that looks perfectly reasonable (BUG-13).
-func marshalableRecord(v any) bool {
+// marshalableRecord reports whether v is something marshalRecord can render as
+// model: a map[string]any, or a non-nil pointer to the model's own struct.
+// Anything else — a value struct, an int, a nil pointer — used to reach
+// reflect.Value.Elem and panic the Response step, which a Replace middleware
+// could trigger from Go code that looks perfectly reasonable (BUG-13).
+//
+// "A pointer" was not enough. marshalRecord walks the model's field indices, so
+// a pointer to any other struct panicked where the shapes differed — including
+// the *ListResult the nil fallback used to substitute on a read — and, where
+// they happened to line up, silently served that struct's fields under this
+// model's names. The hidden and redaction checks consult this model's fields,
+// so a hidden password hash sitting at the same position as a visible column
+// was published under that column's name (audit STEP-8).
+//
+// A model with no Go type (history, m2m junction) is rendered from maps only:
+// there is no struct for a pointer to be checked against.
+func marshalableRecord(v any, model *ModelMeta) bool {
 	if v == nil {
 		return false
 	}
 	if _, ok := v.(map[string]any); ok {
 		return true
 	}
+	if model == nil || model.GoType == nil {
+		return false
+	}
 	rv := reflect.ValueOf(v)
-	return rv.Kind() == reflect.Pointer && !rv.IsNil()
+	return rv.Kind() == reflect.Pointer && !rv.IsNil() && rv.Elem().Type() == model.GoType
+}
+
+// firstUnmarshalableRow returns the index and value of the first list row that
+// marshalableRecord refuses, or -1. Checked before any row is rendered, so a bad
+// row fails the whole response cleanly instead of part-way through it.
+func firstUnmarshalableRow(items []any, model *ModelMeta) (int, any) {
+	for i, row := range items {
+		if !marshalableRecord(row, model) {
+			return i, row
+		}
+	}
+	return -1, nil
+}
+
+// recordShape names what a record must be for model, for the error that says so.
+func recordShape(model *ModelMeta) string {
+	if model == nil || model.GoType == nil {
+		return "map[string]any"
+	}
+	return "map[string]any or *" + model.GoType.String()
 }
 
 // abortInvalidDBResult reports a ctx.DBResult the Response step cannot render.
@@ -2639,6 +2686,13 @@ func (s *defaultSteps) streamExportRows(ctx *ServerContext) {
 	}
 
 	model := ctx.Model
+	// The rows stream lazily and the headers go out before the first one, so a
+	// row the Response step cannot render has to be caught here: once streaming
+	// starts there is no clean 500 left to send.
+	if i, row := firstUnmarshalableRow(lr.Items, model); i >= 0 {
+		abortInvalidDBResult(ctx, fmt.Sprintf("ListResult.Items[%d] to be %s", i, recordShape(model)), row)
+		return
+	}
 	fields := exportColumns(model, ctx)
 
 	if err := streamExport(ctx.Writer, model.Name, format, fields, s.exportRowSeq(ctx, model, lr)); err != nil {

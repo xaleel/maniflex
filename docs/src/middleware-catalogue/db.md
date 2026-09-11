@@ -460,8 +460,10 @@ server.Pipeline.DB.Register(
 `KeyFunc` must capture every input that changes the result (model, tenant,
 filters, sort, pagination, includes); returning `""` skips the cache for that
 request. The value stored is `ctx.DBResult`, so a distributed `CacheStore` must
-round-trip a `*maniflex.ListResult` for lists — a store that decodes list
-entries into a bare map is treated as a miss rather than panicking. Avoid
+round-trip a `*maniflex.ListResult` for lists, and records — alone or as list
+rows — as a `map[string]any` or a pointer to the model's own struct. A store
+that decodes into anything else is treated as a miss and the request reads the
+database, rather than failing. Avoid
 caching `mfx:"encrypted"` models, since the decrypted result would live in the
 cache.
 

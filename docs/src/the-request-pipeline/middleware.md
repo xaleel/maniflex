@@ -158,10 +158,16 @@ the last one registered wins.
 
 A `Replace` on the **DB step** takes over feeding the Response step, so it must
 leave `ctx.DBResult` in the shape that step expects: a `*maniflex.ListResult` for
-a list, and a record (`map[string]any` or a `*T`) for a read, create, or update.
-Anything else is rejected with `500 INVALID_DB_RESULT` naming the type it got. On
-a `ListResult` you need only set `Items` and `Total` — a missing or partial
-`Query` is filled in with the default page and limit.
+a list, and a record for a read, create, or update. A record is a
+`map[string]any` or a pointer to **this model's** struct, and the same goes for
+each of a `ListResult`'s `Items`. Anything else is rejected with
+`500 INVALID_DB_RESULT` naming the type it got — including a pointer to another
+model's struct, or to a type defined from this one, since the response is built
+by walking this model's fields through whatever it is handed. A read, create or
+update that leaves `ctx.DBResult` unset is rejected the same way; a list that
+does is answered with an empty page. On a `ListResult` you need only set `Items`
+and `Total` — a missing or partial `Query` is filled in with the default page
+and limit.
 
 ## Naming for traces
 

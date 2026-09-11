@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
 	"time"
 
@@ -826,19 +827,52 @@ func cacheableOp(op maniflex.Operation) bool {
 // cacheHitUsable guards against a CacheStore returning a value whose Go type the
 // Response step cannot render — e.g. a JSON-decoding store that hands back a bare
 // map where a list response expects a *maniflex.ListResult. A list hit must be a
-// *ListResult; a read hit may be a typed record or a map, both of which the
-// Response step renders. An unusable value is treated as a miss so the request
-// falls through to the database instead of panicking.
+// *ListResult; a read hit, and every row of a list hit, must be a map or a
+// pointer to the model's own struct. An unusable value is treated as a miss so
+// the request falls through to the database instead of failing.
+//
+// The record half used to accept anything, because the Response step accepted
+// any pointer. It now refuses a pointer to another struct — which it used to
+// render by walking this model's field indices through it, publishing whatever
+// sat at each position, hidden fields included (audit STEP-8). A store that
+// decoded into the wrong type would otherwise turn every cached read into a 500.
 func cacheHitUsable(ctx *maniflex.ServerContext, val any) bool {
 	if val == nil {
 		return false
 	}
 	if ctx.Operation == maniflex.OpList {
-		if _, ok := val.(*maniflex.ListResult); !ok {
+		lr, ok := val.(*maniflex.ListResult)
+		if !ok {
 			ctx.Logger().Warn("db.CacheQuery: ignoring cached list value of unexpected type",
 				"model", ctx.Model.Name)
 			return false
 		}
+		for _, row := range lr.Items {
+			if !cachedRecordUsable(ctx.Model, row) {
+				ctx.Logger().Warn("db.CacheQuery: ignoring cached list with a row of unexpected type",
+					"model", ctx.Model.Name, "type", fmt.Sprintf("%T", row))
+				return false
+			}
+		}
+		return true
+	}
+	if !cachedRecordUsable(ctx.Model, val) {
+		ctx.Logger().Warn("db.CacheQuery: ignoring cached record of unexpected type",
+			"model", ctx.Model.Name, "type", fmt.Sprintf("%T", val))
+		return false
 	}
 	return true
+}
+
+// cachedRecordUsable mirrors the Response step's test for a renderable record:
+// a map, or a non-nil pointer to the model's own struct.
+func cachedRecordUsable(model *maniflex.ModelMeta, v any) bool {
+	if _, ok := v.(map[string]any); ok {
+		return true
+	}
+	if model == nil || model.GoType == nil {
+		return false
+	}
+	rv := reflect.ValueOf(v)
+	return rv.Kind() == reflect.Pointer && !rv.IsNil() && rv.Elem().Type() == model.GoType
 }

@@ -1302,6 +1302,53 @@ func TestMedium_CacheQuery(t *testing.T) {
 			t.Errorf("got %d users, want 1 (fresh DB read on unusable cache value)", got)
 		}
 	})
+
+	// The Response step now refuses a pointer to another model's struct rather
+	// than rendering it through this model's field indices (audit STEP-8). A
+	// store that decoded into the wrong type must therefore be a miss here, the
+	// same as a list of the wrong type — not a 500 on every cached request.
+	t.Run("cached_record_of_another_model_is_a_miss", func(t *testing.T) {
+		t.Parallel()
+		cache := &wrongStructCache{list: false}
+		srv := testutil.NewServer(t, testutil.Options{
+			Middleware: func(s *maniflex.Server) {
+				s.Pipeline.DB.Register(
+					dbmw.CacheQuery(cache, dbmw.CacheConfig{TTL: time.Minute,
+						KeyFunc: func(*maniflex.ServerContext) string { return "users:one" }}),
+					maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpRead))
+			},
+		})
+		id := srv.MustID(srv.CreateUser("Real", "real@cache.com", "viewer"))
+		resp := srv.GET("/users/" + id)
+		resp.AssertStatus(http.StatusOK)
+		if got := resp.Data()["name"]; got != "Real" {
+			t.Errorf("name = %#v, want the row from the database", got)
+		}
+		if strings.Contains(string(resp.Body), vaultHash) {
+			t.Errorf("the cached struct's field reached the wire: %s", resp.Body)
+		}
+	})
+
+	t.Run("cached_list_with_a_row_of_another_model_is_a_miss", func(t *testing.T) {
+		t.Parallel()
+		cache := &wrongStructCache{list: true}
+		srv := testutil.NewServer(t, testutil.Options{
+			Middleware: func(s *maniflex.Server) {
+				s.Pipeline.DB.Register(
+					dbmw.CacheQuery(cache, dbmw.CacheConfig{TTL: time.Minute, KeyFunc: listKey}),
+					maniflex.ForModel("User"), maniflex.ForOperation(maniflex.OpList))
+			},
+		})
+		srv.MustID(srv.CreateUser("Real", "real-list@cache.com", "viewer"))
+		resp := srv.GET("/users")
+		resp.AssertStatus(http.StatusOK)
+		if got := len(resp.DataList()); got != 1 {
+			t.Errorf("got %d users, want 1 (fresh DB read on unusable cache value)", got)
+		}
+		if strings.Contains(string(resp.Body), vaultHash) {
+			t.Errorf("the cached struct's field reached the wire: %s", resp.Body)
+		}
+	})
 }
 
 // ── M11: auth.RequireOwner and auth.AllowPublicRead ───────────────────────────
@@ -1920,6 +1967,21 @@ func (c *badListCache) Get(context.Context, string) (any, bool) {
 }
 func (c *badListCache) Set(context.Context, string, any, time.Duration) { atomic.AddInt64(&c.sets, 1) }
 func (c *badListCache) Delete(context.Context, string)                  {}
+
+// wrongStructCache hands back a pointer to a different model's struct — the
+// shape a store decoding into a guessed type would produce. As a record it is
+// the hit itself; as a list it is one row of an otherwise valid ListResult.
+type wrongStructCache struct{ list bool }
+
+func (c *wrongStructCache) Get(context.Context, string) (any, bool) {
+	v := &vault{PasswordHash: vaultHash}
+	if c.list {
+		return &maniflex.ListResult{Items: []any{v}, Total: 1}, true
+	}
+	return v, true
+}
+func (c *wrongStructCache) Set(context.Context, string, any, time.Duration) {}
+func (c *wrongStructCache) Delete(context.Context, string)                  {}
 
 // drainExtChan reads up to n events from ch within the deadline.
 // Named to avoid collision with drainChan helpers in other test files.

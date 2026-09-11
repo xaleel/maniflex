@@ -92,6 +92,12 @@ them.
 > the list scan. A column still holding a scalar from that era now resolves to
 > its value and logs a warning instead of erroring, so the row can be repaired
 > with an ordinary PATCH.
+>
+> That fix reached only one of the two write paths at first: the companion was
+> consumed just when the body also carried a bare string in `name`. Sent on
+> its own it answered `200` and wrote nothing — an empty column on create —
+> and sent beside a `name` map it was dropped. The table above holds on every
+> path as of this release.
 
 ### `resolve`
 

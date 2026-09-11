@@ -1946,6 +1946,7 @@ func (s *defaultSteps) db(ctx *ServerContext, next func() error) error {
 	var dbData map[string]any
 	if recordSourcedWrite(ctx, model) {
 		dbData = recordToMap(model, ctx.Record)
+		overlayLocaleWrites(ctx, model, dbData)
 	} else {
 		dbData = toDBMap(ctx, ctx.ParsedBody, model)
 	}
@@ -2805,6 +2806,51 @@ func toDBMap(ctx *ServerContext, b *RequestBody, model *ModelMeta) map[string]an
 	return out
 }
 
+// splitSuffix is the companion-key suffix in force for this request.
+func splitSuffix(ctx *ServerContext) string {
+	if ctx != nil && ctx.SplitSuffix != "" {
+		return ctx.SplitSuffix
+	}
+	return "_i18n"
+}
+
+// overlayLocaleWrites re-decides the locale columns of a record-sourced write.
+//
+// The companion key (name_i18n, or whatever SplitSuffix makes it) names no model
+// field, so it never reaches the typed record: bindRecord has nowhere to put it
+// and recordToMap emits the present columns only. localeWriteValue is the one
+// place that understands it and until now only toDBMap called it — so the rule
+// localization.md publishes, that the companion wins, held only on the map path,
+// which a body reaches by accident when its bare-string "name" fails
+// LocaleString.UnmarshalJSON. Sent on its own the companion was a no-op on update
+// and an empty column on create; sent beside a map it was dropped (audit STEP-7).
+//
+// Only the columns whose companion the body actually carries are touched. Every
+// other value stays on the record path, which is what keeps an int64 column
+// beside a localized one from being rounded through a float64 (audit N1).
+func overlayLocaleWrites(ctx *ServerContext, model *ModelMeta, dbData map[string]any) {
+	if ctx == nil || ctx.ParsedBody == nil || dbData == nil {
+		return
+	}
+	suffix := splitSuffix(ctx)
+	for i := range model.Fields {
+		f := &model.Fields[i]
+		if !f.Tags.Locale {
+			continue
+		}
+		if _, ok := ctx.ParsedBody.Get(f.Tags.JSONName + suffix); !ok {
+			continue
+		}
+		v, ok := localeWriteValue(ctx, f, model, ctx.ParsedBody)
+		if !ok {
+			continue
+		}
+		if encoded, err := json.Marshal(v); err == nil {
+			dbData[f.Tags.DBName] = string(encoded)
+		}
+	}
+}
+
 // localeWriteValue picks what a locale column should be written from, given a
 // request body that may carry either shape split mode emits.
 //
@@ -2829,10 +2875,7 @@ func toDBMap(ctx *ServerContext, b *RequestBody, model *ModelMeta) map[string]an
 //     differently.
 //   - anything else → passed through unchanged, as before.
 func localeWriteValue(ctx *ServerContext, f *FieldMeta, model *ModelMeta, b *RequestBody) (any, bool) {
-	suffix := "_i18n"
-	if ctx != nil && ctx.SplitSuffix != "" {
-		suffix = ctx.SplitSuffix
-	}
+	suffix := splitSuffix(ctx)
 	if v, ok := b.Get(f.Tags.JSONName + suffix); ok {
 		if m := localeStringToMap(v); m != nil {
 			return m, true

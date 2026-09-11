@@ -522,21 +522,32 @@ func TestSplit_CustomSuffix(t *testing.T) {
 	}
 }
 
-func TestSplit_I18nFieldIgnoredOnWrite(t *testing.T) {
+// This asserted the opposite until audit STEP-7: that a companion sent on write
+// was "silently ignored". That was true when the test was written, and stopped
+// being true in v0.2.5, which made the companion the value that wins and said so
+// in localization.md — but the change reached only the map write path, so this
+// case (a map in "name" decodes cleanly, so the record path is taken) kept the
+// old behaviour and the test kept passing on it.
+func TestSplit_I18nFieldWinsOnWrite(t *testing.T) {
 	t.Parallel()
 	srv := splitServer(t)
 
-	// Sending name_i18n on write should be silently ignored
 	data := srv.POST("/split_depts", map[string]any{
-		"name":     map[string]any{"en": "Pathology"},
-		"name_i18n": map[string]any{"en": "IGNORED", "ar": "IGNORED"},
-		"code":     "PTH",
+		"name":      map[string]any{"en": "Pathology"},
+		"name_i18n": map[string]any{"en": "Pathology", "ar": "علم الأمراض"},
+		"code":      "PTH",
 	}).AssertStatus(http.StatusCreated).Data()
 
 	assertString(t, "name", data["name"], "Pathology")
 	m := assertMap(t, "name_i18n", data["name_i18n"])
 	if m["en"] != "Pathology" {
-		t.Errorf("name_i18n.en: got %v, want Pathology (not the injected IGNORED value)", m["en"])
+		t.Errorf("name_i18n.en: got %v, want Pathology", m["en"])
+	}
+	// The whole point of the companion: it carries the translations the bare
+	// "name" cannot, so it is the complete value and takes precedence.
+	if m["ar"] != "علم الأمراض" {
+		t.Errorf("name_i18n.ar: got %v — the companion is the complete value and wins "+
+			"over the map sent beside it", m["ar"])
 	}
 }
 

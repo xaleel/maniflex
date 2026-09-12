@@ -80,7 +80,8 @@ the table:
 
 - **List** (`GET /<table>`) — only un-deleted rows are returned.
 - **Read** (`GET /<table>/{id}`) — a soft-deleted row returns `404`.
-- **Includes** — relations populated via `?include=` skip soft-deleted children.
+- **Includes** — relations populated via `?include=` skip soft-deleted children,
+  and a many-to-many skips links whose junction row is soft-deleted.
 - **Update** — `PATCH` on a soft-deleted row returns `404`; the row is treated
   as absent.
 - **Delete** — a second `DELETE` on the same row returns `404` and leaves the

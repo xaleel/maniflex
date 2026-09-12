@@ -56,6 +56,8 @@ you.
 Forced filters also travel into `?include=`: a related model carrying the scope
 column is fetched through it, so a child a caller planted under another tenant's
 parent by setting its foreign key does not surface in that tenant's include. A
+many-to-many junction carrying the column is read through it too, so a link
+another tenant wrote between two of this tenant's rows stays out as well. A
 related model with no such column — a shared lookup table like currencies or
 categories — is deliberately left unscoped, since it is not partitioned and has
 nothing to scope by.

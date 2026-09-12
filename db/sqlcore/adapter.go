@@ -2304,11 +2304,38 @@ func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex
 		inList = append(inList, p.add(id))
 	}
 
+	// The junction is read under the same two rules as every other include
+	// level: its soft-delete condition, and the request's forced scope on the
+	// columns it carries. It used to be read raw, so a link the application had
+	// soft-deleted — invisible on the junction's own list — still materialised
+	// the related row, _through payload and deleted_at included; and a link row
+	// another tenant wrote between two of this tenant's records passed both
+	// endpoint checks and surfaced here with that tenant's payload (audit QRY-12).
+	//
+	// Every many-to-many has a registered junction model (an explicit through:
+	// fails registration without one, and auto-detection records the model it
+	// found), so the metadata is there whenever a registry is.
+	var junctionMeta *maniflex.ModelMeta
+	if reg != nil && rel.ThroughModel != "" {
+		if jm, ok := reg.Get(rel.ThroughModel); ok {
+			junctionMeta = jm
+		}
+	}
+	conditions := []string{fmt.Sprintf("%s IN (%s)", q(rel.ThroughLocalFK), strings.Join(inList, ", "))}
+	if junctionMeta != nil {
+		if c := softDeleteCond(junctionMeta, rel.ThroughTable, driver); c != "" {
+			conditions = append(conditions, c)
+		}
+		// After the IN list, whose placeholders were added first: SQLite binds
+		// positionally, so the conditions must appear in the order p grew.
+		if c := includeScopeCond(junctionMeta, scope, driver, p); c != "" {
+			conditions = append(conditions, c)
+		}
+	}
 	jQuery := fmt.Sprintf(
-		"SELECT * FROM %s WHERE %s IN (%s)",
+		"SELECT * FROM %s WHERE %s",
 		q(rel.ThroughTable),
-		q(rel.ThroughLocalFK),
-		strings.Join(inList, ", "),
+		strings.Join(conditions, " AND "),
 	)
 	jRows, err := runner.QueryContext(ctx, jQuery, p.args...)
 	if err != nil {
@@ -2337,12 +2364,6 @@ func populateManyToMany(ctx context.Context, runner queryRunner, driver maniflex
 	}
 	parentToRemotes := make(map[string][]pair)
 
-	var junctionMeta *maniflex.ModelMeta
-	if reg != nil && rel.ThroughModel != "" {
-		if jm, ok := reg.Get(rel.ThroughModel); ok {
-			junctionMeta = jm
-		}
-	}
 	// Collapse duplicate (local, remote) pairs only when the junction declares
 	// the pair unique (mfx:"unique" on its JunctionModel embed).
 	//

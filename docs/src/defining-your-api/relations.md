@@ -349,6 +349,9 @@ list endpoints. See [Soft Delete](soft-delete.md).
 A request's **forced filters** — the scope imposed by `db.Tenancy` or
 `db.ForceFilter` — are applied to included rows as well as to the primary read,
 for every relation kind, wherever the related model carries the filtered column.
+For a many-to-many they apply to the **junction rows** too, on the same terms:
+a link row is read only if it is in scope, whenever the junction carries the
+column.
 
 This matters because the foreign key is the client's to set. Without it, a
 caller who can write an FK (or a many-to-many junction row) puts their own row
@@ -374,9 +377,16 @@ real:
   includes are unscoped and the FK write is yours to validate.
 - **Relation-path filters** (`db.ForceFilterVia`) are skipped: they are written
   against the primary model's relations and mean nothing on the related table.
-- The scope applies to the **rows returned**, not to the junction. A row that
-  should never have been attached is now invisible rather than absent; clean it
-  up at the write.
+- A link between **two of your own rows** written by another tenant is hidden
+  only if the junction carries the scope column. Scoping the related rows alone
+  cannot catch it: both endpoints are yours, so both pass. Put the tenant column
+  on a partitioned junction, and scope its writes as you would any model's. The
+  row is then invisible rather than absent; clean it up at the write.
+
+> Before this release the junction was read unscoped and without its
+> soft-delete condition, so a link another tenant wrote between two of your
+> records surfaced in your include with that tenant's `_through` payload, and a
+> soft-deleted link kept materialising its related row.
 
 ## Quick reference
 

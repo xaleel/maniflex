@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.14.0 (2026-09-12)
 
 - **Security:** a many-to-many `?include=` reads its junction under the junction's soft-delete condition and the request's forced scope, as every other include level already did. It was read raw, so a soft-deleted link kept materialising its related row, `deleted_at` included in `_through` — and a link another tenant wrote between two of your records passed both endpoint checks and surfaced in your include with that tenant's payload. Scoped only where the junction carries the column.
 - **Bugfix (behaviour change):** a `ctx.DBResult` that is not this model's record is refused with `500 INVALID_DB_RESULT` on reads, lists and exports. The guard took any pointer and walked the model's field indices through it: another struct panicked, or — where layouts lined up — had its fields served under this model's names, `hidden` ones included. A record op whose Replace DB middleware set nothing now reports `got <nil>`; `db.CacheQuery` treats such a hit as a miss.

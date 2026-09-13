@@ -164,3 +164,26 @@ independently, and a concurrent live write is simply picked up by its own rollup
   call) does not trigger it — run `BackfillRollups` after such a bulk load.
 - `AggCountDistinct` is not supported as a rollup op; write it by hand with an
   After-DB middleware if you need it.
+
+## Rollups and row-level scopes
+
+A recompute writes the **parent**, and the parent is whatever row the child's
+foreign key names. Under a row-level scope (`db.Tenancy`, `db.ForceFilter`) that
+matters: a child naming another tenant's parent would move a total in a row its
+author can neither read nor reach.
+
+The scope closes this at the write. Every `BelongsTo` key a create or update sets
+is read through the request's own scope first, and a key pointing at a parent the
+caller cannot see is refused with that parent's `404` — so the child never
+exists, and there is nothing left for a later recompute to count. See
+[`ForceFilter`](../middleware-catalogue/db.md#forcefilter) for the exact rule and
+the shapes it deliberately leaves alone.
+
+Refusing the write rather than skipping the recompute is the part that matters.
+`BackfillRollups` aggregates by foreign key with no scope at all — it has no
+request to take one from — so a row merely left uncounted by the live path would
+be folded into the victim's total at the next reconcile.
+
+A write that bypasses the pipeline still bypasses both, so a raw `INSERT` or a
+direct adapter call can place a child under any parent. That is the same
+exemption raw writes already have from the rollup itself.

@@ -206,11 +206,17 @@ func TestNestedInclude_ScopedAtEveryLevel(t *testing.T) {
 	base := niSrv(t, true)
 	niSeed(t, base, "ada")
 
-	// bob owns a post whose author points at *ada's* company — the FK is the
-	// client's to set, so this is reachable.
+	// bob owns a post whose author points at *ada's* company.
+	//
+	// A scoped request can no longer write that FK — it is refused with the
+	// company's own 404 (audit PIPE-2) — so the row is planted through an
+	// unscoped one: a back-office path, a migration, a seed script. That is the
+	// point. The read guard is what this test is about, and it has to hold for a
+	// row whatever put it in the table; sourcing the fixture from the write path
+	// that now refuses it would leave this asserting nothing.
 	_, c := niReq(t, base, "POST", "/ni_companies", "ada", `{"name":"Acme Ltd","owner_id":"ada"}`)
 	adaCompany := niID(t, c)
-	_, a := niReq(t, base, "POST", "/ni_authors", "bob",
+	_, a := niReq(t, base, "POST", "/ni_authors", "",
 		`{"name":"Bob","owner_id":"bob","ni_company_id":"`+adaCompany+`"}`)
 	bobAuthor := niID(t, a)
 	_, p := niReq(t, base, "POST", "/ni_posts", "bob",

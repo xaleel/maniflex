@@ -37,6 +37,27 @@ read, and, since that column is the client's to send, plantable straight into
 someone else's scope. The stamp is skipped on update when the column is
 `immutable`, which cannot change anyway.
 
+**A foreign key the write names is checked too.** The stamp makes the row look
+correctly owned whatever its foreign keys say, so `POST {"order_id": "<another
+tenant's>"}` used to land a child under their parent. The child is hidden from
+that tenant on every read — see the include rule below — but the framework itself
+still writes to the parent: a [rollup](../advanced-topics/rollups.md) recomputes
+the parent's denormalised column over every child naming it, so a planted row
+moved a total in a row its author could neither read nor reach. So every
+`BelongsTo` key a create or update sets is read through the scope first, and a
+miss is the same `404` a scoped read of that parent gives.
+
+Three shapes are deliberately left alone. A key the write doesn't set can't move
+the row anywhere, and the row itself was already read back through the scope. A
+key written **empty** is legal — the child carries the scope column itself, so a
+child with no parent is perfectly describable (unlike `ForceFilterVia` below,
+where the parent *is* the scope and a null key is a `422`). And a parent carrying
+**no column the scope names** is shared rather than partitioned — a currency
+table, a plan catalogue — so every tenant may still reference it, the same rule
+the includes below apply. A key naming a model you never registered — the
+microservice case of storing a foreign id by design — has no parent table to
+read, so nothing is checked.
+
 That read is the only cost, and only a request carrying a forced filter pays it:
 a write with nothing scoped goes straight to the adapter as before. A client's
 own `?filter=` never constrains a write — only filters the server imposed do.
@@ -54,10 +75,11 @@ what carries it onto updates and deletes. `ForceFilter` and `Tenancy` set it for
 you.
 
 Forced filters also travel into `?include=`: a related model carrying the scope
-column is fetched through it, so a child a caller planted under another tenant's
-parent by setting its foreign key does not surface in that tenant's include. A
-many-to-many junction carrying the column is read through it too, so a link
-another tenant wrote between two of this tenant's rows stays out as well. A
+column is fetched through it, so a child that reached another tenant's parent by
+some other road — an unscoped back-office write, an import, a row predating the
+key check above — does not surface in that tenant's include. A many-to-many
+junction carrying the column is read through it too, so a link another tenant
+wrote between two of this tenant's rows stays out as well. A
 related model with no such column — a shared lookup table like currencies or
 categories — is deliberately left unscoped, since it is not partitioned and has
 nothing to scope by.

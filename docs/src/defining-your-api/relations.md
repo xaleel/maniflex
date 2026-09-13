@@ -356,8 +356,14 @@ column.
 This matters because the foreign key is the client's to set. Without it, a
 caller who can write an FK (or a many-to-many junction row) puts their own row
 inside another tenant's `?include=`, and an attach pulls another tenant's record
-into their own response. The framework does not validate junction writes, so the
-include is where the scope has to hold.
+into their own response.
+
+A scoped write now refuses such a key up front — every `BelongsTo` key a create
+or update sets is read through the request's scope, and one naming a parent the
+caller cannot see is refused with that parent's `404`, junction rows included.
+The include scoping here is the second line: it holds for a row that reached the
+table by some other road — an unscoped back-office write, an import, a row
+predating that check.
 
 ```go
 // Tenancy on both models; the include is scoped by the same filter.
@@ -374,14 +380,16 @@ real:
   answer for the case that produces it — a shared lookup table (currencies,
   categories, statuses) is not tenant-partitioned and has nothing to scope by —
   but if a model *is* partitioned by something the filter cannot name, its
-  includes are unscoped and the FK write is yours to validate.
+  includes are unscoped — and so is the key check on the write, which uses the
+  same "does the parent carry this column" rule. Validating that FK is yours.
 - **Relation-path filters** (`db.ForceFilterVia`) are skipped: they are written
   against the primary model's relations and mean nothing on the related table.
-- A link between **two of your own rows** written by another tenant is hidden
+- A link between **two of your own rows** written by another tenant is caught
   only if the junction carries the scope column. Scoping the related rows alone
   cannot catch it: both endpoints are yours, so both pass. Put the tenant column
-  on a partitioned junction, and scope its writes as you would any model's. The
-  row is then invisible rather than absent; clean it up at the write.
+  on a partitioned junction and register the scope on it, and the write is
+  refused outright; without that column the junction is shared, and the link is
+  neither refused nor hidden.
 
 > Before this release the junction was read unscoped and without its
 > soft-delete condition, so a link another tenant wrote between two of your

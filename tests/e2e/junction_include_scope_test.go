@@ -123,6 +123,19 @@ func scopedJunctionSrv(t *testing.T) *testutil.Server {
 	})
 }
 
+// plantForeignEnrol puts a tenant-B link row between two of tenant A's records
+// into the table, through a request carrying no X-Org header. orgScope() imposes
+// no filter on such a request, so no scope reaches the write and PIPE-2's
+// foreign-key check has nothing to enforce — the unscoped back-office shape, and
+// the only way left to stage the row these read-side tests are about.
+func plantForeignEnrol(t *testing.T, srv *testutil.Server, studentID, courseID string) {
+	t.Helper()
+	srv.POST("/sc_enrols", map[string]any{
+		"sc_student_id": studentID, "sc_course_id": courseID,
+		"grade": foreignGrade, "org_id": "tenant-b",
+	}).AssertStatus(http.StatusCreated)
+}
+
 func TestJunctionInclude_ForeignTenantLinkIsHidden(t *testing.T) {
 	t.Parallel()
 	srv := scopedJunctionSrv(t)
@@ -130,12 +143,16 @@ func TestJunctionInclude_ForeignTenantLinkIsHidden(t *testing.T) {
 	sid := srv.MustID(srv.POST("/sc_students", map[string]any{"name": "Ada", "org_id": "tenant-a"}, asA))
 	cid := srv.MustID(srv.POST("/sc_courses", map[string]any{"title": "Logic", "org_id": "tenant-a"}, asA))
 
-	// Tenant B links two of A's records. The write is accepted — refusing it is
-	// the write-side check PIPE-2 proposes for every BelongsTo a request names —
-	// so the read side is what has to keep it out of A's responses.
-	srv.POST("/sc_enrols", map[string]any{
-		"sc_student_id": sid, "sc_course_id": cid, "grade": foreignGrade,
-	}, asB).AssertStatus(http.StatusCreated)
+	// A link row owned by tenant B joining two of A's records.
+	//
+	// B can no longer write it through a scoped request: PIPE-2 now reads every
+	// BelongsTo key a write names back through the request's scope, and B's POST
+	// is refused with the student's own 404 (see
+	// TestParentScope_ForeignKeyToAnotherTenantIsRefused). So it is planted
+	// unscoped — a back-office path, an import, a row from before that check
+	// existed. The read guard is this test's subject and must hold for the row
+	// regardless of how it got there.
+	plantForeignEnrol(t, srv, sid, cid)
 
 	resp := srv.GET("/sc_students/"+sid+"?include=sc_courses", asA)
 	resp.AssertStatus(http.StatusOK)
@@ -164,9 +181,7 @@ func TestJunctionInclude_OwnLinksSurviveTheScope(t *testing.T) {
 			"sc_student_id": sid, "sc_course_id": cid, "grade": "A", "org_id": "tenant-a",
 		}, asA).AssertStatus(http.StatusCreated)
 	}
-	srv.POST("/sc_enrols", map[string]any{
-		"sc_student_id": ada, "sc_course_id": cid, "grade": foreignGrade,
-	}, asB).AssertStatus(http.StatusCreated)
+	plantForeignEnrol(t, srv, ada, cid)
 
 	resp := srv.GET("/sc_students?include=sc_courses", asA)
 	resp.AssertStatus(http.StatusOK)

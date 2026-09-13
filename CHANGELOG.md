@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.15.0
+
+- **Security (behaviour change):** every `BelongsTo` key a create or update sets is read through the request's forced scope first, and one naming a parent the caller cannot see is refused with its `404` — junction rows included. Nothing checked the key, so a child could be planted under another tenant's parent, where a rollup then recomputed that tenant's column over it: a silent cross-tenant write. **Migrate:** unwritten keys, empty keys and parents carrying no scope column are unaffected.
+
 ## v0.14.0 (2026-09-12)
 
 - **Security:** a many-to-many `?include=` reads its junction under the junction's soft-delete condition and the request's forced scope, as every other include level already did. It was read raw, so a soft-deleted link kept materialising its related row, `deleted_at` included in `_through` — and a link another tenant wrote between two of your records passed both endpoint checks and surfaced in your include with that tenant's payload. Scoped only where the junction carries the column.

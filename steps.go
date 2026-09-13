@@ -1325,9 +1325,25 @@ func (s *defaultSteps) enforceWriteScope(ctx *ServerContext, exec dbExec, model 
 // does the child: the owner cannot see it, and the caller who planted it can.
 //
 // So the parent the write names is read through the scope's own predicate, and a
-// miss is the same 404 a scoped read of that parent would give. Only a scope that
-// runs through a parent pays for it: a flat forced filter names a column on the
-// row itself, which is checked where it is written, not through a join.
+// miss is the same 404 a scoped read of that parent would give.
+//
+// A flat forced filter — db.Tenancy, db.ForceFilter — reaches the same foreign
+// key by a different road, and used to reach it not at all. The child carries the
+// scope column itself, the write stamps the caller's own value onto it, and the
+// row therefore looks correctly owned however wild the foreign key is: nothing
+// was left to object. What that missed is that the parent is a row of someone
+// else's, and the framework writes to it. A rollup recomputes the parent's
+// denormalised column over every child that names it, so a planted child moves a
+// total in a row its author can neither read nor reach — a cross-tenant write of
+// business data, and a silent one (audit PIPE-2). BackfillRollups later folds the
+// same row in again, so refusing the write is the only durable answer: skipping
+// the recompute would leave the poison in the table.
+//
+// Every other path already refuses to traverse a parent the caller cannot read —
+// the nested scope above, mfx:"lock_scope" (checkLockScopeVisible), and every
+// include level (MS-9). This is the last place the write path disagreed with the
+// read path, so checkWrittenFKsInScope holds the same line for every BelongsTo
+// key a create or update sets.
 func (s *defaultSteps) enforceParentScope(ctx *ServerContext, exec dbExec, model *ModelMeta) (dbExec, Tx, error) {
 	if ctx.Operation != OpCreate && ctx.Operation != OpUpdate {
 		return exec, nil, nil
@@ -1335,20 +1351,126 @@ func (s *defaultSteps) enforceParentScope(ctx *ServerContext, exec dbExec, model
 	if ctx.Query == nil {
 		return exec, nil, nil
 	}
-	nested := nestedForcedFilters(ctx.Query.Filters)
-	if len(nested) == 0 {
-		return exec, nil, nil // nothing scoped through a parent — no read, no transaction
+	forced := forcedFilters(ctx.Query.Filters)
+	if len(forced) == 0 {
+		return exec, nil, nil // nothing imposed — no read, no transaction
 	}
 
 	var own Tx
-	for _, f := range nested {
+	for _, f := range nestedForcedFilters(ctx.Query.Filters) {
 		var err error
 		exec, own, err = s.checkParentInScope(ctx, exec, model, f, own)
 		if err != nil || ctx.Response != nil {
 			return exec, own, err
 		}
 	}
+	return s.checkWrittenFKsInScope(ctx, exec, model, forced, own)
+}
+
+// checkWrittenFKsInScope refuses a create or update that points a foreign key at
+// a parent the request's flat scope cannot see. own carries the transaction the
+// nested sweep may already have opened, so the whole check shares one.
+//
+// Only keys this write actually sets are read. A PATCH that leaves a foreign key
+// alone cannot move the row anywhere, and enforceWriteScope has already read the
+// row itself back through these same filters.
+func (s *defaultSteps) checkWrittenFKsInScope(ctx *ServerContext, exec dbExec, model *ModelMeta,
+	forced []*FilterExpr, own Tx,
+) (dbExec, Tx, error) {
+	flat := make([]*FilterExpr, 0, len(forced))
+	for _, f := range forced {
+		// A nested filter is the parent's own scope and was just enforced above; a
+		// locale filter reads a key inside a JSON document; an OR group says any
+		// one of several values would do. None of the three names a single column
+		// of the parent to measure it by — the same three checkLockScopeVisible
+		// passes over for the same reason.
+		if f.IsNested || f.IsLocale || f.Group > 0 {
+			continue
+		}
+		flat = append(flat, f)
+	}
+	if len(flat) == 0 {
+		return exec, own, nil
+	}
+
+	checked := make(map[string]bool, len(model.Relations))
+	for i := range model.Relations {
+		rel := &model.Relations[i]
+		if rel.Kind != BelongsTo {
+			continue // HasMany's key lives on the other table; ManyToMany has none here
+		}
+		fkID, present := s.writtenFK(ctx, model, rel.FKColumn)
+		if !present || fkID == "" {
+			// Not written, or written empty. A child with no parent is perfectly
+			// describable by a scope on the child's own column — unlike the nested
+			// case above, where the parent *is* the scope and a null key is a 422.
+			continue
+		}
+		parent, ok := s.reg.Get(rel.RelatedModel)
+		if !ok {
+			// A convention FK naming a model this app never registered is the
+			// documented microservice case (mfx:"norelation" silences the startup
+			// warning). There is no parent table here to read, so there is nothing
+			// this scope could be checked against — unlike checkParentInScope,
+			// where the scope itself names the model and failing closed is the
+			// only honest answer.
+			continue
+		}
+		applicable := applicableFlatScope(parent, flat)
+		if len(applicable) == 0 {
+			// The parent carries no column the scope names, so it is shared rather
+			// than partitioned — a currency table, a plan catalogue — and a scoped
+			// request still reads it. The same rule MS-9 applies to an included
+			// lookup model, held here so a shared parent does not 404 every write
+			// that references it.
+			continue
+		}
+		// Two relations can name the same parent row (Transfer{from_account_id,
+		// to_account_id} set to one account); read it once.
+		key := parent.Name + "\x00" + fkID
+		if checked[key] {
+			continue
+		}
+		checked[key] = true
+
+		if own == nil {
+			var err error
+			if exec, own, err = s.ensureScopeTx(ctx, exec); err != nil {
+				return exec, own, err
+			}
+		}
+		scoped := &QueryParams{Page: 1, Limit: 1, Filters: applicable}
+		if _, err := exec.FindByID(ctx.Ctx, parent, fkID, scoped); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				// The parent's own 404, verbatim: a caller who cannot read that
+				// parent learns exactly what a read of it would have told them.
+				ctx.Abort(http.StatusNotFound, "NOT_FOUND",
+					fmt.Sprintf("%s with id %q not found", parent.Name, fkID))
+				return exec, own, nil
+			}
+			return exec, own, err
+		}
+	}
 	return exec, own, nil
+}
+
+// applicableFlatScope narrows a request's flat forced filters to those the target
+// model can actually be measured against.
+//
+// ResolveFilterField, not FieldByDBName: a scope built in Go naturally reaches
+// for the name the model publishes, which is the json one — db.Tenancy hands its
+// field to ctx.SetField, whose parameter is the json name — and gating on the DB
+// spelling alone would silently skip the check for that shape (audit O2, the same
+// gap includeScopeCond closed on the read side).
+func applicableFlatScope(target *ModelMeta, flat []*FilterExpr) []*FilterExpr {
+	out := make([]*FilterExpr, 0, len(flat))
+	for _, f := range flat {
+		if target.ResolveFilterField(f.Field) == nil {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
 }
 
 // checkParentInScope enforces one nested forced filter against the parent this

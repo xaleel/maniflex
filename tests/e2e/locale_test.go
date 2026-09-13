@@ -425,7 +425,7 @@ func TestSplit_SortByLocale_InjectionViaLocaleParamNeutralized(t *testing.T) {
 	// an invalid locale key, so it is ignored: the sort falls back to the default
 	// locale ("en") and stays ascending, and the request still succeeds.
 	inj := "en' DESC --"
-	items := srv.GET("/split_depts?locale="+url.QueryEscape(inj)+"&sort=name:asc").
+	items := srv.GET("/split_depts?locale=" + url.QueryEscape(inj) + "&sort=name:asc").
 		AssertStatus(http.StatusOK).DataList()
 	if len(items) != 3 {
 		t.Fatalf("got %d items, want 3", len(items))
@@ -759,7 +759,7 @@ func TestSplit_RTLMetaInReadResponse(t *testing.T) {
 	}).AssertStatus(http.StatusCreated).ID()
 
 	// Single-record GET with RTL locale must carry meta._dir: rtl.
-	meta := srv.GET("/split_depts/"+id+"?locale=ar").AssertStatus(http.StatusOK).Meta()
+	meta := srv.GET("/split_depts/" + id + "?locale=ar").AssertStatus(http.StatusOK).Meta()
 	if meta["_dir"] != "rtl" {
 		t.Errorf("meta._dir on GET single record with locale=ar: got %v, want rtl", meta["_dir"])
 	}

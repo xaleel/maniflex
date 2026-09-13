@@ -3,6 +3,7 @@
 ## v0.15.0
 
 - **Security (behaviour change):** every `BelongsTo` key a create or update sets is read through the request's forced scope first, and one naming a parent the caller cannot see is refused with its `404` — junction rows included. Nothing checked the key, so a child could be planted under another tenant's parent, where a rollup then recomputed that tenant's column over it: a silent cross-tenant write. **Migrate:** unwritten keys, empty keys and parents carrying no scope column are unaffected.
+- **Bugfix (behaviour change):** `ctx.AfterCommit` defers under `maniflex.Batch`, and under an `Execute` handed that transaction, not only under `WithTransaction`. Nothing else claimed the hook queue, so a callback — `events.Emit` to a direct broker bus — fired inline inside the open transaction, and a rollback could not take it back: EV-3 through another door. **Migrate:** a transaction you open with `ctx.BeginTx` still runs hooks inline, now warning that it did.
 
 ## v0.14.0 (2026-09-12)
 

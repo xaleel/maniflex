@@ -5,10 +5,57 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sync"
 )
 
 // txContextKey is the unexported context key used to store the active Tx.
 type txContextKey struct{}
+
+// commitQueueKey is the unexported context key carrying the active after-commit
+// queue, stored beside the transaction it belongs to.
+type commitQueueKey struct{}
+
+// commitQueue holds the after-commit hooks for one transaction.
+//
+// It is owned by whatever opened that transaction — WithTransaction, Batch — and
+// published on ctx.Ctx beside the transaction itself, which is what lets a
+// ServerContext that did *not* open the transaction still reach it. Execute
+// builds a fresh ServerContext and copies the caller's Tx onto it; without a
+// shared queue its hooks had nowhere to go but inline, inside a transaction
+// somebody else was still deciding whether to commit (audit PIPE-3).
+//
+// The mutex is there because that sharing makes concurrent registration
+// possible: two Execute calls against one parent transaction append to the same
+// queue. The hooks themselves still run one at a time, in registration order, on
+// whichever goroutine commits.
+type commitQueue struct {
+	mu    sync.Mutex
+	hooks []func()
+}
+
+func (q *commitQueue) add(fn func()) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.hooks = append(q.hooks, fn)
+}
+
+// take empties the queue and returns what it held, so a second transaction in
+// the same request starts clean and a hook cannot be run twice.
+func (q *commitQueue) take() []func() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	hooks := q.hooks
+	q.hooks = nil
+	return hooks
+}
+
+// commitQueueFrom returns the queue published on ctx, or nil when none is. A
+// cleared value reads back as a typed nil pointer, which compares nil as
+// intended.
+func commitQueueFrom(ctx context.Context) *commitQueue {
+	q, _ := ctx.Value(commitQueueKey{}).(*commitQueue)
+	return q
+}
 
 // TxFromContext returns the active database transaction stored in ctx by
 // WithTransaction, or nil when no transaction is active. Use this from
@@ -44,25 +91,48 @@ func TxFromContext(ctx context.Context) Tx {
 //
 //	ctx.AfterCommit(func() { bus.Publish(bgCtx, e) })
 //
-// WithTransaction is the middleware that drains the queue.
+// WithTransaction and Batch own a transaction and drain the queue. A transaction
+// you opened yourself with ctx.BeginTx does not: you call Commit, so only you
+// know when it succeeded, and the inline fallback applies — noisily, since a
+// hook that ran inside a transaction that then rolled back is the very race
+// deferring exists to prevent.
 func (c *ServerContext) AfterCommit(fn func()) bool {
 	if fn == nil {
 		return false
 	}
-	if c.Tx == nil || !c.commitDrainer {
-		fn()
-		return false
+	if c.Tx != nil {
+		// This context's own queue, or — for one that is running inside a
+		// transaction it did not open, which is what Execute builds — the
+		// owner's, published on ctx.Ctx beside that transaction.
+		//
+		// The Tx comparison is what keeps that second case honest: a caller can
+		// pass the owning request's context while handing Execute a *different*
+		// transaction, and queuing the hook there would fire it on the wrong
+		// commit — for a write that may have rolled back with the transaction it
+		// actually belonged to.
+		q := c.commitQueue
+		if q == nil && TxFromContext(c.Ctx) == c.Tx {
+			q = commitQueueFrom(c.Ctx)
+		}
+		if q != nil {
+			q.add(fn)
+			return true
+		}
+		c.Logger().Warn("after-commit hook ran inline inside an open transaction; a rollback cannot take it back",
+			slog.String("hint", "open the transaction with maniflex.WithTransaction or maniflex.Batch, "+
+				"or perform the side effect after your own Commit returns"))
 	}
-	c.commitHooks = append(c.commitHooks, fn)
-	return true
+	fn()
+	return false
 }
 
-// runCommitHooks fires the queued hooks in registration order and clears the
+// runCommitHooks fires the queued hooks in registration order and empties the
 // queue, so a second transaction in the same request starts clean.
 func (c *ServerContext) runCommitHooks() {
-	hooks := c.commitHooks
-	c.commitHooks = nil
-	for _, fn := range hooks {
+	if c.commitQueue == nil {
+		return
+	}
+	for _, fn := range c.commitQueue.take() {
 		fn()
 	}
 }
@@ -72,12 +142,36 @@ func (c *ServerContext) runCommitHooks() {
 // write that did not happen, but silence would make a dropped publish
 // indistinguishable from one that was never registered.
 func (c *ServerContext) dropCommitHooks() {
-	if len(c.commitHooks) == 0 {
+	if c.commitQueue == nil {
 		return
 	}
-	c.Logger().Debug("transaction rolled back; after-commit hooks dropped",
-		slog.Int("hooks", len(c.commitHooks)))
-	c.commitHooks = nil
+	if dropped := len(c.commitQueue.take()); dropped > 0 {
+		c.Logger().Debug("transaction rolled back; after-commit hooks dropped",
+			slog.Int("hooks", dropped))
+	}
+}
+
+// ownCommitQueue claims the after-commit queue for a transaction this caller
+// owns, publishing it on ctx.Ctx — beside the transaction handle, which the
+// caller puts there — so a nested ServerContext can find it. It returns the
+// restore function the owner must defer.
+//
+// The previous queue is restored rather than cleared: an outer owner that
+// already holds one must keep holding it.
+func (c *ServerContext) ownCommitQueue() func() {
+	prev := c.commitQueue
+	c.commitQueue = &commitQueue{}
+	c.Ctx = context.WithValue(c.Ctx, commitQueueKey{}, c.commitQueue)
+	return func() {
+		// Anything still queued belongs to a transaction that did not commit —
+		// every commit path drains the queue itself before this runs.
+		c.dropCommitHooks()
+		c.commitQueue = prev
+		// Overwritten rather than restored, so whatever the downstream steps
+		// added to ctx.Ctx survives — the same thing WithTransaction does with
+		// the transaction handle.
+		c.Ctx = context.WithValue(c.Ctx, commitQueueKey{}, prev)
+	}
 }
 
 // WithTransaction wraps the pipeline's DB step in a database transaction.
@@ -122,11 +216,8 @@ func WithTransaction(opts *TxOptions) MiddlewareFunc {
 		}
 
 		// Take responsibility for the after-commit queue while this transaction
-		// is in force, so AfterCommit defers instead of running inline. Restore
-		// the previous value rather than clearing it: an outer WithTransaction
-		// that already owns the queue must keep owning it.
-		prevDrainer := ctx.commitDrainer
-		ctx.commitDrainer = true
+		// is in force, so AfterCommit defers instead of running inline.
+		releaseQueue := ctx.ownCommitQueue()
 
 		// Rollback is always deferred. After Commit it becomes a no-op.
 		defer func() {
@@ -134,10 +225,7 @@ func WithTransaction(opts *TxOptions) MiddlewareFunc {
 			// from database/sql, which we silently discard.
 			_ = tx.Rollback()
 
-			// Anything still queued belongs to a transaction that did not
-			// commit — every commit path below drains the queue itself.
-			ctx.dropCommitHooks()
-			ctx.commitDrainer = prevDrainer
+			releaseQueue()
 
 			// The transaction is finished either way by the time this returns.
 			// Clear both handles on it — ctx.Tx and the context value — so a

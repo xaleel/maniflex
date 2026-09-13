@@ -91,6 +91,14 @@ Prefer `maniflex.Batch` over the manual transaction plumbing shown above — it
 gets the rollback, abort, and `ctx.Tx` restoration semantics right. A single
 batch transaction cannot span adapters; use a saga for cross-database work.
 
+When `Batch` opens the transaction it also owns the `ctx.AfterCommit` queue:
+callbacks registered inside the batch — a webhook, a cache invalidation, an
+`events.Emit` to a direct broker bus — run after the batch commits, and are
+dropped if it rolls back. Hand-rolled transaction plumbing has no such owner, so
+those callbacks fire inline, inside the open transaction, where a later item's
+failure can no longer take them back. A `Batch` that *joins* an outer `ctx.Tx`
+claims nothing: that transaction's owner still decides.
+
 For larger imports, batch the inserts (`INSERT … VALUES (…), (…), …` via
 `ctx.RawExec`) and commit every N rows.
 

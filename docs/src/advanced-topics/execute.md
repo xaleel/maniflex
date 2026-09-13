@@ -72,6 +72,43 @@ for _, item := range request.Items {
 return tx.Commit()
 ```
 
+### Events from an Execute batch
+
+The transaction above is yours, and the framework cannot tell when your `Commit`
+succeeds. So a side effect any invocation registers with `ctx.AfterCommit` —
+which is how `events.Emit` publishes to a direct broker bus — runs **inline**,
+inside the still-open transaction. If item 3 then fails and the whole thing rolls
+back, subscribers have already been told about items 1 and 2. `AfterCommit`
+returns `false` and logs a warning when this happens.
+
+Let `maniflex.Batch` own the transaction instead, and the queue survives to its
+commit. It works inside a custom action, where the Service step — and so
+`WithTransaction` — never runs:
+
+```go
+err := maniflex.Batch(ctx, func(b *maniflex.Batcher) error {
+    for _, item := range request.Items {
+        if _, err := srv.Execute(ctx.Ctx, maniflex.Invocation{
+            Model:     item.Model,
+            Operation: maniflex.OpUpdate,
+            ID:        item.ResourceID,
+            Body:      item.Payload,
+            Auth:      &requester,
+            Tx:        ctx.Tx,   // the batch's transaction
+        }); err != nil {
+            return err // rolls back, and the queued events go with it
+        }
+    }
+    return nil
+})
+```
+
+Pass `ctx.Ctx` and `ctx.Tx` together: the queue is published on the context
+beside the transaction it belongs to, and a hook is only queued when the two
+agree — otherwise it would fire on a commit that says nothing about the
+transaction the write went into. An `outbox.Bus` needs none of this, since the
+event row is INSERTed in the transaction itself.
+
 A non-2xx answer comes back as an **error**, not a value, which is what makes that
 loop correct. `if err != nil { return err }` is the natural Go loop, and it has to
 be the one that rolls back — handing a `422` back as `(res, nil)` would make the

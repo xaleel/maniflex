@@ -110,8 +110,15 @@ func Batch(ctx *ServerContext, fn func(*Batcher) error) error {
 		prevCtx := ctx.Ctx
 		ctx.Tx = tx
 		ctx.Ctx = context.WithValue(ctx.Ctx, txContextKey{}, tx)
+		// Batch owns this transaction and knows both its outcomes, so it owns
+		// the after-commit queue too. Without this, ctx.AfterCommit — and so
+		// events.Emit — ran inline inside the batch, announcing writes a later
+		// item could still roll back (audit PIPE-3). A batch that *joins* an
+		// outer transaction claims nothing: that owner still decides.
+		releaseQueue := ctx.ownCommitQueue()
 		defer func() {
 			_ = tx.Rollback() // no-op after a successful Commit
+			releaseQueue()
 			ctx.Tx = prevTx
 			ctx.Ctx = prevCtx
 		}()
@@ -134,7 +141,13 @@ func Batch(ctx *ServerContext, fn func(*Batcher) error) error {
 	}
 
 	if ownsTransaction {
-		return tx.Commit()
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		// Durable now, so the side effects that were waiting on it may fire. A
+		// failed commit falls through to the deferred drop instead.
+		ctx.runCommitHooks()
+		return nil
 	}
 	return nil
 }

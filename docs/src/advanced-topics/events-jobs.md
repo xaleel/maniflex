@@ -57,6 +57,21 @@ It runs the callback immediately when no transaction is active, so it is safe to
 use unconditionally. It runs synchronously after the commit, so start a goroutine
 for anything slow.
 
+**Deferral needs an owner.** `AfterCommit` can only queue a callback for someone
+who has promised to drain the queue, and that means a transaction the framework
+opened: `WithTransaction` on the pipeline, or `maniflex.Batch` anywhere —
+including inside a custom action, where the Service step never runs. Both drain
+on commit and drop on rollback, and both publish the queue on `ctx.Ctx`, so an
+`Execute` handed that same transaction queues onto it rather than firing on its
+own.
+
+A transaction you open yourself with `ctx.BeginTx` cannot be drained: you call
+`Commit`, so only you know when it succeeded. `AfterCommit` then returns `false`
+and runs the callback **inline, inside the open transaction** — where a rollback
+can no longer take it back. It logs a warning saying so. Either let one of the
+two owners hold the transaction, or do the side effect yourself after your
+`Commit` returns.
+
 Subscribers register a `Subscription`:
 
 ```go

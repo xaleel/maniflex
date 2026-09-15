@@ -162,6 +162,13 @@ independently, and a concurrent live write is simply picked up by its own rollup
 - The rollup fires on the generated CRUD routes and any write that runs the DB
   step. A write that bypasses the pipeline (a raw `INSERT`, a direct adapter
   call) does not trigger it — run `BackfillRollups` after such a bulk load.
+- A **cascade** does trigger it, though it does not run the DB step either. A
+  child removed by its parent's `onDelete:cascade`, or re-pointed by
+  `onDelete:setNull`, is taken out of its parent's total: the sweep notes every
+  parent it disturbs and recomputes each one once, in a fixed order, when the
+  walk ends. Registering a rollup is also what keeps that edge out of a database
+  `ON DELETE` clause, which would remove the rows without telling anyone — see
+  [Relations](../defining-your-api/relations.md#how-it-is-enforced-and-soft-delete).
 - `AggCountDistinct` is not supported as a rollup op; write it by hand with an
   After-DB middleware if you need it.
 

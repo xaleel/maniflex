@@ -41,6 +41,10 @@ type defaultSteps struct {
 	// ServerContext so an action can watch it. Nil in a synthesised steps set;
 	// ServerContext.ShuttingDown reads that as "never".
 	draining <-chan struct{}
+	// rollups mirrors Server.rollups, appended by RegisterRollup. The DB step
+	// maintains a rollup through its own middleware; the cascade has no DB step
+	// to run, so it recomputes from here.
+	rollups []compiledRollup
 }
 
 func newDefaultSteps(adapter DBAdapter, reg RegistryAccessor) *defaultSteps {

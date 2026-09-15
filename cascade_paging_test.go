@@ -176,7 +176,7 @@ func TestCascadeChildLookupLosesNoRowsAcrossPages(t *testing.T) {
 	f := newCascadeFake(n)
 	s, ctx, exec, parent := cascadeSetup(t, f, OnDeleteSetNull)
 
-	if err := s.cascadeChildren(ctx, exec, parent, "p1", map[string]bool{}); err != nil {
+	if err := s.cascadeChildren(ctx, exec, parent, "p1", &cascadeSweep{visited: map[string]bool{}}); err != nil {
 		t.Fatalf("cascadeChildren: %v", err)
 	}
 	var missed []string
@@ -198,7 +198,7 @@ func TestCascadeChildLookupDoesNotHoldTheWholeFanOut(t *testing.T) {
 	f := newCascadeFake(1200)
 	s, ctx, exec, parent := cascadeSetup(t, f, OnDeleteSetNull)
 
-	if err := s.cascadeChildren(ctx, exec, parent, "p1", map[string]bool{}); err != nil {
+	if err := s.cascadeChildren(ctx, exec, parent, "p1", &cascadeSweep{visited: map[string]bool{}}); err != nil {
 		t.Fatalf("cascadeChildren: %v", err)
 	}
 	firstWrite := indexOfEvent(f.events, "update")
@@ -219,7 +219,7 @@ func TestCascadeChildLookupReadsOnlyTheIDColumn(t *testing.T) {
 	f := newCascadeFake(600)
 	s, ctx, exec, parent := cascadeSetup(t, f, OnDeleteCascade)
 
-	if err := s.cascadeChildren(ctx, exec, parent, "p1", map[string]bool{}); err != nil {
+	if err := s.cascadeChildren(ctx, exec, parent, "p1", &cascadeSweep{visited: map[string]bool{}}); err != nil {
 		t.Fatalf("cascadeChildren: %v", err)
 	}
 	for i, qp := range f.queries {
@@ -237,7 +237,7 @@ func TestCascadeRestrictCountsWithoutLoadingTheFanOut(t *testing.T) {
 	f := newCascadeFake(n)
 	s, ctx, exec, parent := cascadeSetup(t, f, OnDeleteRestrict)
 
-	err := s.cascadeChildren(ctx, exec, parent, "p1", map[string]bool{})
+	err := s.cascadeChildren(ctx, exec, parent, "p1", &cascadeSweep{visited: map[string]bool{}})
 	if err == nil {
 		t.Fatal("cascadeChildren allowed a delete a restrict edge should refuse")
 	}
@@ -263,7 +263,7 @@ func TestCascadeRestrictSurvivesAnAdapterThatDoesNotCount(t *testing.T) {
 	f.noCount = true
 	s, ctx, exec, parent := cascadeSetup(t, f, OnDeleteRestrict)
 
-	if err := s.cascadeChildren(ctx, exec, parent, "p1", map[string]bool{}); err == nil {
+	if err := s.cascadeChildren(ctx, exec, parent, "p1", &cascadeSweep{visited: map[string]bool{}}); err == nil {
 		t.Fatal("cascadeChildren allowed a delete a restrict edge should refuse")
 	}
 	if ctx.Response == nil || ctx.Response.StatusCode != 409 {

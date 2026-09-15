@@ -285,9 +285,9 @@ func gateOnParent(ctx *ServerContext, exec dbExec, model *ModelMeta, scope []*Fi
 
 // ── History row writer ────────────────────────────────────────────────────────
 
+// appendHistoryRow records the operation the request is performing on its own
+// record, reading the pre-image, post-state and record id from the context.
 func appendHistoryRow(ctx *ServerContext, exec dbExec, source, histMeta *ModelMeta) error {
-	operation := string(ctx.Operation)
-
 	// Get pre-image (update/delete) and post-state (create/update).
 	var pre, post map[string]any
 	if raw, ok := ctx.Get("history.pre"); ok {
@@ -300,17 +300,6 @@ func appendHistoryRow(ctx *ServerContext, exec dbExec, source, histMeta *ModelMe
 		}
 	}
 
-	diff := computeDiff(source, pre, post, ctx.Operation)
-	diffJSON, _ := json.Marshal(diff)
-
-	var snapshotPtr *string
-	if !source.Config.VersionedDiffOnly {
-		snap := redactSnapshot(source, chooseSnapshot(pre, post, ctx.Operation))
-		snapJSON, _ := json.Marshal(snap)
-		s := string(snapJSON)
-		snapshotPtr = &s
-	}
-
 	// Determine record_id: from post on create, from ResourceID otherwise.
 	recordID := ctx.ResourceID
 	if ctx.Operation == OpCreate && post != nil {
@@ -318,6 +307,33 @@ func appendHistoryRow(ctx *ServerContext, exec dbExec, source, histMeta *ModelMe
 			recordID = id
 		}
 	}
+	return writeHistoryRow(ctx, exec, source, histMeta, ctx.Operation, recordID, pre, post)
+}
+
+// writeHistoryRow appends one history row for an explicitly named record.
+//
+// Separated from appendHistoryRow because the record a write concerns is not
+// always the one the request addresses: a cascade deletes or re-parents rows of
+// a *different* model, and those need history of their own (audit PIPE-4). Only
+// the actor and request id are still taken from the context, which is right —
+// they describe who asked, and one request is what caused every row in the
+// sweep.
+func writeHistoryRow(ctx *ServerContext, exec dbExec, source, histMeta *ModelMeta,
+	op Operation, recordID string, pre, post map[string]any,
+) error {
+	operation := string(op)
+
+	diff := computeDiff(source, pre, post, op)
+	diffJSON, _ := json.Marshal(diff)
+
+	var snapshotPtr *string
+	if !source.Config.VersionedDiffOnly {
+		snap := redactSnapshot(source, chooseSnapshot(pre, post, op))
+		snapJSON, _ := json.Marshal(snap)
+		s := string(snapJSON)
+		snapshotPtr = &s
+	}
+
 	if recordID == "" {
 		return nil // nothing to track
 	}

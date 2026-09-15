@@ -111,6 +111,16 @@ func (s *Server) RegisterRollup(r Rollup) error {
 		return err
 	}
 	s.rollups = append(s.rollups, cr)
+	// The DB step maintains the column on an ordinary child write. A cascade does
+	// not go through the DB step, so it recomputes from this list instead — and
+	// the marker on the child is what keeps that edge out of a database ON DELETE
+	// clause, which would delete the rows without telling anyone (audit PIPE-4).
+	if s.steps != nil {
+		s.steps.rollups = append(s.steps.rollups, cr)
+	}
+	if child, ok := s.registry.Get(r.Child); ok {
+		child.rollupChild = true
+	}
 	s.Pipeline.DB.Register(
 		cr.middleware(),
 		ForModel(r.Child),

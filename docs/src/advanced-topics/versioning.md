@@ -186,6 +186,23 @@ one. The rows remain in `{model}_history` for an admin query or an
 offline audit. If you need history to outlive deletion, use soft-delete
 (`maniflex.WithDeletedAt`).
 
+### Cascaded records
+
+A record removed by a parent's `onDelete:cascade` — or re-pointed by
+`onDelete:setNull` — records the same history a direct `DELETE` or `PATCH`
+would: a `delete` entry for the cascade, an `update` entry for the null.
+`VersionedRequired` holds there too, so a history write that fails rolls the
+parent's delete back with it.
+
+This is the reason a versioned model's `onDelete` edge is never handed to a
+database `ON DELETE` clause. The database would remove the rows and tell
+nobody, leaving the audit trail with holes precisely on the bulk destructive
+operations an auditor looks at first — so the framework walks those edges
+itself. See [Relations](../defining-your-api/relations.md#ondelete-actions).
+
+A write that bypasses the pipeline entirely — a raw `INSERT`, a direct adapter
+call — still records nothing, as it always has.
+
 #### Custom adapters
 
 `ScopeChecker` is optional. An adapter that does not implement it — a

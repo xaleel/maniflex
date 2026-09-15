@@ -303,9 +303,11 @@ children, then their children — and reference cycles are handled.
 
 ### How it is enforced (and soft delete)
 
-The action is enforced one of two ways, chosen automatically per relation:
+The action is enforced one of two ways, chosen automatically per relation. The
+rule is that maniflex enforces the edge itself whenever it has something to do
+beyond deleting the row:
 
-- **Neither side soft-deletes** → a real database `FOREIGN KEY … ON DELETE …`
+- **Nothing to do beyond the row** → a real database `FOREIGN KEY … ON DELETE …`
   constraint carries it, and the database enforces it natively (and enforces
   referential integrity on insert: a row naming a non-existent parent is refused
   with `409`).
@@ -314,6 +316,15 @@ The action is enforced one of two ways, chosen automatically per relation:
   so maniflex enforces it in the delete request's own transaction instead. A
   soft-delete child of a cascaded parent is **soft-deleted identically** — its
   `deleted_at` is set, the row is not removed.
+- **The child is `Versioned` or is a [rollup](../advanced-topics/rollups.md)
+  child** → maniflex enforces it, and no `ON DELETE` clause is emitted for that
+  edge. A database `ON DELETE` removes the rows and tells nobody: the history
+  would lose its `delete` entries and the rollup would keep counting children
+  that are gone. On the maniflex path the child keeps both — a cascaded row
+  records the same history a direct delete would, and every rollup it fed is
+  recomputed once at the end of the sweep. The FK constraint is what is dropped,
+  not the integrity: the children are deleted before the parent, in the same
+  transaction.
 
 Either way the whole deletion is atomic: a `restrict` that fires rolls back any
 `cascade` that ran alongside it.
@@ -330,6 +341,11 @@ The work is still proportional to the fan-out, and it all happens inside the
 delete request's transaction: deleting a row with a million descendants is a
 long transaction holding locks the whole time. Prefer soft-deleting the parent
 and reaping in a job when the fan-out is that large.
+
+A child that is `Versioned` or is a rollup child costs one extra read per row —
+the walk selects only `id`, and the history row's diff and the rollup's foreign
+key both need the rest of it. That is the price of the bookkeeping; a child with
+neither pays none of it.
 
 > **Existing SQLite tables.** New FK constraints are declared when a table is
 > **created**. SQLite cannot add a foreign key to a table that already exists, so

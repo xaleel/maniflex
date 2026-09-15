@@ -264,6 +264,12 @@ type ModelMeta struct {
 
 	scheduled []ScheduledSpec // resolved mfx:"scheduled" fields (8.6)
 
+	// rollupChild records that some registered Rollup aggregates this model, set
+	// by RegisterRollup. Like Config.Versioned it means the framework keeps
+	// bookkeeping for these rows, which is what decides whether a cascade may be
+	// left to a database FK constraint — see dbEnforcedDelete.
+	rollupChild bool
+
 	// idx indexes Fields and Relations by the names the accessors below look
 	// them up by. It is built on first lookup rather than at registration so
 	// that a ModelMeta assembled by hand — the history model, a test fixture —

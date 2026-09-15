@@ -3,8 +3,10 @@ package maniflex
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"reflect"
+	"slices"
 )
 
 // errCascadeRestricted is the sentinel a restrict edge raises to unwind the
@@ -51,13 +53,28 @@ func childCascadeEdges(reg RegistryAccessor, parentModelName string) []cascadeEd
 }
 
 // dbEnforcedDelete reports whether an edge can be left to a database FK
-// constraint's ON DELETE clause. That is possible only when neither side
-// soft-deletes: a soft delete is an UPDATE, so the constraint never fires on the
-// parent, and a DB cascade can only hard-delete, so it cannot honour a
-// soft-delete child. Every edge touching soft-delete is enforced in the maniflex
-// layer instead.
+// constraint's ON DELETE clause.
+//
+// Soft-delete rules one side out: a soft delete is an UPDATE, so the constraint
+// never fires on the parent, and a DB cascade can only hard-delete, so it cannot
+// honour a soft-delete child.
+//
+// Bookkeeping rules out the other. A database ON DELETE clause removes the rows
+// and tells nobody — which is exactly what a versioned child or a rollup child
+// cannot afford. The history gains no delete row, so the audit trail has holes
+// precisely on bulk destructive operations and VersionedRequired's fail-closed
+// contract goes unhonoured; the rollup keeps counting children that are gone,
+// drifting from a total its own documentation calls correct by construction, and
+// curable only by BackfillRollups (audit PIPE-4). Those edges go through the
+// maniflex walk, which is the only place the child's bookkeeping can run.
+//
+// That is the whole rule: the framework enforces an edge itself whenever it has
+// something to do beyond deleting the row.
 func dbEnforcedDelete(parent, child *ModelMeta) bool {
-	return !parent.SoftDelete.Enabled && !child.SoftDelete.Enabled
+	if parent.SoftDelete.Enabled || child.SoftDelete.Enabled {
+		return false
+	}
+	return !child.Config.Versioned && !child.rollupChild
 }
 
 // ForeignKeySpec describes a foreign-key constraint an adapter should emit for a
@@ -176,14 +193,144 @@ func (s *defaultSteps) enforceCascadeDelete(ctx *ServerContext, exec dbExec, mod
 		return exec, own, err
 	}
 
-	visited := map[string]bool{cascadeKey(model.Name, ctx.ResourceID): true}
-	if err := s.cascadeChildren(ctx, exec, model, ctx.ResourceID, visited); err != nil {
+	sweep := &cascadeSweep{
+		visited: map[string]bool{cascadeKey(model.Name, ctx.ResourceID): true},
+	}
+	if err := s.cascadeChildren(ctx, exec, model, ctx.ResourceID, sweep); err != nil {
 		if errors.Is(err, errCascadeRestricted) {
 			return exec, own, nil // ctx.Response carries the 409; the DB step rolls back and sends it
 		}
 		return exec, own, err
 	}
+	if err := s.runPendingRollups(ctx, sweep); err != nil {
+		return exec, own, err
+	}
 	return exec, own, nil
+}
+
+// cascadeSweep is the state one delete's cascade carries across its recursion:
+// the cycle guard, and the rollup recomputes the sweep has earned but not yet
+// performed.
+type cascadeSweep struct {
+	visited map[string]bool
+	pending map[string]pendingRollup
+}
+
+// pendingRollup is one parent column the sweep has invalidated.
+type pendingRollup struct {
+	rollup   compiledRollup
+	parentID string
+}
+
+// invalidate notes that a row this rollup summarises has just been removed from
+// the aggregate, so its parent's column no longer matches the rows beneath it.
+// parentVal is the foreign key read off the child before the write.
+func (s *cascadeSweep) invalidate(cr compiledRollup, parentVal any) {
+	id := foreignKeyID(parentVal)
+	if id == "" {
+		return
+	}
+	if s.pending == nil {
+		s.pending = make(map[string]pendingRollup, 1)
+	}
+	// Keyed by the column, not just the parent: two rollups can maintain
+	// different columns of the same parent from the same child.
+	s.pending[cr.cfg.Parent+"\x00"+cr.parentFieldDB+"\x00"+id] = pendingRollup{rollup: cr, parentID: id}
+}
+
+// runPendingRollups recomputes every rollup column the sweep disturbed, once
+// each and in a fixed order.
+//
+// Once each because a parent with a hundred cascaded children needs one
+// recompute, not a hundred: each one aggregates the child rows as they now
+// stand, so the last would be the only one that counted. In a fixed order
+// because recompute takes the parent's row lock, and two concurrent deletes
+// reaching the same two parents in opposite orders would deadlock — the same
+// reason affectedParents sorts its ids.
+//
+// A parent the sweep itself deleted is skipped rather than failed: a chain like
+// Author → Post → Comment, where Comment rolls up into Post, invalidates a Post
+// that is gone by the time the walk ends. There is no column left to correct.
+func (s *defaultSteps) runPendingRollups(ctx *ServerContext, sweep *cascadeSweep) error {
+	for _, key := range slices.Sorted(maps.Keys(sweep.pending)) {
+		p := sweep.pending[key]
+		if err := p.rollup.recompute(ctx, p.parentID); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			return fmt.Errorf("cascade: recompute rollup %s.%s: %w",
+				p.rollup.cfg.Parent, p.rollup.cfg.ParentField, err)
+		}
+	}
+	return nil
+}
+
+// cascadeHooks is what the framework owes a cascaded child beyond the row write:
+// a history row when the child is versioned, and a recompute of every rollup
+// that summarises it.
+//
+// Empty for an ordinary child, which is the common case and pays nothing — not
+// even the row read, since childIDPage selects only the id.
+type cascadeHooks struct {
+	histMeta *ModelMeta       // nil unless the child is versioned
+	rollups  []compiledRollup // rollups whose Child is this model
+}
+
+func (h cascadeHooks) none() bool { return h.histMeta == nil && len(h.rollups) == 0 }
+
+func (s *defaultSteps) cascadeHooksFor(child *ModelMeta) cascadeHooks {
+	var h cascadeHooks
+	if child.Config.Versioned {
+		if hm, ok := s.reg.Get(child.Name + "History"); ok {
+			h.histMeta = hm
+		}
+	}
+	for _, cr := range s.rollups {
+		if cr.cfg.Child == child.Name {
+			h.rollups = append(h.rollups, cr)
+		}
+	}
+	return h
+}
+
+// cascadePreImage reads the row a cascade is about to write, when anything needs
+// it: the history row's diff and snapshot, and the foreign key naming the rollup
+// parent to recompute. One read serves both, and a child with neither pays none.
+func (s *defaultSteps) cascadePreImage(ctx *ServerContext, exec dbExec, child *ModelMeta,
+	id string, hooks cascadeHooks,
+) (map[string]any, error) {
+	if hooks.none() {
+		return nil, nil
+	}
+	return exec.FindByID(ctx.Ctx, child, id, &QueryParams{Page: 1, Limit: 1})
+}
+
+// afterCascadeWrite runs the bookkeeping the child's own DB step would have, had
+// the cascade gone through it. It does not: the cascade writes children with the
+// adapter directly, which is what makes it one data operation rather than N
+// requests, and is also why none of this happened at all (audit PIPE-4).
+func (s *defaultSteps) afterCascadeWrite(ctx *ServerContext, exec dbExec, child *ModelMeta,
+	hooks cascadeHooks, op Operation, id string, pre, post map[string]any, sweep *cascadeSweep,
+) error {
+	if pre != nil {
+		for _, cr := range hooks.rollups {
+			sweep.invalidate(cr, pre[cr.onDB])
+		}
+	}
+	if hooks.histMeta == nil {
+		return nil
+	}
+	if err := writeHistoryRow(ctx, exec, child, hooks.histMeta, op, id, pre, post); err != nil {
+		ctx.Logger().Error("versioning: cascade history write failed",
+			"model", child.Name, "record_id", id, "error", err)
+		// Fail-closed when the model asks for it, exactly as the DB-step writer
+		// does: returning the error rolls back the parent's delete, so the
+		// cascade and its history stand or fall together.
+		if child.Config.VersionedRequired {
+			return fmt.Errorf("versioning: cascade history write failed for %s: %w", child.Name, err)
+		}
+	}
+	return nil
 }
 
 // cascadeChildren applies every onDelete edge pointing at parentModel/parentID:
@@ -191,15 +338,15 @@ func (s *defaultSteps) enforceCascadeDelete(ctx *ServerContext, exec dbExec, mod
 // deletes the child through the adapter's own Delete — so a soft-delete child is
 // soft-deleted identically to its parent — after recursing into that child's own
 // children first. The visited set breaks reference cycles.
-func (s *defaultSteps) cascadeChildren(ctx *ServerContext, exec dbExec, parentModel *ModelMeta, parentID string, visited map[string]bool) error {
+func (s *defaultSteps) cascadeChildren(ctx *ServerContext, exec dbExec, parentModel *ModelMeta, parentID string, sweep *cascadeSweep) error {
 	for _, edge := range childCascadeEdges(s.reg, parentModel.Name) {
-		// A hard-delete/hard-delete edge is enforced by the database's own FK
-		// constraint (ForeignKeysFor emits it), so leave it to the DB — handling it
-		// here too would delete the children twice over.
+		// An edge the database enforces with its own FK constraint
+		// (ForeignKeysFor emits it) is left to the DB — handling it here too
+		// would delete the children twice over.
 		if dbEnforcedDelete(parentModel, edge.child) {
 			continue
 		}
-		if err := s.applyCascadeEdge(ctx, exec, parentModel, edge, parentID, visited); err != nil {
+		if err := s.applyCascadeEdge(ctx, exec, parentModel, edge, parentID, sweep); err != nil {
 			return err
 		}
 	}
@@ -208,14 +355,14 @@ func (s *defaultSteps) cascadeChildren(ctx *ServerContext, exec dbExec, parentMo
 
 // applyCascadeEdge carries out one edge's onDelete action against the child rows
 // that reference the parent.
-func (s *defaultSteps) applyCascadeEdge(ctx *ServerContext, exec dbExec, parentModel *ModelMeta, edge cascadeEdge, parentID string, visited map[string]bool) error {
+func (s *defaultSteps) applyCascadeEdge(ctx *ServerContext, exec dbExec, parentModel *ModelMeta, edge cascadeEdge, parentID string, sweep *cascadeSweep) error {
 	switch edge.rel.OnDelete {
 	case OnDeleteRestrict:
 		return s.cascadeRestrict(ctx, exec, parentModel, edge, parentID)
 	case OnDeleteSetNull:
-		return s.cascadeSetNull(ctx, exec, edge.child, edge.rel.FKColumn, parentID)
+		return s.cascadeSetNull(ctx, exec, edge.child, edge.rel.FKColumn, parentID, sweep)
 	case OnDeleteCascade:
-		return s.cascadeDeleteRows(ctx, exec, edge.child, edge.rel.FKColumn, parentID, visited)
+		return s.cascadeDeleteRows(ctx, exec, edge.child, edge.rel.FKColumn, parentID, sweep)
 	}
 	return nil
 }
@@ -254,10 +401,22 @@ func (s *defaultSteps) cascadeRestrict(ctx *ServerContext, exec dbExec, parentMo
 }
 
 // cascadeSetNull nulls the FK column of each referencing child row.
-func (s *defaultSteps) cascadeSetNull(ctx *ServerContext, exec dbExec, child *ModelMeta, fkCol, parentID string) error {
+//
+// The child survives, so this is an update as far as its bookkeeping is
+// concerned: a versioned child gains an update row, and a rollup keyed on the
+// very column being nulled loses this child from its old parent's total.
+func (s *defaultSteps) cascadeSetNull(ctx *ServerContext, exec dbExec, child *ModelMeta, fkCol, parentID string, sweep *cascadeSweep) error {
+	hooks := s.cascadeHooksFor(child)
 	return s.eachChildID(ctx, exec, child, fkCol, parentID, func(id string) error {
-		_, err := exec.Update(ctx.Ctx, child, id, map[string]any{fkCol: nil})
-		return err
+		pre, err := s.cascadePreImage(ctx, exec, child, id, hooks)
+		if err != nil {
+			return err
+		}
+		post, err := exec.Update(ctx.Ctx, child, id, map[string]any{fkCol: nil})
+		if err != nil {
+			return err
+		}
+		return s.afterCascadeWrite(ctx, exec, child, hooks, OpUpdate, id, pre, post, sweep)
 	})
 }
 
@@ -265,17 +424,27 @@ func (s *defaultSteps) cascadeSetNull(ctx *ServerContext, exec dbExec, child *Mo
 // Delete — so a soft-delete child is soft-deleted — after recursing into that
 // child's own children first, so a child is never deleted while its children
 // still point at it. The visited set breaks reference cycles.
-func (s *defaultSteps) cascadeDeleteRows(ctx *ServerContext, exec dbExec, child *ModelMeta, fkCol, parentID string, visited map[string]bool) error {
+func (s *defaultSteps) cascadeDeleteRows(ctx *ServerContext, exec dbExec, child *ModelMeta, fkCol, parentID string, sweep *cascadeSweep) error {
+	hooks := s.cascadeHooksFor(child)
 	return s.eachChildID(ctx, exec, child, fkCol, parentID, func(id string) error {
 		key := cascadeKey(child.Name, id)
-		if visited[key] {
+		if sweep.visited[key] {
 			return nil // already being deleted in this sweep — a cycle
 		}
-		visited[key] = true
-		if err := s.cascadeChildren(ctx, exec, child, id, visited); err != nil {
+		sweep.visited[key] = true
+		if err := s.cascadeChildren(ctx, exec, child, id, sweep); err != nil {
 			return err
 		}
-		return exec.Delete(ctx.Ctx, child, id)
+		// Read before the write: a deleted row has no pre-image to diff against,
+		// and a hard-deleted one has no foreign key left to name its rollup parent.
+		pre, err := s.cascadePreImage(ctx, exec, child, id, hooks)
+		if err != nil {
+			return err
+		}
+		if err := exec.Delete(ctx.Ctx, child, id); err != nil {
+			return err
+		}
+		return s.afterCascadeWrite(ctx, exec, child, hooks, OpDelete, id, pre, nil, sweep)
 	})
 }
 
@@ -344,6 +513,25 @@ func (s *defaultSteps) childIDPage(ctx *ServerContext, exec dbExec, child *Model
 		}
 	}
 	return ids, nil
+}
+
+// foreignKeyID renders a foreign-key value read off a record as the id it names.
+//
+// A nullable FK — the shape onDelete:setNull requires — reaches here as a
+// *string, because recordToMap stores each struct field as it stands. fmt.Sprint
+// on that yields a pointer address, which names no row at all.
+func foreignKeyID(v any) string {
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() {
+		return ""
+	}
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return ""
+		}
+		rv = rv.Elem()
+	}
+	return fmt.Sprint(rv.Interface())
 }
 
 // cascadeKey identifies a row across the cascade sweep, for the cycle guard.

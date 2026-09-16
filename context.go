@@ -1086,11 +1086,19 @@ func (a *ModelAccessor) Update(id string, data map[string]any, opts ...WriteOpti
 // ErrIncrementOutOfBounds, which is distinct from ErrNotFound: the row exists,
 // and a later attempt may well succeed.
 //
-// Returns ErrNotFound when no such record exists, and likewise when a scope is
-// in force and the record falls outside it — the scope travels into the
-// statement rather than being checked first, so there is no window between the
-// check and the write. Returns ErrIncrementNotSupported when the adapter has no
-// atomic increment; it never falls back to read-then-write.
+// Returns ErrNotFound when no such record exists, and likewise when an
+// ActionScope is in force and the record falls outside it — the scope travels
+// into the statement rather than being checked first, so there is no window
+// between the check and the write.
+//
+// On a CRUD request there is no ActionScope, so this reaches any row by id,
+// exactly as the accessor's Read and Update do. The request's own db.Tenancy or
+// db.ForceFilter scope is enforced by the DB step and does not reach here; a
+// middleware that means to stay inside it must increment an id it has already
+// established is in scope.
+//
+// Returns ErrIncrementNotSupported when the adapter has no atomic increment; it
+// never falls back to read-then-write.
 func (a *ModelAccessor) Increment(id string, deltas map[string]any) (map[string]any, error) {
 	if a.err != nil {
 		return nil, a.err

@@ -185,6 +185,40 @@ _, err := ctx.GetModel("NoSuchModel").List(nil)
 This keeps call sites terse (`ctx.GetModel("User").Read(id)`) without a nil check
 on the accessor; the error is handled at the method call as usual.
 
+## Scoping — what the accessor does and does not apply
+
+The accessor applies the **[ActionScope](actions.md)**, and only that. Inside an
+action scoped by `db.TenancyAction` or `db.ForceFilterAction`, every method —
+`List`, `Read`, `Create`, `Update`, `Increment`, `Delete` — carries those
+filters, and a write to a record outside them returns `ErrNotFound`.
+
+**On a CRUD request there is no ActionScope, so the accessor is unscoped.** A
+`db.Tenancy` or `db.ForceFilter` registered on the DB step scopes *the request's
+own* record, at that step; it does not reach `ctx.GetModel`. So this, in a
+Service-step middleware on a tenant-scoped `PATCH`, reads and writes a row
+belonging to another tenant:
+
+```go
+// The id is not checked against the request's tenant scope — nothing here is.
+ctx.GetModel("Item").Increment(someOtherTenantsID, map[string]any{"stock": -1})
+```
+
+That is deliberate: the DB step is the enforcement point for the generated
+routes, and the accessor is how middleware reaches rows the request itself is
+not about — the parent to recount, the audit row to write. When you reach a
+record the caller supplied, check it belongs to them first, or filter for it
+rather than fetching it by id:
+
+```go
+rows, err := ctx.GetModel("Item").List(&maniflex.QueryParams{
+    Filters: []*maniflex.FilterExpr{
+        {Field: "id", Operator: maniflex.OpEq, Value: id},
+        {Field: "org_id", Operator: maniflex.OpEq, Value: orgOf(ctx)},
+    },
+    Page: 1, Limit: 1,
+})
+```
+
 ## Transactions
 
 Accessor operations route through `ctx.Tx` whenever a transaction is active, so

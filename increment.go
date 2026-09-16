@@ -76,10 +76,19 @@ type Incrementer interface {
 	// apply them inside the same statement — as WHERE conditions on the
 	// post-increment value — not as a separate check.
 	//
-	// q carries the request's forced filters, the server-imposed scope from
-	// db.Tenancy or db.ForceFilter, which must be applied so a caller cannot
-	// bump a counter outside their scope by knowing its id. It is nil when
-	// nothing is scoped.
+	// q carries the ActionScope in force for this request — the row-level scope
+	// an Action sets through ServerContext.SetActionScope, which db.TenancyAction
+	// and db.ForceFilterAction install — and its filters must be applied so a
+	// caller cannot bump a counter outside that scope by knowing its id.
+	//
+	// It is nil when nothing is scoped, and that includes every CRUD request.
+	// The only caller is ModelAccessor.Increment, and on the CRUD path the
+	// accessor is deliberately unscoped, exactly as its List, Read, Update and
+	// Delete are: there the DB step is the enforcement point, and the forced
+	// filters db.Tenancy and db.ForceFilter append to ctx.Query are applied by
+	// that step, which does not call this method. Do not read q as carrying
+	// them — Restorer.Restore and ScopeChecker.ExistsInScope do receive the
+	// forced filters, because the DB step is what calls those.
 	//
 	// Return ErrNotFound when no row matches, and ErrIncrementOutOfBounds when a
 	// row matched but a bound would have been crossed.

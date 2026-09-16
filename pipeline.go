@@ -1,7 +1,9 @@
 package maniflex
 
 import (
+	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -171,6 +173,7 @@ func (p *Pipeline) chainFor(model string, op Operation) MiddlewareFunc {
 		p.Deserialize.build(model, op),
 		p.scopeChain(model, op),
 		p.Validate.build(model, op),
+		stripChain,
 		p.Service.build(model, op),
 		p.DB.build(model, op),
 		p.Response.build(model, op),
@@ -180,6 +183,27 @@ func (p *Pipeline) chainFor(model string, op Operation) MiddlewareFunc {
 		p.chains.Store(k, fn)
 	}
 	return fn
+}
+
+// stripChain re-applies the strip of everything a client may not write —
+// the generated id, mfx:"readonly", and mfx:"immutable" on update — in a fixed
+// segment between Validate and Service.
+//
+// The Validate step already does this, and the strip is idempotent, so for
+// almost every request this is a loop over the model's fields that finds nothing
+// to do. It earns its place on the one shape where the step's own copy does not
+// run: AtPosition(Replace) swaps out the whole default handler, and that handler
+// was the only thing enforcing those three tags. A one-line "custom validator"
+// therefore let a client set role, owner_id, created_at, or the tenant column
+// db.Tenancy stamps (audit PIPE-5).
+//
+// After the Validate step rather than before it, so Before- and After-Validate
+// middleware see exactly the body they see today — including a middleware that
+// stamps a readonly field, which ctx.SetField marks as server-set and this
+// leaves alone.
+var stripChain MiddlewareFunc = func(ctx *ServerContext, next func() error) error {
+	stripClientWrites(ctx)
+	return next()
 }
 
 // scopeChain composes every ProvidesScope middleware, from all six steps, into
@@ -254,6 +278,72 @@ func (p *Pipeline) collectIneffectiveMiddleware(issues *issueList) {
 					"operations run, or widen ForOperation",
 				name, sr.displayName, m.cfg.Operations)
 		}
+	}
+}
+
+// responseReplacedFor reports whether an AtPosition(Replace) middleware takes
+// over the Response step for this model and operation.
+func (p *Pipeline) responseReplacedFor(model string, op Operation) bool {
+	for i := range p.Response.middlewares {
+		m := &p.Response.middlewares[i]
+		if m.cfg.Position == Replace && !m.cfg.ProvidesScope && m.appliesTo(model, op) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactedFieldNames lists the fields the default response serializer is the
+// only thing keeping off the wire.
+func redactedFieldNames(model *ModelMeta) []string {
+	var out []string
+	for i := range model.Fields {
+		f := &model.Fields[i]
+		if f.Tags.Hidden || f.Tags.WriteOnly || f.Tags.Encrypted {
+			out = append(out, f.Tags.JSONName)
+		}
+	}
+	return out
+}
+
+// warnReplaceDropsRedaction logs at boot when a Replace takes over the Response
+// step for a model carrying hidden, write-only or encrypted fields.
+//
+// Stripping those happens in the default serializer and nowhere else, so a
+// Replace that serializes ctx.DBResult itself publishes them: for a typed read
+// that value is the *T, whose json tags emit a hidden field as readily as any
+// other, and for an encrypted model it is the map the DB step has already
+// decrypted (audit PIPE-5).
+//
+// A warning rather than a refusal, and not gated on Config.Strict. The framework
+// cannot see whether the replacement redacts — RedactRecord exists precisely so
+// it can — so refusing would break every correct one, and staying silent under
+// the default posture would miss the applications most likely to get it wrong.
+func warnReplaceDropsRedaction(reg *Registry, p *Pipeline, l *slog.Logger) {
+	if p == nil || reg == nil {
+		return
+	}
+	for _, model := range reg.All() {
+		fields := redactedFieldNames(model)
+		if len(fields) == 0 {
+			continue
+		}
+		replaced := false
+		for _, op := range []Operation{OpRead, OpList, OpCreate, OpUpdate, OpExport, OpReadHistory} {
+			if p.responseReplacedFor(model.Name, op) {
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			continue
+		}
+		l.Warn("a Replace middleware takes over the Response step for a model with fields "+
+			"the default serializer is the only thing removing; whatever it sends must drop them itself",
+			slog.String("model", model.Name),
+			slog.String("fields", strings.Join(fields, ", ")),
+			slog.String("hint", "pass ctx.DBResult through maniflex.RedactRecord, or register the "+
+				"middleware AtPosition(After) so the default response is built first"))
 	}
 }
 

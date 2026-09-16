@@ -156,6 +156,31 @@ then the core handler (default or `Replace`), then all matching **After**
 middlewares in registration order. If multiple `Replace` middlewares match,
 the last one registered wins.
 
+### What a `Replace` gives up
+
+A `Replace` takes over everything that step's default handler does, which is
+more than the step's name suggests.
+
+On **Validate**, the default is where `mfx:` tag validation lives — `required`,
+`enum`, numeric bounds, null and type checks. A replacement owns all of it.
+
+Two things are held back from it, because whether a tag holds is not a matter of
+which validator an application prefers. The strip of everything a client may not
+write — the generated `id`, `mfx:"readonly"`, and `mfx:"immutable"` on update —
+runs in a fixed segment after the step, so those tags hold whatever replaces
+Validate. A value your own middleware stamped with `ctx.SetField` is not a
+client's, and still lands. `lock_when` is re-checked in the DB step.
+
+On **Response**, the default is the only place `mfx:"hidden"`, `mfx:"writeonly"`
+and `mfx:"encrypted"` fields are dropped, and a replacement that serialises
+`ctx.DBResult` itself is past it: for a read that value is the model's struct,
+whose `json` tags emit a hidden field as readily as any other, and for an
+encrypted model it is the map the DB step has already decrypted. Pass it through
+`maniflex.RedactRecord(ctx.Model, ctx.DBResult)` first, or register the
+middleware `AtPosition(After)` and let the default build the body. A server that
+replaces the Response step for a model carrying any of those fields logs a
+warning at boot naming them.
+
 A `Replace` on the **DB step** takes over feeding the Response step, so it must
 leave `ctx.DBResult` in the shape that step expects: a `*maniflex.ListResult` for
 a list, and a record for a read, create, or update. A record is a
@@ -185,10 +210,10 @@ server.Pipeline.Auth.Register(rateLimit, maniflex.WithName("rate-limiter"))
 | --------------- | ------------------------------------------------------------------------------------------------------------------ |
 | **Auth**        | Verify a token, populate `ctx.Auth`, reject unauthenticated requests.                                              |
 | **Deserialize** | Rarely customised. `After` middleware can rewrite the body via `ctx.SetField` / `ctx.DeleteField`.                  |
-| **Validate**    | Custom validation that goes beyond `mfx:` tags. Abort with 422 on failure.                                         |
+| **Validate**    | Custom validation that goes beyond `mfx:` tags. Abort with 422 on failure. A `Replace` owns the tag validation too — see [What a `Replace` gives up](#what-a-replace-gives-up). |
 | **Service**     | Business logic — derive fields, call external services, start transactions (`maniflex.WithTransaction`).                |
 | **DB**          | Hooks around the database call. `After` middleware sees `ctx.DBResult`; `Replace` substitutes a different backend. |
-| **Response**    | `After` middleware can add headers; `Replace` lets you write a non-envelope response.                              |
+| **Response**    | `After` middleware can add headers; `Replace` lets you write a non-envelope response, and must drop hidden fields itself — see [What a `Replace` gives up](#what-a-replace-gives-up). |
 
 ## After-middleware error handling
 

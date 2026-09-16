@@ -24,6 +24,21 @@ const (
 	// After inserts the middleware after the default step handler.
 	After
 	// Replace swaps out the default step handler entirely with this middleware.
+	//
+	// It takes over everything that handler does, which is more than the step's
+	// name suggests. On Validate that is the whole mfx: tag validation —
+	// required, enum, numeric bounds, null and type checks. On Response it is
+	// the serializer, which is the only place mfx:"hidden", mfx:"writeonly" and
+	// mfx:"encrypted" fields are dropped: a replacement that serializes
+	// ctx.DBResult itself must pass it through RedactRecord first, or it
+	// publishes them. Replacing the Response step for a model carrying any of
+	// those fields logs a warning at boot.
+	//
+	// Two things are held back, because whether a tag holds is not a matter of
+	// which handler an application prefers: the strip of what a client may not
+	// write — the generated id, mfx:"readonly", and mfx:"immutable" on update —
+	// runs in a fixed segment after the Validate step, and lock_when is
+	// re-checked in the DB step (audit PIPE-5).
 	Replace
 )
 

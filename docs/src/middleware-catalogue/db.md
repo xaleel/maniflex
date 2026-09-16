@@ -111,6 +111,12 @@ does: the same filter is appended, the same rows are scoped, and an operation
 that skips the DB step still skips it. Hoisted middleware runs exactly once — it
 is removed from its own step, not duplicated.
 
+That rule holds on the trimmed pipelines too. A custom action, `GET /search` and
+a presigned upload skip Deserialize, Validate, Service and DB, so a scoper
+registered on the DB step does not run for them — hoisted or not. One registered
+on a step they *do* run, such as Auth, runs for them either way: declaring
+`ProvidesScope()` never switches a middleware off.
+
 **It is opt-in, and forgetting it fails quietly.** The framework cannot tell a
 scope provider from any other middleware, so it will not infer this, and there is
 no startup error for a registration that omits it. What you get instead is a

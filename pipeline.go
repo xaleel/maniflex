@@ -82,10 +82,20 @@ func newPipeline(s *defaultSteps, oas *oasDefaultSteps) *Pipeline {
 
 // executeAction runs the trimmed pipeline for custom action endpoints:
 //
-//	Auth → [per-action middleware...] → handler → [response middleware...] → Response
+//	Auth → scope → [per-action middleware...] → handler → [response middleware...] → Response
 //
 // Deserialize, Validate, Service, and DB steps are intentionally skipped.
 // Middleware registered on those steps with ForOperation(OpAction) is inert.
+//
+// scope is the same hoisted segment chainFor runs, and it is here so that
+// declaring ProvidesScope() cannot silently switch a middleware off. compose
+// drops every ProvidesScope registration from its own step unconditionally, on
+// the understanding that scopeChain runs it instead — an understanding only the
+// full pipeline used to keep. So a middleware on Auth, a step an action does not
+// skip, stopped running the moment it was marked as providing scope, which is
+// the option the docs tell you to add to every scoper (audit PIPE-8).
+// scopeMiddlewares still honours opSkipsStep, so a DB-step scoper stays skipped
+// here exactly as before; hoisting moves when a middleware runs, never whether.
 func (p *Pipeline) executeAction(ctx *ServerContext, cfg ActionConfig) error {
 	model := ctx.Model.Name // synthetic name, never empty
 	op := ctx.Operation     // OpAction
@@ -100,8 +110,9 @@ func (p *Pipeline) executeAction(ctx *ServerContext, cfg ActionConfig) error {
 	}
 
 	// Flatten: Auth → middleware... → handler → responseMiddleware... → Response
-	steps := make([]MiddlewareFunc, 0, len(cfg.Middleware)+len(cfg.ResponseMiddleware)+3)
+	steps := make([]MiddlewareFunc, 0, len(cfg.Middleware)+len(cfg.ResponseMiddleware)+4)
 	steps = append(steps, p.Auth.build(model, op))
+	steps = append(steps, p.scopeChain(model, op))
 	steps = append(steps, cfg.Middleware...)
 	steps = append(steps, handlerFn)
 	steps = append(steps, cfg.ResponseMiddleware...)
@@ -123,13 +134,14 @@ func (p *Pipeline) executeSearch(ctx *ServerContext, handler func(*ServerContext
 	return p.executeTrimmed(ctx, handler)
 }
 
-// executeTrimmed runs Auth → handler → Response for an operation that has no
-// body to deserialize, no rules to validate and no row to read or write. The
-// skipped steps must be declared in stepsSkippedByOp, or the startup scan will
-// not know to warn about middleware registered on them.
+// executeTrimmed runs Auth → scope → handler → Response for an operation that
+// has no body to deserialize, no rules to validate and no row to read or write.
+// The skipped steps must be declared in stepsSkippedByOp, or the startup scan
+// will not know to warn about middleware registered on them.
 //
 // Auth is never among the skipped: an operation that reaches data — even to name
-// it, as minting an upload URL does — is one the app's auth must gate.
+// it, as minting an upload URL does — is one the app's auth must gate. The scope
+// segment is here for the same reason it is in executeAction — see there.
 func (p *Pipeline) executeTrimmed(ctx *ServerContext, handler func(*ServerContext) error) error {
 	model := ctx.Model.Name
 	op := ctx.Operation
@@ -143,6 +155,7 @@ func (p *Pipeline) executeTrimmed(ctx *ServerContext, handler func(*ServerContex
 
 	steps := []MiddlewareFunc{
 		p.Auth.build(model, op),
+		p.scopeChain(model, op),
 		handlerFn,
 		p.Response.build(model, op),
 	}

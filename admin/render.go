@@ -75,12 +75,28 @@ func (a *admin) render(w http.ResponseWriter, page string, data viewData) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setSecurityHeaders(w)
 	if err := t.Execute(w, data); err != nil {
 		// The status line and some body bytes may already be flushed, so the
 		// failure can only be logged; appending it would expose template paths
 		// and data-shape details in an otherwise successful response.
 		a.cfg.logger().Error("admin template render failed", "page", page, "error", err)
 	}
+}
+
+// setSecurityHeaders hardens every panel response (audit ADM-4).
+//
+// Panel pages carry record data and the CSRF token, so no-store keeps them out
+// of shared caches and off the back button, and DENY stops the delete form being
+// framed. No Content-Security-Policy is emitted: the shipped templates use two
+// inline handlers, and Config.StaticFS *replaces* the embedded bundle rather
+// than overlaying it, so a policy strict enough to be worth having would break
+// any panel with a custom static bundle or custom templates.
+func setSecurityHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Frame-Options", "DENY")
+	h.Set("Referrer-Policy", "same-origin")
 }
 
 // renderError writes the error page with the given HTTP status.
@@ -102,6 +118,7 @@ func (a *admin) renderError(w http.ResponseWriter, status int, msg string) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setSecurityHeaders(w)
 	w.WriteHeader(status)
 	_ = t.Execute(w, viewData{
 		Title:  a.cfg.Title,

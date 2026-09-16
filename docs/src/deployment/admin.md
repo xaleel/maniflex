@@ -72,6 +72,7 @@ has the two-line fix.
 | `ReadOnly`             | `bool`                            | `false`            | Hides create/edit/delete UI and unmounts those routes                                  |
 | `Templates`            | `fs.FS`                           | —                  | Override FS for custom templates (see [Templates](#templates))                         |
 | `StaticFS`             | `fs.FS`                           | —                  | Replaces the embedded CSS/asset bundle                                                 |
+| `MaxUploadBytes`       | `int64`                           | `32 MB`            | Ceiling on a multipart form submitted through the panel; a larger body gets `413`      |
 
 ## Authentication
 
@@ -171,6 +172,17 @@ instead — the browser refuses to return the cookie and the panel visibly stops
 working, which is worth knowing, because an admin panel on plaintext is exposing
 a great deal more than a CSRF token.
 
+Because `Secure` is on, the cookie is named `__Host-maniflex_admin_csrf`. That
+prefix is only honoured by a browser when the cookie is `Secure`, `Path=/` and
+carries no `Domain` — all already true — and in exchange the browser refuses to
+accept it from any origin but the one serving the panel. That closes the gap a
+double-submit pair otherwise leaves: cookies are not origin-scoped, so a sibling
+subdomain (or an XSS on one) could set the unprefixed cookie for the parent
+domain, know both halves of the pair, and forge a **same-site** `POST` that
+`SameSite=Lax` does not stop. With `Secure` explicitly off the unprefixed name is
+used, since a browser ignores a non-`Secure` `__Host-` cookie and the panel would
+otherwise have no CSRF cookie at all.
+
 `http://localhost` is a secure context in current Chrome and Firefox, so local
 development is unaffected. For a panel deliberately served over plaintext on a
 host that is *not* — a LAN hostname, say — opt out explicitly:
@@ -201,6 +213,12 @@ admin.Mount(server, admin.Config{
 Model names are **Go struct names**, not table names. Models omitted from the
 whitelist are hidden from navigation, list, and detail views — they are still
 served by the API.
+
+`Models` is **not an access boundary**. It filters what the panel offers, not what
+the panel may read: a relation `<select>` still lists rows of the model its
+foreign key points at, whitelisted or not, and a detail page still renders a link
+to an omitted model's table — following that link `404`s. Gate the panel with
+`Config.Auth`, and the data with the API's own authorization.
 
 ## Read-only mode
 

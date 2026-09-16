@@ -7,19 +7,67 @@ import (
 	"net/http"
 )
 
-// csrfCookie is the name of the double-submit CSRF cookie.
-const csrfCookie = "maniflex_admin_csrf"
+// The CSRF cookie has two names, and which one is used follows Config.Secure.
+//
+// __Host- is the one that matters. The prefix is only honoured by a browser
+// when the cookie is Secure, Path=/ and carries no Domain — all three already
+// true here — and in exchange the browser refuses to accept that cookie from
+// anywhere but the exact origin serving it. That closes the hole this pattern
+// otherwise has: cookies are not origin-scoped, so a sibling subdomain (or an
+// XSS on one) could set maniflex_admin_csrf for the parent domain, and since
+// the attacker then knows both halves of a double-submit pair, SameSite=Lax is
+// no obstacle — the forged POST is same-site (audit ADM-2).
+//
+// The unprefixed name remains for the deliberate Config.Secure=false panel,
+// where __Host- would simply be ignored by the browser and leave the panel with
+// no CSRF cookie at all.
+const (
+	csrfCookie     = "maniflex_admin_csrf"
+	csrfCookieHost = "__Host-" + csrfCookie
+)
+
+// csrfTokenLen is the hex length of a minted token: 16 random bytes.
+const csrfTokenLen = 32
 
 // The admin issues browser-originated, state-changing POSTs. It guards them
 // with the double-submit-cookie pattern: a random token is stored in a cookie
 // and echoed in a hidden form field; a forged cross-site request cannot read
 // the cookie to populate the field, so the two will not match.
 
+// csrfSecureFlag resolves Config.Secure. Nil means "not set", which is Secure.
+func csrfSecureFlag(secureOverride *bool) bool {
+	if secureOverride != nil {
+		return *secureOverride
+	}
+	return true
+}
+
+// csrfCookieName returns the cookie name in force for this panel's settings.
+func csrfCookieName(secureOverride *bool) string {
+	if csrfSecureFlag(secureOverride) {
+		return csrfCookieHost
+	}
+	return csrfCookie
+}
+
+// validCSRFToken reports whether a cookie value has the exact shape randomToken
+// mints. The old check accepted any value of 32 characters or more, so a cookie
+// planted with arbitrary contents was adopted and then echoed back as the
+// expected form value.
+func validCSRFToken(v string) bool {
+	if len(v) != csrfTokenLen {
+		return false
+	}
+	_, err := hex.DecodeString(v)
+	return err == nil
+}
+
 // ensureCSRF returns the request's CSRF token, minting and setting one if the
-// cookie is absent. Call it on every page that renders a form. secure is
-// Config.Secure — nil meaning "not set", which is the Secure default.
+// cookie is absent or malformed. Call it on every page that renders a form.
+// secureOverride is Config.Secure — nil meaning "not set", which is Secure.
 func ensureCSRF(w http.ResponseWriter, r *http.Request, secureOverride *bool) string {
-	if c, err := r.Cookie(csrfCookie); err == nil && len(c.Value) >= 32 {
+	name := csrfCookieName(secureOverride)
+	if c, err := r.Cookie(name); err == nil && validCSRFToken(c.Value) {
 		return c.Value
 	}
 	tok := randomToken()
@@ -40,16 +88,12 @@ func ensureCSRF(w http.ResponseWriter, r *http.Request, secureOverride *bool) st
 	// token. http://localhost is a secure context in current Chrome and Firefox,
 	// so local development is unaffected; Config.Secure is the way out for a
 	// deliberately plaintext panel on a host that is not.
-	secure := true
-	if secureOverride != nil {
-		secure = *secureOverride
-	}
 	http.SetCookie(w, &http.Cookie{
-		Name:     csrfCookie,
+		Name:     name,
 		Value:    tok,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   secure,
+		Secure:   csrfSecureFlag(secureOverride),
 		SameSite: http.SameSiteLaxMode,
 	})
 	return tok
@@ -57,9 +101,9 @@ func ensureCSRF(w http.ResponseWriter, r *http.Request, secureOverride *bool) st
 
 // checkCSRF reports whether a state-changing request carries a form token that
 // matches its cookie. The request's form must already be parsed.
-func checkCSRF(r *http.Request) bool {
-	c, err := r.Cookie(csrfCookie)
-	if err != nil || c.Value == "" {
+func checkCSRF(r *http.Request, secureOverride *bool) bool {
+	c, err := r.Cookie(csrfCookieName(secureOverride))
+	if err != nil || !validCSRFToken(c.Value) {
 		return false
 	}
 	got := r.FormValue("_csrf")

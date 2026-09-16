@@ -56,6 +56,13 @@ type Config struct {
 
 	// Models optionally whitelists which registered models appear in the
 	// panel, by Go struct name. Empty means every registered model.
+	//
+	// It filters navigation, list and detail views — it is not an access
+	// boundary, and nothing here stops the panel reading an omitted model. A
+	// relation <select> still lists rows of the model its foreign key points
+	// at, whether or not that model is whitelisted, and a detail page still
+	// renders a link to an omitted model's table (following it then 404s).
+	// The API's own auth is the real boundary; Config.Auth gates the panel.
 	Models []string
 
 	// ReadOnly, when true, serves only the dashboard, list, and detail views:
@@ -86,9 +93,32 @@ type Config struct {
 	// one, which is the opposite of how every other flag here reads.
 	Secure *bool
 
+	// MaxUploadBytes caps a multipart form submitted through the panel, applied
+	// to the request body before any of it is parsed. Default:
+	// maniflex.DefaultMaxUploadBytes (32 MB). A larger body is refused with 413.
+	//
+	// Without it the panel's own ParseMultipartForm bound is a spill threshold
+	// rather than a ceiling: everything past it lands in temp files, and the
+	// part was then read whole into memory on its way to the API — so the API's
+	// limit was reached only after the panel had already paid for the file.
+	//
+	// This is the panel's ceiling. FilesConfig.MaxUploadBytes bounds the API
+	// request the panel goes on to make, and the two are not linked — raise
+	// both to accept larger files through the panel.
+	MaxUploadBytes int64
+
 	// Logger receives private server-side diagnostics. Defaults to slog.Default.
 	// Error pages never render those diagnostics for 5xx responses.
 	Logger *slog.Logger
+}
+
+// maxUploadBytes resolves the panel's multipart ceiling, falling back to the
+// framework default when left at zero.
+func (c Config) maxUploadBytes() int64 {
+	if c.MaxUploadBytes > 0 {
+		return c.MaxUploadBytes
+	}
+	return maniflex.DefaultMaxUploadBytes
 }
 
 func (c Config) logger() *slog.Logger {

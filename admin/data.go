@@ -75,6 +75,25 @@ func (c *apiClient) do(src *http.Request, method, target, contentType string, bo
 	req := httptest.NewRequest(method, target, body)
 	if src != nil {
 		req.Header = src.Header.Clone()
+		// httptest.NewRequest fixes RemoteAddr to 192.0.2.1:1234 and Host to
+		// example.com, so every panel user reached the API as the same caller:
+		// audit rows named nobody, and RemoteAddr-keyed middleware — rate limits,
+		// idempotency keys — put every admin in one bucket, where one could lock
+		// the others out (audit ADM-3). The request context is deliberately NOT
+		// carried over: cancelling an in-flight write because the browser went
+		// away would roll back a save the user has no way to see failed.
+		req.RemoteAddr = src.RemoteAddr
+		req.Host = src.Host
+		req.TLS = src.TLS
+		if body == nil {
+			// The clone above copies the submitting POST's body headers onto the
+			// body-less GETs issued while re-rendering a failed form, describing a
+			// multipart body that is not there (audit ADM-6).
+			req.Header.Del("Content-Type")
+			req.Header.Del("Content-Length")
+			req.Header.Del("Transfer-Encoding")
+			req.Header.Del("Connection")
+		}
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -191,9 +210,18 @@ func (c *apiClient) writeMultipart(src *http.Request, method, target string, bod
 		if err != nil {
 			return nil, err
 		}
-		if _, err := part.Write(f.Data); err != nil {
+		// Streamed from the part net/http already spooled, rather than a second
+		// []byte copy of it: the panel used to hold the file whole twice, once in
+		// readUpload and once here (audit ADM-1).
+		src, err := f.Header.Open()
+		if err != nil {
 			return nil, err
 		}
+		if _, err := io.Copy(part, src); err != nil {
+			src.Close()
+			return nil, err
+		}
+		src.Close()
 	}
 	if err := mw.Close(); err != nil {
 		return nil, err
@@ -214,8 +242,10 @@ func (c *apiClient) delete(src *http.Request, table, id string) error {
 	return err
 }
 
-// uploadedFile is a fully-buffered file part collected from a panel form.
+// uploadedFile is one file part collected from a panel form. It holds the
+// multipart header rather than the bytes, so the part is opened and streamed
+// when it is forwarded; net/http has already bounded and spooled it.
 type uploadedFile struct {
 	Filename string
-	Data     []byte
+	Header   *multipart.FileHeader
 }

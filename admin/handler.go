@@ -1,7 +1,7 @@
 package admin
 
 import (
-	"io"
+	"errors"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -42,6 +42,14 @@ func newAdmin(server *maniflex.Server, cfg Config) (*admin, error) {
 	allByName := map[string]*maniflex.ModelMeta{}
 	for _, m := range server.Registry().All() {
 		allByName[m.Name] = m
+		// A Headless model mounts no REST routes, so the panel's list view for one
+		// asked the API for a table it does not serve, got chi's plain-text 404,
+		// failed to decode it as an envelope and rendered 502 (audit ADM-6). It
+		// stays in allByName so a relation pointing at it still resolves a name,
+		// and out of the nav so nothing offers a link to a dead view.
+		if m.Config.Headless {
+			continue
+		}
 		if len(allow) > 0 && !allow[m.Name] {
 			continue
 		}
@@ -73,7 +81,18 @@ func (a *admin) staticHandler() http.Handler {
 	if err != nil {
 		return http.NotFoundHandler()
 	}
-	return http.StripPrefix(a.cfg.PathPrefix+"/"+staticSegment+"/", http.FileServer(http.FS(dir)))
+	// http.FileServer renders a directory listing for any path with no index.html,
+	// so /admin/static/ enumerated the asset bundle to anyone past the auth gate
+	// (audit ADM-6). Nothing here is meant to be browsed, only fetched by name.
+	files := http.FileServer(http.FS(dir))
+	noListing := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "" || strings.HasSuffix(r.URL.Path, "/") {
+			http.NotFound(w, r)
+			return
+		}
+		files.ServeHTTP(w, r)
+	})
+	return http.StripPrefix(a.cfg.PathPrefix+"/"+staticSegment+"/", noListing)
 }
 
 // routes builds the panel's HTTP routing table. To keep the route set free of
@@ -450,11 +469,22 @@ func (a *admin) handleDelete(w http.ResponseWriter, r *http.Request, meta *manif
 // acceptForm parses an incoming form body and verifies its CSRF token. It
 // writes the appropriate error page and returns false on any failure.
 func (a *admin) acceptForm(w http.ResponseWriter, r *http.Request) bool {
+	// Bound the body before anything parses it. ParseMultipartForm's argument is
+	// the in-memory threshold, not a ceiling — everything past it spools to temp
+	// files — so an authenticated user could post an unbounded body and the panel
+	// paid for it in RAM and disk before the API's own limit was ever consulted
+	// (audit ADM-1).
+	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.maxUploadBytes())
 	if err := parseForm(r); err != nil {
-		a.renderError(w, http.StatusBadRequest, err.Error())
+		status := http.StatusBadRequest
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			status = http.StatusRequestEntityTooLarge
+		}
+		a.renderError(w, status, err.Error())
 		return false
 	}
-	if !checkCSRF(r) {
+	if !checkCSRF(r, a.cfg.Secure) {
 		a.renderError(w, http.StatusForbidden,
 			"CSRF token missing or invalid — reload the form and retry.")
 		return false
@@ -675,7 +705,13 @@ func collectMultipart(r *http.Request, meta *maniflex.ModelMeta, isEdit bool) (m
 	return body, files
 }
 
-// readUpload extracts a single buffered file part from a parsed multipart form.
+// readUpload references a single file part from a parsed multipart form.
+//
+// It holds the part's header rather than its bytes: net/http has already read
+// the body once, under the ceiling acceptForm imposes, and keeps it in memory or
+// a temp file. Reading it again into a []byte here, only for writeMultipart to
+// copy it into a second buffer, meant the panel held the whole file twice
+// (audit ADM-1). An empty part is still skipped, now by its declared size.
 func readUpload(r *http.Request, field string) *uploadedFile {
 	if r.MultipartForm == nil || r.MultipartForm.File == nil {
 		return nil
@@ -685,16 +721,10 @@ func readUpload(r *http.Request, field string) *uploadedFile {
 		return nil
 	}
 	fh := headers[0]
-	f, err := fh.Open()
-	if err != nil {
+	if fh.Size == 0 {
 		return nil
 	}
-	defer f.Close()
-	data, err := io.ReadAll(f)
-	if err != nil || len(data) == 0 {
-		return nil
-	}
-	return &uploadedFile{Filename: fh.Filename, Data: data}
+	return &uploadedFile{Filename: fh.Filename, Header: fh}
 }
 
 // formSnapshot rebuilds a record map from submitted form values so a failed

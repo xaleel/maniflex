@@ -62,11 +62,12 @@ func csrfSecure(t *testing.T, secure *bool, mut func(*http.Request)) bool {
 	mut(r)
 	w := httptest.NewRecorder()
 	ensureCSRF(w, r, secure)
+	name := csrfCookieName(secure)
 	for _, c := range w.Result().Cookies() {
-		if c.Name == csrfCookie {
+		if c.Name == name {
 			return c.Secure
 		}
 	}
-	t.Fatalf("no %s cookie was set", csrfCookie)
+	t.Fatalf("no %s cookie was set", name)
 	return false
 }

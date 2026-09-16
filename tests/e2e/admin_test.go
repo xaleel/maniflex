@@ -47,13 +47,18 @@ func adminGET(t *testing.T, h http.Handler, path string) *httptest.ResponseRecor
 
 // post issues a CSRF-protected urlencoded POST against the panel handler. The
 // double-submit token is supplied identically as cookie and form field.
+//
+// The cookie name follows Config.Secure, which defaults on, so the panel reads
+// the __Host- prefixed name: the prefix is what stops a sibling subdomain
+// planting the cookie (audit ADM-2). A panel mounted with Secure: &false uses
+// the bare name instead.
 func adminPOST(t *testing.T, h http.Handler, path string, form url.Values) *httptest.ResponseRecorder {
 	t.Helper()
 	const token = "0123456789abcdef0123456789abcdef"
 	form.Set("_csrf", token)
 	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.AddCookie(&http.Cookie{Name: "maniflex_admin_csrf", Value: token})
+	req.AddCookie(&http.Cookie{Name: "__Host-maniflex_admin_csrf", Value: token})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	return rec

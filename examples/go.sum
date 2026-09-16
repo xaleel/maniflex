@@ -62,6 +62,8 @@ github.com/xaleel/maniflex/db/sqlite v0.13.0 h1:AldW4y+pU3wHOuposwl2EgZlPOtD7KlU
 github.com/xaleel/maniflex/db/sqlite v0.13.0/go.mod h1:B+2+6oCR4vFaLEhoFY7nkG1wqf9bXV2WE5J8ASRYbHs=
 github.com/xaleel/maniflex/db/sqlite v0.14.0 h1:slkbYeR6TA9Zr75sMbCxspo5yRJZPdJm2v1vkUX1ctA=
 github.com/xaleel/maniflex/db/sqlite v0.14.0/go.mod h1:SdDQNkfbbgkvz2QdDtGPH4mpAeIhKxAg+TjbCW4j41s=
+github.com/xaleel/maniflex/db/sqlite v0.15.0 h1:h5HA17UPtMbPua5FiF4dUeQin2qgjRfh7cdVzoMeX8g=
+github.com/xaleel/maniflex/db/sqlite v0.15.0/go.mod h1:SDcp5AxHH82twaq3llT79jAVJCf/B0zyKEZbXoYgi2o=
 go.uber.org/goleak v1.3.0 h1:2K3zAYmnTNqV73imy9J1T3WC+gmCePx2hEGkimedGto=
 go.uber.org/goleak v1.3.0/go.mod h1:CoHD4mav9JJNrW/WLlf7HGZPjdw8EucARQHekz1X6bE=
 go.yaml.in/yaml/v2 v2.4.4 h1:tuyd0P+2Ont/d6e2rl3be67goVK4R6deVxCUX5vyPaQ=

@@ -4,8 +4,8 @@ go 1.25.12
 
 require (
 	github.com/xaleel/maniflex v0.15.0
-	github.com/xaleel/maniflex/db/postgres v0.14.0
-	github.com/xaleel/maniflex/db/sqlite v0.14.0
+	github.com/xaleel/maniflex/db/postgres v0.15.0
+	github.com/xaleel/maniflex/db/sqlite v0.15.0
 )
 
 require (

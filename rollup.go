@@ -303,12 +303,18 @@ func (cr compiledRollup) affectedParents(ctx *ServerContext) []string {
 }
 
 // addParentID adds a non-empty parent id to the set.
+//
+// The value arrives from two places with two shapes: ctx.ParsedBody hands over a
+// JSON string, while the pre-write row comes from the accessor, whose recordToMap
+// stores each struct field as it stands. So a nullable foreign key — the shape
+// onDelete:setNull requires — arrives here as a *string. fmt.Sprint rendered that
+// as a pointer address, and a nil one as "<nil>": both are non-empty strings that
+// name no row, so recompute failed and every update and delete of such a child
+// answered 500 ROLLUP_ERROR, an orphan child being impossible to modify at all
+// (audit PIPE-9). foreignKeyID dereferences the pointer and maps nil to "", which
+// is skipped below — a child pointing at no parent has no parent to recompute.
 func addParentID(set map[string]struct{}, v any) {
-	if v == nil {
-		return
-	}
-	id := fmt.Sprint(v)
-	if id != "" {
+	if id := foreignKeyID(v); id != "" {
 		set[id] = struct{}{}
 	}
 }

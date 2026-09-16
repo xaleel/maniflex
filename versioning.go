@@ -94,9 +94,18 @@ func synthesizeHistoryMeta(source *ModelMeta) *ModelMeta {
 func (c *Server) registerVersioningFor(meta *ModelMeta) error {
 	histMeta := synthesizeHistoryMeta(meta)
 	// History model is read-only — register it so it gets migrated and routed.
+	//
+	// A collision here can only be an application model that already claimed the
+	// name: this function has one call site, inside Register, which has already
+	// added meta itself by the time it runs — so the same model cannot arrive
+	// here twice, and the "called twice" this used to swallow is not a path that
+	// exists. Swallowing it returned before registering any of the middleware
+	// below, so the model recorded no history at all and nothing said so (audit
+	// PIPE-6). Registering the two in the opposite order has always been an
+	// error; this makes the orders agree.
 	if err := c.registry.add(histMeta); err != nil {
-		// Already registered (e.g. called twice) — not fatal.
-		return nil
+		return fmt.Errorf("needs the model name %q for its history, and a model "+
+			"with that name is already registered — rename it", histMeta.Name)
 	}
 
 	modelName := meta.Name

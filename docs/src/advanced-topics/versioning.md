@@ -31,7 +31,9 @@ type Invoice struct {
 Either form triggers two effects at registration:
 
 1. A synthetic `InvoiceHistory` model is added to the registry — same as
-   any other model, but read-only.
+   any other model, but read-only. That name is reserved: registering a model
+   of your own called `InvoiceHistory`, in either order, is a registration
+   error rather than a server that quietly records no history.
 2. Three DB middlewares are attached to `Invoice`: a pre-image capture
    before `OpUpdate` / `OpDelete`, and an After-DB writer for every
    write that succeeded.

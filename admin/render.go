@@ -21,7 +21,7 @@ var templateFuncs = template.FuncMap{
 }
 
 // pageNames are the content templates composed with layout.html.
-var pageNames = []string{"dashboard", "list", "detail", "form", "error"}
+var pageNames = []string{"dashboard", "list", "detail", "form", "error", "confirm"}
 
 // templateSet holds one fully-composed template per page.
 type templateSet struct {
@@ -88,15 +88,22 @@ func (a *admin) render(w http.ResponseWriter, page string, data viewData) {
 //
 // Panel pages carry record data and the CSRF token, so no-store keeps them out
 // of shared caches and off the back button, and DENY stops the delete form being
-// framed. No Content-Security-Policy is emitted: the shipped templates use two
-// inline handlers, and Config.StaticFS *replaces* the embedded bundle rather
-// than overlaying it, so a policy strict enough to be worth having would break
-// any panel with a custom static bundle or custom templates.
+// framed.
+//
+// script-src 'none' is the policy this panel can afford because it ships no
+// JavaScript at all. It used to carry two inline handlers — a row onclick and a
+// delete onsubmit — and any policy strict enough to be worth having would have
+// meant an external script, which Config.StaticFS *replaces* rather than
+// overlays, so a custom bundle would have silently 404'd it. Both were removed
+// instead: the row link is an anchor per cell, and the delete confirmation is a
+// server-rendered page. Nothing here needs a script, so nothing may run one.
 func setSecurityHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
 	h.Set("X-Frame-Options", "DENY")
 	h.Set("Referrer-Policy", "same-origin")
+	h.Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'none'; frame-ancestors 'none'")
 }
 
 // renderError writes the error page with the given HTTP status.

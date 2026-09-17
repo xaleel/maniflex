@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -79,12 +80,24 @@ func (c *apiClient) do(src *http.Request, method, target, contentType string, bo
 		// example.com, so every panel user reached the API as the same caller:
 		// audit rows named nobody, and RemoteAddr-keyed middleware — rate limits,
 		// idempotency keys — put every admin in one bucket, where one could lock
-		// the others out (audit ADM-3). The request context is deliberately NOT
-		// carried over: cancelling an in-flight write because the browser went
-		// away would roll back a save the user has no way to see failed.
+		// the others out (audit ADM-3).
 		req.RemoteAddr = src.RemoteAddr
 		req.Host = src.Host
 		req.TLS = src.TLS
+
+		// Cancellation follows the method, and the asymmetry is deliberate. A
+		// read is safe to abandon: the browser has gone, nobody wants the rows,
+		// and stopping the query is strictly better. A write is not — cancelling
+		// one partway can roll back a save the user has no way to learn failed,
+		// which is a poor trade on the highest-privilege surface in the app. So
+		// a write keeps the request's values (anything Config.Auth attached to
+		// the context) through WithoutCancel, while staying un-abortable.
+		switch method {
+		case http.MethodGet, http.MethodHead:
+			req = req.WithContext(src.Context())
+		default:
+			req = req.WithContext(context.WithoutCancel(src.Context()))
+		}
 		if body == nil {
 			// The clone above copies the submitting POST's body headers onto the
 			// body-less GETs issued while re-rendering a failed form, describing a

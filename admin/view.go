@@ -26,6 +26,18 @@ type viewData struct {
 	Detail    *detailData
 	Form      *formData
 	Error     *errorData
+	Confirm   *confirmData
+}
+
+// confirmData backs the delete confirmation page. The panel ships no JavaScript
+// (audit ADM-4), so the "are you sure?" a browser confirm() used to ask is a
+// server-rendered page with a real form.
+type confirmData struct {
+	Model      modelView
+	ID         string
+	Action     string // POST target that performs the delete
+	CancelHref string
+	CSRF       string
 }
 
 type dashboardData struct {

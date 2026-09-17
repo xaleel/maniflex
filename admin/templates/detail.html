@@ -24,10 +24,9 @@
 {{end}}
 
 {{if .DelHref}}
-<form class="danger-zone" method="post" action="{{.DelHref}}" onsubmit="return confirm('Delete this record? This cannot be undone.');">
-  <input type="hidden" name="_csrf" value="{{.CSRF}}">
-  <button type="submit" class="btn danger">Delete record</button>
-</form>
+<div class="danger-zone">
+  <a class="btn danger" href="{{.DelHref}}">Delete record&hellip;</a>
+</div>
 {{end}}
 {{end}}
 {{end}}

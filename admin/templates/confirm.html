@@ -1,0 +1,17 @@
+{{define "content"}}
+{{with .Confirm}}
+<div class="page-head">
+  <h1>Delete {{.Model.Label}}?</h1>
+  <span class="count mono">{{.ID}}</span>
+</div>
+
+<div class="panel">
+  <p>This permanently deletes the record. This cannot be undone.</p>
+  <form class="danger-zone" method="post" action="{{.Action}}">
+    <input type="hidden" name="_csrf" value="{{.CSRF}}">
+    <button type="submit" class="btn danger">Delete record</button>
+    <a class="btn ghost" href="{{.CancelHref}}">Cancel</a>
+  </form>
+</div>
+{{end}}
+{{end}}

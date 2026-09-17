@@ -266,9 +266,9 @@ func TestADM3_CallerIdentityIsPropagated(t *testing.T) {
 	}
 }
 
-// TestADM3_RequestContextIsNotPropagated is the deliberate limit: cancelling the
-// browser connection must not abort a write the user cannot see fail.
-func TestADM3_RequestContextIsNotPropagated(t *testing.T) {
+// TestADM3_ReadsCarryTheBrowserContext: a read is safe to abandon — the browser
+// has gone and nobody wants the rows — so cancellation propagates.
+func TestADM3_ReadsCarryTheBrowserContext(t *testing.T) {
 	rh := &recordingHandler{}
 	c := &apiClient{handler: rh, apiPrefix: "/api"}
 
@@ -279,8 +279,31 @@ func TestADM3_RequestContextIsNotPropagated(t *testing.T) {
 	if _, _, err := c.do(src, http.MethodGet, "/api/widgets", "", nil); err != nil {
 		t.Fatalf("do: %v", err)
 	}
-	if rh.got.Context().Err() != nil {
-		t.Error("the cancelled browser context reached the in-process request")
+	if rh.got.Context().Err() == nil {
+		t.Error("a cancelled browser connection did not cancel the read")
+	}
+}
+
+// TestADM3_WritesAreNotCancelled is the deliberate asymmetry: cancelling a write
+// partway could roll back a save the user has no way to learn failed, so a write
+// keeps the request's values but stays un-abortable.
+func TestADM3_WritesAreNotCancelled(t *testing.T) {
+	for _, method := range []string{http.MethodPost, http.MethodPatch, http.MethodDelete} {
+		t.Run(method, func(t *testing.T) {
+			rh := &recordingHandler{}
+			c := &apiClient{handler: rh, apiPrefix: "/api"}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			src := httptest.NewRequest(http.MethodPost, "/admin/widgets", nil).WithContext(ctx)
+			cancel()
+
+			if _, _, err := c.do(src, method, "/api/widgets", "", nil); err != nil {
+				t.Fatalf("do: %v", err)
+			}
+			if rh.got.Context().Err() != nil {
+				t.Errorf("%s was cancelled by the browser going away", method)
+			}
+		})
 	}
 }
 
@@ -335,6 +358,77 @@ func TestADM4_ErrorPagesSetSecurityHeaders(t *testing.T) {
 
 	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
 		t.Errorf("error page Cache-Control = %q, want no-store", got)
+	}
+}
+
+// TestADM4_PanelShipsNoInlineScript covers only the pages this module can render
+// without a database: the dashboard and the error page.
+//
+// The templates that actually carried inline handlers — the list row's onclick
+// and the detail page's delete onsubmit — need real rows to render, and there is
+// no adapter here, so a request for a list view returns an error page that could
+// never contain a handler in the first place. Asserting over it looks like
+// coverage and is worth nothing; the load-bearing check is
+// TestAdminShipsNoInlineScript in tests/e2e, which has a database and seeds a row.
+func TestADM4_PanelShipsNoInlineScript(t *testing.T) {
+	h := admPanel(t, Config{})
+
+	for _, path := range []string{"/admin/", "/admin/nonexistent"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		body := rec.Body.String()
+		for _, banned := range []string{"onclick=", "onsubmit=", "<script"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s contains %q, which script-src 'none' will block", path, banned)
+			}
+		}
+	}
+}
+
+func TestADM4_ContentSecurityPolicyIsSet(t *testing.T) {
+	h := admPanel(t, Config{})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/", nil))
+
+	csp := rec.Header().Get("Content-Security-Policy")
+	for _, want := range []string{"default-src 'self'", "script-src 'none'", "frame-ancestors 'none'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP %q is missing %q", csp, want)
+		}
+	}
+}
+
+// TestADM4_DeleteConfirmationIsAPage replaces the browser confirm() dialog: a GET
+// renders the confirmation, and the POST that performs the delete is unchanged.
+func TestADM4_DeleteConfirmationIsAPage(t *testing.T) {
+	h := admPanel(t, Config{})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/widgets/some-id/delete", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete confirmation status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `method="post"`) || !strings.Contains(body, "_csrf") {
+		t.Errorf("confirmation page has no CSRF-protected POST form:\n%s", body)
+	}
+	if !strings.Contains(body, "/admin/widgets/some-id/delete") {
+		t.Error("confirmation form does not post to the delete URL")
+	}
+}
+
+// TestADM4_ReadOnlyHasNoDeleteConfirmation is the must-still-work guard: the new
+// GET route must respect ReadOnly like every other mutating surface.
+func TestADM4_ReadOnlyHasNoDeleteConfirmation(t *testing.T) {
+	h := admPanel(t, Config{ReadOnly: true})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/admin/widgets/some-id/delete", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("read-only delete confirmation status = %d, want 404", rec.Code)
 	}
 }
 

@@ -128,6 +128,14 @@ h1 { font-size: 20px; margin: 0 0 18px; }
 .pager-pos { color: var(--muted); }
 
 .grid tr.clickable { cursor: pointer; }
+/* Each cell carries its own link, so the whole row is clickable without any
+   JavaScript (audit ADM-4). Without this stylesheet the cells are still links —
+   navigation degrades, it does not break. */
+.grid tr.clickable a.row-link {
+  display: block;
+  color: inherit;
+  text-decoration: none;
+}
 .count.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 
 /* buttons */

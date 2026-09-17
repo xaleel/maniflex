@@ -147,6 +147,13 @@ func (a *admin) getNested(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		a.handleEdit(w, r, meta, strings.TrimSuffix(rest, "/edit"))
+	case strings.HasSuffix(rest, "/delete"):
+		if a.cfg.ReadOnly {
+			a.renderError(w, http.StatusNotFound, "Panel is read-only.")
+			return
+		}
+		// GET renders the confirmation; POST to the same URL performs the delete.
+		a.handleDeleteConfirm(w, r, meta, strings.TrimSuffix(rest, "/delete"))
 	case strings.ContainsRune(rest, '/'):
 		a.renderError(w, http.StatusNotFound, "No such page.")
 	default:
@@ -452,6 +459,26 @@ func (a *admin) handleUpdate(w http.ResponseWriter, r *http.Request, meta *manif
 		return
 	}
 	a.submit(w, r, meta, id, true)
+}
+
+// handleDeleteConfirm renders the "are you sure?" page for a record.
+//
+// This is what replaced the delete form's inline onsubmit="return confirm(...)".
+// A browser dialog cannot survive a Content-Security-Policy worth having, and it
+// was never reliable anyway — it is dismissible and does nothing with scripting
+// off. A page with a real form is plain HTML, so the panel needs no script at
+// all (audit ADM-4).
+func (a *admin) handleDeleteConfirm(w http.ResponseWriter, r *http.Request, meta *maniflex.ModelMeta, id string) {
+	base := a.cfg.PathPrefix + "/" + meta.TableName + "/" + id
+	vd := a.base(meta.TableName)
+	vd.Confirm = &confirmData{
+		Model:      newModelView(meta),
+		ID:         id,
+		Action:     base + "/delete",
+		CancelHref: base,
+		CSRF:       ensureCSRF(w, r, a.cfg.Secure),
+	}
+	a.render(w, "confirm", vd)
 }
 
 // handleDelete processes a delete submission and redirects to the list.

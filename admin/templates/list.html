@@ -38,9 +38,9 @@
       <tr>{{range .Columns}}<th>{{.Label}}</th>{{end}}</tr>
     </thead>
     <tbody>
-      {{range .Rows}}
-      <tr class="clickable" onclick="location.href='{{.Href}}'">
-        {{range .Cells}}<td>{{.}}</td>{{end}}
+      {{range $row := .Rows}}
+      <tr class="clickable">
+        {{range $row.Cells}}<td><a class="row-link" href="{{$row.Href}}">{{.}}</a></td>{{end}}
       </tr>
       {{else}}
       <tr><td class="empty" colspan="{{len .Columns}}">No records.</td></tr>

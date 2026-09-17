@@ -80,6 +80,41 @@ func seedUser(t *testing.T, h http.Handler, name string) string {
 	return loc[strings.LastIndex(loc, "/")+1:]
 }
 
+// TestAdminShipsNoInlineScript is what makes Content-Security-Policy
+// script-src 'none' affordable (audit ADM-4): the panel must render no inline
+// handler anywhere. It lives here rather than in the admin module's own tests
+// because the templates that carried them — the list row's onclick and the
+// detail page's delete onsubmit — only render with real rows, and the admin
+// module has no database to produce any.
+func TestAdminShipsNoInlineScript(t *testing.T) {
+	h, _ := adminPanel(t, admin.Config{})
+	id := seedUser(t, h, "dana")
+
+	for _, tc := range []struct{ path, marker string }{
+		{"/admin/users", "<table"},                  // the list table, whose rows had the onclick
+		{"/admin/users/" + id, id},                  // the detail page, which renders a <dl>, not a form
+		{"/admin/users/" + id + "/delete", "<form"}, // the confirmation that replaced confirm()
+	} {
+		rec := adminGET(t, h, tc.path)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status %d, body %s", tc.path, rec.Code, rec.Body)
+		}
+		body := rec.Body.String()
+		// Guard against a vacuous pass: assert the page under test actually
+		// rendered, so this cannot quietly inspect an error page instead and
+		// report success for having found no handler on it.
+		if !strings.Contains(body, tc.marker) {
+			t.Fatalf("%s did not render (no %q), so it proves nothing:\n%s",
+				tc.path, tc.marker, body)
+		}
+		for _, banned := range []string{"onclick=", "onsubmit=", "<script"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s contains %q, which script-src 'none' blocks", tc.path, banned)
+			}
+		}
+	}
+}
+
 func TestAdminDashboardCounts(t *testing.T) {
 	h, _ := adminPanel(t, admin.Config{})
 	seedUser(t, h, "alice")

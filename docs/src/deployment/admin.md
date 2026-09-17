@@ -153,9 +153,18 @@ editable on create but disabled on edit.
 
 ### Delete
 
+`GET /admin/{model}/{id}/delete` — renders the delete confirmation page.
+
 `POST /admin/{model}/{id}/delete` — deletes the record via the API and
-redirects to the list. Requires a valid CSRF token (present on the detail
-page's Delete button).
+redirects to the list. Requires a valid CSRF token (present on the
+confirmation page's form).
+
+The panel ships **no JavaScript**, and says so with
+`Content-Security-Policy: default-src 'self'; script-src 'none'; frame-ancestors 'none'`.
+That is why deleting is a confirmation page rather than a browser `confirm()`
+dialog, and why a list row is a link in every cell rather than a row `onclick`.
+A custom `StaticFS` that omits the stylesheet degrades to per-cell links —
+navigation still works.
 
 ## CSRF protection
 

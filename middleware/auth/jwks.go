@@ -7,6 +7,7 @@ import (
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -25,8 +26,19 @@ const (
 	// defaultJWKSCacheTTL is how long a fetched JWK Set is considered fresh.
 	defaultJWKSCacheTTL = time.Hour
 	// defaultJWKSMinRefetch rate-limits refetches so an unknown-kid storm can't
-	// hammer the issuer's JWKS endpoint.
+	// hammer the issuer's JWKS endpoint. It is also the ceiling on the failure
+	// backoff below.
 	defaultJWKSMinRefetch = 5 * time.Minute
+	// defaultJWKSMinRetry is how long the cache waits after a *failed* fetch
+	// before trying again, doubling up to defaultJWKSMinRefetch. It starts small
+	// because an empty cache means no token verifies at all: a blip while the
+	// process is starting should cost a second, not the full refetch interval.
+	defaultJWKSMinRetry = time.Second
+	// maxJWKSBody caps the JWK Set response. An RSA-2048 JWK is roughly 400
+	// bytes, so this is thousands of signing keys — far past any real issuer,
+	// and the point is only that a hostile or broken endpoint cannot make the
+	// process read an unbounded body into memory.
+	maxJWKSBody = 1 << 20
 )
 
 // JWKSAuth validates asymmetric JWTs against a rotating JWK Set published at
@@ -34,6 +46,10 @@ const (
 // fetched, cached, and selected by the token header's "kid"; an unknown kid
 // triggers a rate-limited refetch so a rotated key is picked up without a
 // redeploy. RSA (RS256/384/512) and EC (ES256/384/512) keys are supported.
+//
+// The kid is read before the signature is checked, so unauthenticated callers
+// influence when a fetch happens: concurrent refreshes are collapsed into one
+// request, and failures back off, so a token storm costs the issuer little.
 //
 // All other JWTOptions (Issuer, Audience, claim mappings, ClockSkew) apply as
 // with JWTAuth. The static-key JWTAuth remains for a fixed key or offline tests.
@@ -69,11 +85,24 @@ type jwksCache struct {
 	client     *http.Client
 	ttl        time.Duration
 	minRefetch time.Duration
+	minRetry   time.Duration
 
 	mu          sync.RWMutex
 	keys        map[string]crypto.PublicKey
 	fetchedAt   time.Time
 	lastAttempt time.Time
+	// lastErr is why the most recent fetch failed, nil when it succeeded. It is
+	// what a throttled caller is told, so that backing off reads as "the issuer
+	// is unreachable" rather than "no signing key for that kid".
+	lastErr error
+	// backoff is the current wait after a failure, 0 while healthy.
+	backoff time.Duration
+	// inFlight is closed when the fetch running right now finishes; nil when
+	// none is. It is the single-flight latch: key() is reached before a token's
+	// signature is checked, so an unauthenticated caller decides how often this
+	// runs, and without the latch every one of them opened its own connection
+	// to the issuer.
+	inFlight chan struct{}
 }
 
 func newJWKSCache(url string) *jwksCache {
@@ -85,6 +114,7 @@ func newJWKSCache(url string) *jwksCache {
 		},
 		ttl:        defaultJWKSCacheTTL,
 		minRefetch: defaultJWKSMinRefetch,
+		minRetry:   defaultJWKSMinRetry,
 		keys:       map[string]crypto.PublicKey{},
 	}
 }
@@ -212,44 +242,110 @@ func (c *jwksCache) key(kid, _ string) (crypto.PublicKey, error) {
 	return k, nil
 }
 
-// refresh fetches the JWK Set, rate-limited by minRefetch while the cache is
-// still fresh so an unknown-kid storm doesn't stampede the issuer.
+// throttled reports whether another fetch right now would be a stampede rather
+// than a refresh. Callers hold c.mu.
+//
+// The two cases are genuinely different and the previous single condition could
+// only express one of them. After a *success*, the question is how often an
+// unknown kid may trigger a refetch while the cached set is still usable, and
+// the answer is minRefetch. After a *failure*, the question is how fast to
+// retry an issuer that is down — and there the old condition, which also
+// required a non-empty fresh cache, was never satisfied, so nothing was
+// throttled at all and every request re-fetched.
+func (c *jwksCache) throttled() bool {
+	if c.lastAttempt.IsZero() {
+		return false
+	}
+	since := time.Since(c.lastAttempt)
+	if c.lastErr != nil {
+		return since < c.backoff
+	}
+	return since < c.minRefetch && !c.fetchedAt.IsZero() && time.Since(c.fetchedAt) < c.ttl
+}
+
+// refresh fetches the JWK Set, collapsing concurrent callers onto one request
+// and backing off exponentially while the issuer is failing.
+//
+// It returns the error of the fetch it ran, waited on, or is backing off from,
+// so a throttled caller learns the issuer is unreachable instead of being told
+// the kid is unknown. key() still prefers a cached key of any age over that
+// error, which is what keeps a live IdP outage from logging everybody out.
 func (c *jwksCache) refresh() error {
 	c.mu.Lock()
-	if !c.lastAttempt.IsZero() &&
-		time.Since(c.lastAttempt) < c.minRefetch &&
-		!c.fetchedAt.IsZero() && time.Since(c.fetchedAt) < c.ttl {
+	if c.throttled() {
+		err := c.lastErr
 		c.mu.Unlock()
-		return nil
+		return err
 	}
+	if wait := c.inFlight; wait != nil {
+		// Someone is already fetching. Wait for their result rather than opening
+		// a second connection to the issuer for the same JWK Set.
+		c.mu.Unlock()
+		<-wait
+		c.mu.RLock()
+		err := c.lastErr
+		c.mu.RUnlock()
+		return err
+	}
+	done := make(chan struct{})
+	c.inFlight = done
 	c.lastAttempt = time.Now()
 	c.mu.Unlock()
 
+	// Seeded with a failure so that a panic in the fetch still releases the
+	// latch, records a backoff and leaves the cached keys alone. Leaving
+	// inFlight set would park every later caller on a channel nobody closes.
+	var keys map[string]crypto.PublicKey
+	err := errors.New("fetch JWKS: aborted")
+	defer func() {
+		c.mu.Lock()
+		c.lastErr = err
+		switch {
+		case err == nil:
+			c.keys = keys
+			c.fetchedAt = time.Now()
+			c.backoff = 0
+		case c.backoff == 0:
+			c.backoff = c.minRetry
+		default:
+			if c.backoff *= 2; c.backoff > c.minRefetch {
+				c.backoff = c.minRefetch
+			}
+		}
+		c.inFlight = nil
+		c.mu.Unlock()
+		close(done)
+	}()
+
+	keys, err = c.fetch()
+	return err
+}
+
+// fetch performs one JWK Set request. It does no locking and no throttling —
+// refresh owns both — and it does not touch the cache.
+func (c *jwksCache) fetch() (map[string]crypto.PublicKey, error) {
 	req, err := http.NewRequest(http.MethodGet, c.url, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("fetch JWKS: %w", err)
+		return nil, fmt.Errorf("fetch JWKS: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch JWKS: unexpected status %d", resp.StatusCode)
+		return nil, fmt.Errorf("fetch JWKS: unexpected status %d", resp.StatusCode)
 	}
-	body, err := io.ReadAll(resp.Body)
+	// One byte past the cap, so an oversized set is reported as oversized rather
+	// than as a JSON syntax error from a body cut off mid-object.
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBody+1))
 	if err != nil {
-		return fmt.Errorf("read JWKS: %w", err)
+		return nil, fmt.Errorf("read JWKS: %w", err)
 	}
-	keys, err := parseJWKS(body)
-	if err != nil {
-		return err
+	if len(body) > maxJWKSBody {
+		return nil, fmt.Errorf("fetch JWKS: response larger than %d bytes", maxJWKSBody)
 	}
-	c.mu.Lock()
-	c.keys = keys
-	c.fetchedAt = time.Now()
-	c.mu.Unlock()
-	return nil
+	return parseJWKS(body)
 }
 
 // jwk is a single JSON Web Key (RFC 7517) — the subset we verify with.

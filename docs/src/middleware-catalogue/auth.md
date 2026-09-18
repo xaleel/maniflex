@@ -98,6 +98,29 @@ follows `https://` → `http://` without complaint, so an issuer that redirects
 could move key material onto plaintext while your configured `https://` URL
 looks untouched. Such a redirect is refused and the fetch fails.
 
+### How often your issuer is contacted
+
+The `kid` is read from the token header *before* the signature is verified —
+it has to be, since it selects the key that does the verifying. So an
+unauthenticated client picks which `kid` is looked up, and therefore influences
+when a fetch happens. Three rules keep that from turning into traffic aimed at
+your IdP:
+
+- **One fetch at a time.** Concurrent requests that all need a refresh share a
+  single outbound fetch and wait on its result, rather than opening a connection
+  each.
+- **Unknown `kid` against a fresh set is not refetched** more than once every
+  5 minutes. A rotation is picked up at that granularity; a storm of invented
+  `kid`s costs one request.
+- **Failures back off**, 1s doubling to 5 minutes, and reset on the next
+  success. A cached set is still served throughout, so an issuer outage does not
+  invalidate tokens you already have keys for — only a process that has never
+  managed a single fetch will reject everything, and then it rejects everything
+  regardless.
+
+The response is capped at 1 MiB (thousands of keys); a larger one is refused
+rather than read into memory.
+
 ## `APIKeyAuth`
 
 Validates a static API key from a request header. Each entry maps one key to

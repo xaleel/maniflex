@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/internal/accessdecision"
 )
 
 // CSRFMode selects between the two supported CSRF defence strategies.
@@ -116,7 +117,7 @@ func CSRF(opts ...CSRFOptions) maniflex.MiddlewareFunc {
 		panic("auth.CSRF: Secret is required for CSRFSignedToken mode")
 	}
 
-	return func(ctx *maniflex.ServerContext, next func() error) error {
+	fn := func(ctx *maniflex.ServerContext, next func() error) error {
 		r := ctx.Request
 
 		if isSafeMethod(r.Method) {
@@ -171,6 +172,13 @@ func CSRF(opts ...CSRFOptions) maniflex.MiddlewareFunc {
 		}
 		return next()
 	}
+	// Transport protection, not an access decision: it passes every safe method
+	// untouched, and on writes checks only that a cookie matches a header, which
+	// any non-browser client sets for itself. Registered without an
+	// authenticator it leaves every route open, so it must not satisfy
+	// ValidateProduction (audit AUTH-6).
+	accessdecision.MarkNotADecision(fn)
+	return fn
 }
 
 // IssueCSRFCookie writes a fresh double-submit cookie on the response and

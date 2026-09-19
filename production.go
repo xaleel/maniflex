@@ -1,6 +1,10 @@
 package maniflex
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/xaleel/maniflex/internal/accessdecision"
+)
 
 // ValidateProduction audits the fully configured server for
 // production-dangerous defaults. Call it after registering models,
@@ -155,21 +159,25 @@ func (c *Server) collectModelAccessIssues(issues *issueList) {
 		}
 
 		var uncovered []string
+		hint := ""
 		seen := make(map[Operation]bool)
 		for _, op := range ops {
 			if seen[op] {
 				continue
 			}
 			seen[op] = true
-			if !c.hasAccessDecision(meta.Name, op) {
+			if decided, skipped := c.accessDecision(meta.Name, op); !decided {
 				uncovered = append(uncovered, string(op))
+				if skipped {
+					hint = notADecisionHint
+				}
 			}
 		}
 		if len(uncovered) > 0 {
 			issues.add("access",
 				"model %q has mounted operations without an access decision: %s; "+
-					"register matching Pipeline.Auth middleware or call Server.AllowPublic",
-				meta.Name, strings.Join(uncovered, ", "))
+					"register matching Pipeline.Auth middleware or call Server.AllowPublic%s",
+				meta.Name, strings.Join(uncovered, ", "), hint)
 		}
 	}
 }
@@ -184,34 +192,68 @@ func (c *Server) collectAuxiliaryAccessIssues(issues *issueList) {
 
 	for _, action := range c.actions {
 		model := actionSyntheticModel(action.Method, action.Path).Name
-		if c.hasAccessDecision(model, OpAction) || action.AccessControlled || action.AllowPublic {
+		decided, skipped := c.accessDecision(model, OpAction)
+		if decided || action.AccessControlled || action.AllowPublic {
 			continue
+		}
+		hint := ""
+		if skipped {
+			hint = notADecisionHint
 		}
 		issues.add("access",
 			"action %s %s has no access decision; register matching Pipeline.Auth middleware, "+
-				"set ActionConfig.AccessControlled, or set ActionConfig.AllowPublic",
-			action.Method, action.Path)
+				"set ActionConfig.AccessControlled, or set ActionConfig.AllowPublic%s",
+			action.Method, action.Path, hint)
 	}
 
-	if c.globalSearch != nil &&
-		!c.globalSearch.AllowPublic &&
-		!c.hasAccessDecision(searchModelName, OpSearch) {
-		issues.add("access",
-			"global search has no access decision; register Pipeline.Auth for OpSearch or set GlobalSearchConfig.AllowPublic")
+	if c.globalSearch != nil && !c.globalSearch.AllowPublic {
+		if decided, skipped := c.accessDecision(searchModelName, OpSearch); !decided {
+			hint := ""
+			if skipped {
+				hint = notADecisionHint
+			}
+			issues.add("access",
+				"global search has no access decision; register Pipeline.Auth for OpSearch "+
+					"or set GlobalSearchConfig.AllowPublic%s", hint)
+		}
 	}
 }
 
-func (c *Server) hasAccessDecision(model string, op Operation) bool {
+// notADecisionHint is appended to an access issue when the only Auth middleware
+// covering the route is middleware that decides nothing, so the report explains
+// why a route with middleware on it still counts as uncovered.
+const notADecisionHint = " (auth.CSRF and auth.AllowAnonymous are registered there, " +
+	"but neither decides who may call a route — add an authenticator)"
+
+// accessDecision reports whether someone decided who may reach model/op:
+// Pipeline.Auth middleware that applies to it, or an AllowPublic declaration.
+// skipped reports whether applicable middleware was passed over for deciding
+// nothing, which is what the issue text needs to say.
+//
+// Any Pipeline.Auth middleware used to count, so auth.CSRF or
+// auth.AllowAnonymous alone passed the audit with every route open: the first
+// only compares a cookie to a header, and the second only leaves a note for an
+// authenticator that was never registered (audit AUTH-6). They mark themselves,
+// and are skipped here. Every other middleware still counts, including one an
+// application writes itself — the audit cannot see inside it, and a passthrough
+// standing in for an app's own auth has always been accepted.
+func (c *Server) accessDecision(model string, op Operation) (decided, skipped bool) {
 	for i := range c.Pipeline.Auth.middlewares {
-		if c.Pipeline.Auth.middlewares[i].appliesTo(model, op) {
-			return true
+		m := &c.Pipeline.Auth.middlewares[i]
+		if !m.appliesTo(model, op) {
+			continue
 		}
+		if accessdecision.IsNotADecision(m.fn) {
+			skipped = true
+			continue
+		}
+		return true, skipped
 	}
 	for i := range c.publicAccess {
 		marker := registeredMiddleware{cfg: c.publicAccess[i]}
 		if marker.appliesTo(model, op) {
-			return true
+			return true, skipped
 		}
 	}
-	return false
+	return false, skipped
 }

@@ -38,6 +38,32 @@ problem together and changes no runtime behavior.
 - Standalone files, custom actions, and global search each have a protected or
   explicitly public access decision.
 
+### What counts as an access decision
+
+Any `Pipeline.Auth` middleware that applies to the route counts — an
+authenticator, `RequireRole` and the other `Require*` checks, `AllowPublicRead`,
+`BlockOperation`, and any middleware you write yourself, since the validator
+cannot see inside it.
+
+Two of the framework's do **not** count, because they decide nothing about who
+may call the route:
+
+- `auth.CSRF` passes every safe method untouched, and on writes checks only that
+  a cookie matches a header — which any client that isn't a browser sets for
+  itself.
+- `auth.AllowAnonymous` only tells an authenticator that a missing credential is
+  acceptable. With no authenticator registered, it lets everyone through.
+
+Either one on its own therefore leaves the route uncovered, and the report says
+so. Register them alongside an authenticator, as they are meant to be used. A
+middleware of your own that wraps one of them counts, like any other middleware
+you write.
+
+`BlockOperation` counts for every operation it applies to, not just the ones it
+refuses — so `BlockOperation(OpDelete)` alone still satisfies the check for the
+model's other operations. Pair it with an authenticator, or declare the other
+operations with `AllowPublic`.
+
 It also runs every registry check `Start` runs, so one call reports the whole
 startup posture rather than only the part specific to production:
 

@@ -20,7 +20,10 @@ package auth
 // draft-posts case. AllowAnonymous keeps the authenticator running and only
 // forgives absence, so a token that *is* presented still lands in ctx.Auth.
 
-import "github.com/xaleel/maniflex"
+import (
+	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/internal/accessdecision"
+)
 
 // anonymousOKKey marks a request whose route tolerates a missing credential.
 //
@@ -74,10 +77,14 @@ const anonymousOKKey = "maniflex.auth.anonymous_ok"
 // list can, which is exactly why it is worth having even when the scoping is
 // currently right.
 func AllowAnonymous() maniflex.MiddlewareFunc {
-	return func(ctx *maniflex.ServerContext, next func() error) error {
+	fn := func(ctx *maniflex.ServerContext, next func() error) error {
 		ctx.Set(anonymousOKKey, true)
 		return next()
 	}
+	// A note for the authenticator, not a decision: registered with none, it
+	// lets everyone through and must not satisfy ValidateProduction (audit AUTH-6).
+	accessdecision.MarkNotADecision(fn)
+	return fn
 }
 
 // anonymousAllowed reports whether AllowAnonymous ran for this request.

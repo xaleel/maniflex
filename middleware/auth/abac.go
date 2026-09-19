@@ -29,6 +29,15 @@ type Policy func(ctx *maniflex.ServerContext, resource map[string]any) (allow bo
 //   - OpList:          the DB step runs first; p is applied to each row and
 //     denied rows are removed from the result.
 //   - OpUpdate/Delete: the current record is fetched and checked before the write.
+//   - History/attachment reads: the parent record is fetched and checked before
+//     the DB step, since what that step produces is history rows or file bytes
+//     rather than the record the policy is about.
+//   - OpSearch/OpExport: refused with 403. Both return rows the policy cannot be
+//     applied to; scope them with db.ForceFilter or db.Tenancy instead.
+//
+// Every other operation — custom actions, presigned uploads, HEAD, OPTIONS — is
+// passed through untouched. Enforce is a policy on a model's records, and those
+// carry no record for it to decide about.
 //
 // Register on the DB pipeline step, scoped with ForModel/ForOperation as needed:
 //
@@ -46,11 +55,31 @@ func Enforce(p Policy) maniflex.MiddlewareFunc {
 		case maniflex.OpCreate:
 			return enforceOnBody(ctx, p, next)
 		case maniflex.OpUpdate, maniflex.OpDelete:
-			return enforceBeforeWrite(ctx, p, next)
+			return enforceOnStoredRecord(ctx, p, next)
 		case maniflex.OpRead:
 			return enforceAfterRead(ctx, p, next)
 		case maniflex.OpList:
 			return enforceAfterList(ctx, p, next)
+		case maniflex.OpReadHistory, maniflex.OpReadAttachment:
+			// Checked against the parent record before the DB step, not after it:
+			// what the DB step produces here is history rows, or a file streamed
+			// straight to the response writer, and neither is the record the policy
+			// is written about. These used to reach default and pass, so a policy
+			// that refused a direct read still served that record's diffs and
+			// attachments to anyone (audit AUTH-2).
+			return enforceOnStoredRecord(ctx, p, next)
+		case maniflex.OpSearch, maniflex.OpExport:
+			// Refused rather than passed. Both return rows the policy never sees:
+			// export streams bytes with ctx.Response left nil, so there is nothing
+			// for enforceAfterList to filter, and search builds its result outside
+			// the list path. Passing them meant ForOperation(OpList) — which covers
+			// OpExport by alias — filtered the list and streamed the whole table at
+			// /export.
+			ctx.Abort(http.StatusForbidden, "FORBIDDEN",
+				"auth.Enforce cannot evaluate a policy on "+string(ctx.Operation)+
+					": it streams rows the policy never sees. Scope this route with "+
+					"db.ForceFilter or db.Tenancy, which filter in SQL.")
+			return nil
 		default:
 			return next()
 		}
@@ -115,9 +144,12 @@ func enforceOnBody(ctx *maniflex.ServerContext, p Policy, next func() error) err
 	return next()
 }
 
-// enforceBeforeWrite fetches the current record, checks p, then calls next.
-// Used for OpUpdate and OpDelete to prevent unauthorized writes.
-func enforceBeforeWrite(ctx *maniflex.ServerContext, p Policy, next func() error) error {
+// enforceOnStoredRecord fetches the record targeted by ctx.ResourceID, checks p
+// against it, then calls next. Used wherever the policy has to be decided before
+// the DB step runs: the writes (OpUpdate, OpDelete), and the derived reads whose
+// DB step produces something other than the record itself (OpReadHistory,
+// OpReadAttachment).
+func enforceOnStoredRecord(ctx *maniflex.ServerContext, p Policy, next func() error) error {
 	if ctx.ResourceID == "" {
 		return next()
 	}

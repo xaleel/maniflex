@@ -503,9 +503,11 @@ func RequireRole(roles ...string) maniflex.MiddlewareFunc {
 
 // RequireOwner enforces that the authenticated user owns the resource being
 // written or read. On create it sets ownerField = ctx.Auth.UserID automatically.
-// On read, update, and delete it fetches the target record and compares its
-// ownerField to ctx.Auth.UserID, answering 404 (not 403, so the endpoint does
-// not reveal that the record exists) when the caller is not the owner.
+// On read, update, and delete — and on the two reads derived from them, the
+// record's history and its attachment downloads — it fetches the target record
+// and compares its ownerField to ctx.Auth.UserID, answering 404 (not 403, so the
+// endpoint does not reveal that the record exists) when the caller is not the
+// owner.
 //
 // ownerField may be given as either the JSON or the DB column name of the owning
 // field. Users with a role in adminRoles bypass ownership checks entirely.
@@ -539,7 +541,8 @@ func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFu
 			// struct write path see the injected owner.
 			ctx.SetField(ownerField, ctx.Auth.UserID)
 
-		case maniflex.OpUpdate, maniflex.OpDelete, maniflex.OpRead:
+		case maniflex.OpUpdate, maniflex.OpDelete, maniflex.OpRead,
+			maniflex.OpReadHistory, maniflex.OpReadAttachment:
 			// The adapter's update/delete are keyed by id alone (no query filter),
 			// so the ownership test cannot ride along on the write itself: fetch the
 			// target record and compare its owner field to the caller first.
@@ -549,6 +552,13 @@ func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFu
 			// it compares a field to the caller rather than imposing a filter, and
 			// because it must also cover OpRead — which a forced filter already
 			// scopes on its own.
+			//
+			// History and attachment reads are the same read in another shape, and
+			// they target one record by id, so they belong here. They are also the
+			// two that this switch used to drop: ForOperation(OpRead) covers them,
+			// so RequireOwner was invoked on them and then matched no case, and a
+			// non-owner read another user's field-level diffs and file bytes at
+			// endpoints whose own doc calls them scoped (audit AUTH-2).
 			if abortOwnershipMismatch(ctx, ownerField) {
 				return nil
 			}

@@ -215,13 +215,19 @@ answering **404** (not 403, so the endpoint never reveals that a record it doesn
 own exists). `ownerField` may be given as the JSON or the DB column name. Callers
 holding any role in `adminRoles` bypass the check.
 
+The two reads *derived* from a record read are covered on the same terms: its
+version history (`GET /{model}/{id}/history`) and its attachment downloads
+(`GET /{model}/{id}/{file_field}`). Both name a single record by id, so a caller
+refused the record itself is refused these too.
+
 ```go
 server.Pipeline.Auth.Register(auth.RequireOwner("user_id", "admin"))
 ```
 
-`RequireOwner` scopes **single-resource** operations only — a collection `GET`
-still returns every row. Constrain list reads with `db.ForceFilter` or
-`db.Tenancy` on the DB step.
+`RequireOwner` scopes **single-resource** operations only — anything returning a
+collection still returns every row, and that includes `GET /{model}/export`,
+which is a list in another shape. Constrain those with `db.ForceFilter` or
+`db.Tenancy` on the DB step, which filter in SQL and so cover the export too.
 
 ## `Enforce` — attribute-based policies
 
@@ -251,6 +257,28 @@ Which record the policy sees depends on the operation:
 | `OpUpdate` / `OpDelete` | the current stored record | fetched before the write |
 | `OpRead` | the fetched record | after the DB step |
 | `OpList` | each row in turn | after the DB step; denied rows are dropped |
+| history / attachment reads | the **parent** record | fetched before the DB step |
+| `OpExport` / `OpSearch` | — | refused with **403** |
+
+The derived reads are checked *before* the DB step because what that step
+produces for them is history rows, or file bytes streamed straight to the
+response writer — neither is the record the policy is written about.
+
+Export and search are refused rather than passed for the same reason, minus a way
+to fix it: both stream their rows out without ever populating `ctx.Response`, so
+there is nothing left for a post-filter to remove. `ForOperation(OpList)` covers
+`OpExport` by alias, so before this a policy that correctly filtered your list
+handed the whole table to anyone who asked for `/export`. Scope those routes with
+[`db.ForceFilter`](db.md) or `db.Tenancy` instead.
+
+Note that `Enforce` belongs on the **DB** step, and `GET /search` skips that step
+entirely — so a DB-registered `Enforce` never runs on global search at all, and
+cannot refuse it. Gate that endpoint on the Auth step, or with
+`GlobalSearchConfig`.
+
+Every other operation — custom actions, presigned uploads, `HEAD`, `OPTIONS` —
+passes through untouched. `Enforce` decides about a model's records, and those
+requests carry none for it to decide about.
 
 Compose policies with `AllOf`, `AnyOf`, and `Not`:
 

@@ -235,6 +235,14 @@ func OwnerScope(ownerField string) maniflex.MiddlewareFunc {
 		if ctx.Auth == nil {
 			return next()
 		}
+		// Stamping "" would give the record to every principal without a user id
+		// at once — whatever keys on the owner column then treats them as one
+		// user (audit AUTH-5).
+		if ctx.Auth.UserID == "" {
+			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",
+				"the authenticated principal has no user id to own records by")
+			return nil
+		}
 		ctx.SetField(ownerField, ctx.Auth.UserID)
 		return next()
 	}

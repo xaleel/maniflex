@@ -109,9 +109,11 @@ server.Pipeline.Service.Register(
 
 ### `OwnerScope`
 
-Forces a user-id field to the authenticated caller on create. It is exactly
-`SetField("user_id", ctx.Auth.UserID)` — an unconditional overwrite, so any value
-the client sent for that field is replaced (not rejected):
+Forces a user-id field to the authenticated caller on create. It is
+`SetField("user_id", ctx.Auth.UserID)` — an overwrite, so any value the client
+sent for that field is replaced (not rejected). A principal with an empty
+`UserID` is refused with `401` rather than stamped, since every such caller would
+otherwise own the record together:
 
 ```go
 server.Pipeline.Service.Register(

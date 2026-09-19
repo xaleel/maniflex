@@ -50,6 +50,26 @@ deliberately mint them. On the HMAC path the signing secret must be non-empty (a
 empty secret panics at startup) and should be at least 32 bytes — a shorter
 secret is allowed but logs a warning.
 
+### The subject becomes `UserID`
+
+Tokens must also carry a subject — the `sub` claim, or whichever claim
+`JWTOptions.UserIDClaim` names. One with none, or an empty one, is rejected
+(`401 TOKEN_MISSING_SUBJECT`): its principal would have an empty `UserID`, and
+every caller holding such a token would be the same user to anything keyed on it
+— `RequireOwner`, a `ForceFilter` on the user id, a rate-limit bucket, an audit
+actor. Set `JWTOptions.AllowNoSubject` for issuers that deliberately mint
+subject-less tokens, such as some client-credentials flows, and key nothing on
+`ctx.Auth.UserID` for them.
+
+A subject is normally a string, and is used as is. An **integer** JSON number is
+accepted too, as its exact decimal text — `"sub": 42` gives `UserID` `"42"`. It is
+read from the token itself rather than from the decoded claims, because those
+hold numbers as `float64`, which is exact only up to 2^53: formatting it would
+give two users with neighbouring large ids the same `UserID`. `4.2e1` and `42.0`
+both yield `"42"`. Any other kind of value — a fraction, a boolean, an object — is
+refused with `401 INVALID_TOKEN`, since no string stands for it faithfully.
+`TenantClaim` is read by the same rule.
+
 ## `JWKSAuth`
 
 Verifies asymmetric JWTs against a **rotating** JWK Set published by an identity
@@ -215,7 +235,9 @@ user's name; on read, update,
 and delete it fetches the target and compares its `ownerField` to the caller —
 answering **404** (not 403, so the endpoint never reveals that a record it doesn't
 own exists). `ownerField` may be given as the JSON or the DB column name. Callers
-holding any role in `adminRoles` bypass the check.
+holding any role in `adminRoles` bypass the check. A principal with an empty
+`UserID` is refused with `401` — it has nothing to own records by, and letting it
+through would make every such caller one owner.
 
 An update that passes the check stamps the owner again, the same way create
 does, so the owner column cannot be rewritten to hand a record to someone else —

@@ -48,7 +48,20 @@ type JWTOptions struct {
 	// tokens (e.g. certain machine/service accounts).
 	AllowNoExpiry bool
 
-	// UserIDClaim is the JWT claim used to populate ctx.Auth.UserID.
+	// AllowNoSubject permits tokens that carry no user id — no UserIDClaim, or an
+	// empty one. By default such a token is rejected (401 TOKEN_MISSING_SUBJECT):
+	// its principal would have UserID "", and every caller holding one would be
+	// the same user to anything keyed on it — RequireOwner, a ForceFilter on the
+	// user id, a rate-limit bucket, an audit actor. Set this only for issuers
+	// that deliberately mint subject-less tokens (some client-credentials flows),
+	// and key nothing on ctx.Auth.UserID for them. RequireOwner and
+	// service.OwnerScope refuse such a principal regardless.
+	AllowNoSubject bool
+
+	// UserIDClaim is the JWT claim used to populate ctx.Auth.UserID. A string is
+	// used as is; an integer JSON number becomes its exact decimal text, read from
+	// the token rather than from the decoded float64 so a large id is not
+	// rounded into another user's. Any other kind of value is refused.
 	// Default: "sub".
 	UserIDClaim string
 
@@ -57,7 +70,8 @@ type JWTOptions struct {
 	// Default: "roles".
 	RolesClaim string
 
-	// TenantClaim is the JWT claim copied into ctx.Auth.TenantID.
+	// TenantClaim is the JWT claim copied into ctx.Auth.TenantID, read by the
+	// same rule as UserIDClaim. An absent claim leaves TenantID empty.
 	// Default: "" (disabled — TenantID is left empty).
 	TenantClaim string
 
@@ -249,7 +263,7 @@ func jwtMiddleware(secret string, opt JWTOptions, resolve keyResolver) maniflex.
 			return nil
 		}
 
-		info, ok := principalFrom(ctx, opt, claims)
+		info, ok := principalFrom(ctx, opt, raw, claims)
 		if !ok {
 			return nil
 		}
@@ -265,8 +279,26 @@ func jwtMiddleware(secret string, opt JWTOptions, resolve keyResolver) maniflex.
 //
 // Both run before the principal is installed on the context, so a refused token
 // never becomes a ctx.Auth that later middleware could act on.
-func principalFrom(ctx *maniflex.ServerContext, opt JWTOptions, claims map[string]any) (*maniflex.AuthInfo, bool) {
-	userID, _ := claims[opt.UserIDClaim].(string)
+//
+// token is the compact token the claims were decoded from; identityClaim needs
+// it to read a numeric id exactly.
+func principalFrom(ctx *maniflex.ServerContext, opt JWTOptions, token string, claims map[string]any) (*maniflex.AuthInfo, bool) {
+	// The user id used to be read with a bare type assertion whose failure was
+	// discarded, so a numeric sub, or none at all, produced UserID "" — and every
+	// such caller was then one user to RequireOwner, which stamped and matched
+	// the empty owner: user 43 read and rewrote user 42's records (audit AUTH-5).
+	// Resolved before the revocation check, which keys its per-user cutoff on it
+	// and used to skip that cutoff for exactly these tokens.
+	userID, err := identityClaim(token, claims, opt.UserIDClaim)
+	if err != nil {
+		ctx.Abort(http.StatusUnauthorized, "INVALID_TOKEN", err.Error())
+		return nil, false
+	}
+	if userID == "" && !opt.AllowNoSubject {
+		ctx.Abort(http.StatusUnauthorized, "TOKEN_MISSING_SUBJECT",
+			fmt.Sprintf("token has no subject (%s) claim", opt.UserIDClaim))
+		return nil, false
+	}
 	sessionID, _ := claims["jti"].(string)
 
 	// Revocation: the token is authentic and unexpired, but the server may
@@ -279,9 +311,15 @@ func principalFrom(ctx *maniflex.ServerContext, opt JWTOptions, claims map[strin
 		}
 	}
 
+	// Same bug, same fix: a numeric tenant claim became TenantID "". db.Tenancy
+	// refuses an empty tenant, so there it was an outage; a ForceFilter keyed on
+	// TenantID instead put every such caller in one shared tenant.
 	var tenantID string
 	if opt.TenantClaim != "" {
-		tenantID, _ = claims[opt.TenantClaim].(string)
+		if tenantID, err = identityClaim(token, claims, opt.TenantClaim); err != nil {
+			ctx.Abort(http.StatusUnauthorized, "INVALID_TOKEN", err.Error())
+			return nil, false
+		}
 	}
 
 	info := &maniflex.AuthInfo{
@@ -301,6 +339,78 @@ func principalFrom(ctx *maniflex.ServerContext, opt JWTOptions, claims map[strin
 		}
 	}
 	return info, true
+}
+
+// maxIdentityDigits bounds the literal of a numeric identity claim. A uint64 is
+// 20 digits and a 128-bit id 39, so this refuses nothing real; it keeps a
+// pathological number out of big.Rat, which is exact at the cost of time.
+const maxIdentityDigits = 64
+
+// identityClaim reads a claim that names an identity — the user id, the tenant —
+// as a string: "" for an absent or null claim, and an error for a value that
+// cannot name anyone faithfully.
+//
+// A string is the id. A JSON number is accepted when it is an integer, as its
+// exact decimal text, and it is read from the token's raw bytes rather than from
+// claims. Those were decoded into float64, which holds integers exactly only up
+// to 2^53, so formatting the decoded value would give 9007199254740992 and
+// 9007199254740993 the same id — two users silently made one, which is the bug
+// this replaces in a subtler form. 4.2e1 and 42.0 are the integer 42 and yield
+// "42", so an issuer's choice of notation cannot split one user into two.
+func identityClaim(token string, claims map[string]any, name string) (string, error) {
+	switch v := claims[name].(type) {
+	case nil:
+		return "", nil
+	case string:
+		return v, nil
+	case float64:
+		raw, err := rawClaim(token, name)
+		if err != nil {
+			return "", err
+		}
+		if len(raw) > maxIdentityDigits {
+			return "", fmt.Errorf("claim %q is a %d-character number, too long to be an id", name, len(raw))
+		}
+		r, ok := new(big.Rat).SetString(string(raw))
+		if !ok || !r.IsInt() {
+			return "", fmt.Errorf("claim %q is the number %s, which is not an integer and cannot name an identity", name, raw)
+		}
+		return r.Num().String(), nil
+	default:
+		return "", fmt.Errorf("claim %q is a JSON %s, which cannot name an identity; it must be a string or an integer",
+			name, jsonKind(v))
+	}
+}
+
+// rawClaim returns the undecoded JSON of one top-level claim in a compact token
+// that parseJWT has already verified.
+func rawClaim(token, name string) (json.RawMessage, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("malformed token: expected 3 parts")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("malformed token claims")
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		return nil, fmt.Errorf("malformed token claims: %w", err)
+	}
+	return raw[name], nil
+}
+
+// jsonKind names the JSON type a decoded claim value came from.
+func jsonKind(v any) string {
+	switch v.(type) {
+	case bool:
+		return "boolean"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	}
+	return fmt.Sprintf("%T", v)
 }
 
 // stripBearer removes a leading "Bearer " scheme from a header value, reporting
@@ -535,6 +645,17 @@ func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFu
 			if adminSet[r] {
 				return next()
 			}
+		}
+		// A principal with no user id cannot own anything. Let through, it
+		// stamped "" as the owner and then matched every record stamped "" — so
+		// every such caller shared one account (audit AUTH-5). JWTAuth refuses
+		// such a token unless AllowNoSubject is set; this covers that option, an
+		// APIKeyEntry with no UserID, and any custom authenticator. After the
+		// admin bypass, which never consults the id.
+		if ctx.Auth.UserID == "" {
+			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",
+				"the authenticated principal has no user id to own records by")
+			return nil
 		}
 
 		owner := resolveOwnerField(ctx, ownerField)

@@ -4,7 +4,7 @@ go 1.25.12
 
 require github.com/xaleel/maniflex v0.15.0
 
-require github.com/rabbitmq/amqp091-go v1.11.0
+require github.com/rabbitmq/amqp091-go v1.15.0
 
 require (
 	github.com/go-chi/chi/v5 v5.3.0 // indirect

@@ -191,6 +191,13 @@ Both mean "not from a client". A value the *server* stamps via `ctx.SetField` �
 kept, even on a `readonly` or `immutable` field. Only values parsed from the
 request body are stripped.
 
+That holds whenever the stamp is made. A middleware on the Auth step runs
+*before* the body is parsed — `auth.RequireOwner` stamps the owner there — and
+its value is re-asserted once the body is in, so a client that sends the same key
+cannot replace it. Its value is discarded the way a stripped one is: silently.
+`ctx.DeleteField` withdraws a stamp; the field is then the client's again, and
+stripped if it is `readonly`.
+
 They cover a multipart upload too. A `mfx:"file"` field carrying `readonly`,
 `hidden`, or `immutable` on update refuses an uploaded part with
 `422 VALIDATION_ERROR`, and is left out of the `multipart/form-data` schema. For

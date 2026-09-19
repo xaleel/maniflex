@@ -35,10 +35,18 @@ func (c *ServerContext) SetField(jsonName string, value any) {
 	// owner is not a client — so the Validate step must not strip it back out.
 	// Only middleware running before Validate could be affected, which until
 	// ProvidesScope() hoisted scope providers was a narrow set.
+	//
+	// The value is kept as well as the key, for middleware that runs before
+	// Deserialize — auth.RequireOwner stamping the owner on the Auth step is the
+	// framework's own case. The body is parsed after it and used to overwrite
+	// the stamp; the key then still read as server-set, so the readonly strip
+	// exempted what was by then the client's value, and adding RequireOwner to a
+	// readonly owner column let a client choose the owner. serverSetChain writes
+	// these values back once the body is in (audit AUTH-3).
 	if c.serverSet == nil {
-		c.serverSet = make(map[string]struct{}, 2)
+		c.serverSet = make(map[string]any, 2)
 	}
-	c.serverSet[jsonName] = struct{}{}
+	c.serverSet[jsonName] = value
 
 	c.ParsedBody.set(jsonName, value)
 	c.syncRecordField(jsonName, value)
@@ -49,6 +57,29 @@ func (c *ServerContext) SetField(jsonName string, value any) {
 func (c *ServerContext) ServerSetField(jsonName string) bool {
 	_, ok := c.serverSet[jsonName]
 	return ok
+}
+
+// reassertServerSet writes every SetField value back over the body, through the
+// same two writes SetField makes, so the parsed body and the typed record agree.
+//
+// It is what makes a stamp made before the Deserialize step outlast it. The
+// step fills ParsedBody from the client's body key by key and decodes the
+// typed record from it afresh, so an earlier stamp is overwritten wherever the
+// client sent the same key — and ServerSetField goes on reporting it as the
+// server's. Re-asserting here makes that report true again. A stamp made after
+// Deserialize is unaffected: this runs once, and writes the value SetField
+// last recorded, which is the value already there.
+func (c *ServerContext) reassertServerSet() {
+	if len(c.serverSet) == 0 {
+		return
+	}
+	if c.ParsedBody == nil {
+		c.ParsedBody = NewRequestBody(nil)
+	}
+	for jn, v := range c.serverSet {
+		c.ParsedBody.set(jn, v)
+		c.syncRecordField(jn, v)
+	}
 }
 
 // Field reads a request-body field by its JSON name. ParsedBody is the
@@ -72,6 +103,10 @@ func (c *ServerContext) Field(jsonName string) (any, bool) {
 // re-applying readonly, would persist them (audit STEP-4).
 func (c *ServerContext) DeleteField(jsonName string) {
 	c.ParsedBody.del(jsonName)
+	// No longer the server's value. Left marked, serverSetChain would write a
+	// field back that a middleware had removed, and a client value arriving
+	// later would still be exempt from the readonly strip.
+	delete(c.serverSet, jsonName)
 	if c.Model == nil {
 		return
 	}

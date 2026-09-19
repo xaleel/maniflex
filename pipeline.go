@@ -184,6 +184,7 @@ func (p *Pipeline) chainFor(model string, op Operation) MiddlewareFunc {
 	fn := buildChain([]MiddlewareFunc{
 		p.Auth.build(model, op),
 		p.Deserialize.build(model, op),
+		serverSetChain,
 		p.scopeChain(model, op),
 		p.Validate.build(model, op),
 		stripChain,
@@ -196,6 +197,27 @@ func (p *Pipeline) chainFor(model string, op Operation) MiddlewareFunc {
 		p.chains.Store(k, fn)
 	}
 	return fn
+}
+
+// serverSetChain re-asserts, once the body is parsed, every value a middleware
+// stamped with ctx.SetField before it was.
+//
+// Deserialize fills the body from the client key by key, so a stamp made on the
+// Auth step — auth.RequireOwner's owner column is the framework's own — was
+// overwritten wherever the client sent the same key. Worse, SetField had already
+// marked the key server-set, which is what exempts it from the readonly strip,
+// so the client's value inherited the exemption: a readonly owner column that
+// held on its own was opened by adding RequireOwner to it (audit AUTH-3).
+//
+// A fixed segment rather than a line in the default Deserialize handler, for the
+// reason stripChain is one: AtPosition(Replace) swaps that handler out, and a
+// replacement that parses the body its own way would clobber the stamp just the
+// same. Before scopeChain, so a scope provider that reads the field sees the
+// stamp rather than the client's value; one that stamps the field itself still
+// has the last word either way, since this runs once, before it.
+var serverSetChain MiddlewareFunc = func(ctx *ServerContext, next func() error) error {
+	ctx.reassertServerSet()
+	return next()
 }
 
 // stripChain re-applies the strip of everything a client may not write —

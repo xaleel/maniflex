@@ -209,7 +209,9 @@ authenticated one lacking the grant.
 ## `RequireOwner`
 
 Enforces that the authenticated user owns the record being read or written. On
-create it stamps `ownerField = ctx.Auth.UserID` automatically; on read, update,
+create it stamps `ownerField = ctx.Auth.UserID` automatically — an owner the
+client sends in the body is ignored, so nobody can create a record in another
+user's name; on read, update,
 and delete it fetches the target and compares its `ownerField` to the caller —
 answering **404** (not 403, so the endpoint never reveals that a record it doesn't
 own exists). `ownerField` may be given as the JSON or the DB column name. Callers

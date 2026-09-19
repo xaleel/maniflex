@@ -217,6 +217,13 @@ answering **404** (not 403, so the endpoint never reveals that a record it doesn
 own exists). `ownerField` may be given as the JSON or the DB column name. Callers
 holding any role in `adminRoles` bypass the check.
 
+An update that passes the check stamps the owner again, the same way create
+does, so the owner column cannot be rewritten to hand a record to someone else —
+a `PATCH` carrying another user's id keeps the caller as owner. Transferring
+ownership is therefore something only `adminRoles` can do, since they bypass
+`RequireOwner` altogether. An `mfx:"immutable"` owner column is left alone, since
+it cannot change anyway.
+
 The two reads *derived* from a record read are covered on the same terms: its
 version history (`GET /{model}/{id}/history`) and its attachment downloads
 (`GET /{model}/{id}/{file_field}`). Both name a single record by id, so a caller
@@ -281,6 +288,37 @@ cannot refuse it. Gate that endpoint on the Auth step, or with
 Every other operation — custom actions, presigned uploads, `HEAD`, `OPTIONS` —
 passes through untouched. `Enforce` decides about a model's records, and those
 requests carry none for it to decide about.
+
+### An update policy sees the row *before* the update
+
+On `OpUpdate` the record is the one **as stored** — not what the request is about
+to write. A policy that only asks "is this your record?" therefore approves a
+`PATCH` that hands the record to someone else, because the stored row is still
+yours at the moment it is checked. The values being written are on the request
+body; read them with `ctx.Field` when the rule is about the result:
+
+```go
+ownerOnly := func(ctx *maniflex.ServerContext, r map[string]any) (bool, error) {
+    if r["owner_id"] != ctx.Auth.UserID {
+        return false, nil // not your record
+    }
+    // r is the row as stored. Refuse an update that would give it away.
+    if ctx.Operation == maniflex.OpUpdate {
+        if to, ok := ctx.Field("owner_id"); ok && to != ctx.Auth.UserID {
+            return false, nil
+        }
+    }
+    return true, nil
+}
+```
+
+It is deliberately not checked against the result for you: plenty of policies
+are about the stored state and would refuse legitimate writes if they were. "An
+archived record is frozen" — `r["status"] != "archived"` — is exactly right
+against the stored row and would refuse the very `PATCH` that archives it against
+the new one. For ownership specifically there is nothing to write:
+`RequireOwner`, `db.ForceFilter` and `mfx:"immutable"` all keep the owner column
+from being rewritten on update.
 
 Compose policies with `AllOf`, `AnyOf`, and `Not`:
 

@@ -507,10 +507,13 @@ func RequireRole(roles ...string) maniflex.MiddlewareFunc {
 // record's history and its attachment downloads — it fetches the target record
 // and compares its ownerField to ctx.Auth.UserID, answering 404 (not 403, so the
 // endpoint does not reveal that the record exists) when the caller is not the
-// owner.
+// owner. An update that passes the check stamps ownerField again, so the owner
+// column cannot be rewritten to hand the record to someone else; an
+// mfx:"immutable" owner column is left alone, since it cannot change anyway.
 //
 // ownerField may be given as either the JSON or the DB column name of the owning
-// field. Users with a role in adminRoles bypass ownership checks entirely.
+// field. Users with a role in adminRoles bypass ownership checks entirely — the
+// stamp included, so they remain able to transfer a record.
 //
 // RequireOwner scopes single-resource operations only. It does NOT scope list
 // endpoints — a collection GET still returns every record. Use db.ForceFilter or
@@ -534,14 +537,31 @@ func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFu
 			}
 		}
 
+		owner := resolveOwnerField(ctx, ownerField)
+
 		switch ctx.Operation {
 		case maniflex.OpCreate:
 			// Inject the owner field. SetField writes through to both ParsedBody
 			// and the typed record (ctx.Record), so later typed middleware and the
 			// struct write path see the injected owner.
-			ctx.SetField(ownerField, ctx.Auth.UserID)
+			ctx.SetField(owner.jsonName, ctx.Auth.UserID)
 
-		case maniflex.OpUpdate, maniflex.OpDelete, maniflex.OpRead,
+		case maniflex.OpUpdate:
+			if abortOwnershipMismatch(ctx, owner.dbName) {
+				return nil
+			}
+			// The check above is about the row as stored; nothing constrained the
+			// row as it is about to be written. So the owner could PATCH the owner
+			// column to someone else — handing the record off, and locking
+			// themselves out of it on the very next read (audit AUTH-4). Stamped as
+			// on create, which is what db.ForceFilter does on update for the same
+			// reason. The body is not parsed yet; AUTH-3's re-assert after
+			// Deserialize is what makes the stamp outlast it.
+			if !owner.immutable {
+				ctx.SetField(owner.jsonName, ctx.Auth.UserID)
+			}
+
+		case maniflex.OpDelete, maniflex.OpRead,
 			maniflex.OpReadHistory, maniflex.OpReadAttachment:
 			// The adapter's update/delete are keyed by id alone (no query filter),
 			// so the ownership test cannot ride along on the write itself: fetch the
@@ -559,7 +579,7 @@ func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFu
 			// so RequireOwner was invoked on them and then matched no case, and a
 			// non-owner read another user's field-level diffs and file bytes at
 			// endpoints whose own doc calls them scoped (audit AUTH-2).
-			if abortOwnershipMismatch(ctx, ownerField) {
+			if abortOwnershipMismatch(ctx, owner.dbName) {
 				return nil
 			}
 		}
@@ -567,19 +587,47 @@ func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFu
 	}
 }
 
+// ownerColumn is RequireOwner's owner column, named both ways.
+type ownerColumn struct {
+	jsonName  string // what SetField and the request body use
+	dbName    string // what a record read through ctx.GetModel is keyed by
+	immutable bool
+}
+
+// resolveOwnerField looks ownerField up on the request's model, by JSON name
+// and then by DB column name, as RequireOwner's doc says either may be given.
+//
+// Both names are needed because the stamp and the check speak different ones:
+// SetField takes a JSON name, while the stored record is keyed by column. The
+// check always resolved; the stamp used the argument as given. So
+// RequireOwner("owner_id") on a field declared json:"ownerId" stamped a body
+// key the model does not have: the owner column was written empty, the record
+// was unreadable by the user who created it, and a client sending "ownerId"
+// chose the owner outright.
+//
+// Unresolved — a model with no such field — both names fall back to the
+// argument, which is what RequireOwner did before it resolved anything.
+func resolveOwnerField(ctx *maniflex.ServerContext, name string) ownerColumn {
+	if ctx.Model != nil {
+		f := ctx.Model.FieldByJSONName(name)
+		if f == nil {
+			f = ctx.Model.FieldByDBName(name)
+		}
+		if f != nil {
+			return ownerColumn{jsonName: f.Tags.JSONName, dbName: f.Tags.DBName, immutable: f.Tags.Immutable}
+		}
+	}
+	return ownerColumn{jsonName: name, dbName: name}
+}
+
 // abortOwnershipMismatch fetches the record targeted by a read/update/delete and
 // aborts the request when the authenticated caller is not its owner. A non-owner
 // or a missing record is answered 404 so the endpoint does not reveal whether the
 // record exists. Returns true when it has aborted (the caller must return nil).
-func abortOwnershipMismatch(ctx *maniflex.ServerContext, ownerField string) bool {
+// ownerCol is the owner's DB column name, as resolveOwnerField gives it.
+func abortOwnershipMismatch(ctx *maniflex.ServerContext, ownerCol string) bool {
 	if ctx.Model == nil || ctx.ResourceID == "" {
 		return false
-	}
-	ownerCol := ownerField
-	if f := ctx.Model.FieldByJSONName(ownerField); f != nil {
-		ownerCol = f.Tags.DBName
-	} else if f := ctx.Model.FieldByDBName(ownerField); f != nil {
-		ownerCol = f.Tags.DBName
 	}
 	rec, err := ctx.GetModel(ctx.Model.Name).Read(ctx.ResourceID)
 	if err != nil {

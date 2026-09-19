@@ -16,6 +16,11 @@ import (
 //   - OpList:          each row in the result, evaluated one at a time
 //   - OpUpdate/Delete: the current stored record, fetched before the write
 //
+// On update that is the row as it stands, not as the request would leave it: a
+// policy approving "your own record" also approves a PATCH that gives the record
+// to someone else. Read the values being written with ctx.Field when the rule is
+// about the result.
+//
 // Return (false, nil) to produce a 403 FORBIDDEN response.
 // Return a non-nil error to propagate a 500.
 type Policy func(ctx *maniflex.ServerContext, resource map[string]any) (allow bool, err error)

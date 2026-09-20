@@ -64,6 +64,18 @@ refuses — so `BlockOperation(OpDelete)` alone still satisfies the check for th
 model's other operations. Pair it with an authenticator, or declare the other
 operations with `AllowPublic`.
 
+### What it cannot check
+
+The audit asks whether a decision was made, not how strong the authenticator
+making it is. A middleware is an opaque closure here, so nothing in
+`ValidateProduction` can see that a `JWKSAuth` has no `Audience`, that
+`AllowNoExpiry` is set, or how large a `ClockSkew` is. Those are reported where
+they are configured instead — `JWKSAuth` warns without an `Audience`, a
+`ClockSkew` over five minutes warns and a negative one panics, a plaintext JWKS
+URL warns, and an empty HMAC secret panics. Read the startup log as part of a
+deployment check; a clean `ValidateProduction` does not mean the authenticator
+is configured well.
+
 It also runs every registry check `Start` runs, so one call reports the whole
 startup posture rather than only the part specific to production:
 

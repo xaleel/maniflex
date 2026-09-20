@@ -50,6 +50,15 @@ deliberately mint them. On the HMAC path the signing secret must be non-empty (a
 empty secret panics at startup) and should be at least 32 bytes — a shorter
 secret is allowed but logs a warning.
 
+`ClockSkew` is a **tolerance**, not an offset: it is how far past its `exp` a
+token is still accepted, and how far ahead of now an `nbf` or `iat` may be. A
+negative value panics at startup — it is never what anyone means by it, and
+because the `nbf` and `iat` checks subtract it, a negative one puts every
+freshly minted token in the future and answers `401 TOKEN_FUTURE_ISSUED` to all
+of them. Anything over five minutes logs a warning: past that it is mostly
+extending the life of expired tokens. Size it to the clock drift you actually
+expect between the issuer and this server.
+
 ### The subject becomes `UserID`
 
 Tokens must also carry a subject — the `sub` claim, or whichever claim
@@ -91,6 +100,16 @@ as with `JWTAuth` — reach for the static-key `JWTAuth` only when the key is fi
 or for offline tests. See
 [Auth & Security Hardening](../advanced-topics/security.md#authentication) for the
 production checklist.
+
+### Set `Audience` against an identity provider
+
+An IdP signs tokens for **every** application in its tenant with the same keys,
+so "the signature verifies against this JWK Set" does not mean "this token was
+minted for us". Without `Audience`, a token issued to any other client of that
+issuer verifies here too — audience confusion — and it is a valid token, so
+nothing else about it looks wrong. `JWKSAuth` warns at construction when
+`Audience` is unset, because `ValidateProduction` cannot see inside a middleware
+to tell you.
 
 ### The JWKS URL must be `https://`
 

@@ -126,7 +126,31 @@ type JWTOptions struct {
 	VerifyToken func(ctx *maniflex.ServerContext, claims map[string]any, info *maniflex.AuthInfo) error
 }
 
+// maxRecommendedClockSkew is the tolerance past which ClockSkew is worth
+// warning about: five minutes covers any clock a token issuer and this server
+// can reasonably disagree by, and beyond it the option is mostly extending the
+// life of expired tokens.
+const maxRecommendedClockSkew = 5 * time.Minute
+
 func (o *JWTOptions) applyDefaults() {
+	// A negative tolerance is never what anyone means by it, and it does not
+	// merely tighten expiry: the nbf and iat checks subtract ClockSkew, so a
+	// negative value puts every freshly issued token "in the future" and the
+	// server answers 401 TOKEN_FUTURE_ISSUED to all of them. Authentication is
+	// then down, and the error blames the token (audit AUTH-8).
+	if o.ClockSkew < 0 {
+		panic(fmt.Sprintf("auth: JWTOptions.ClockSkew is negative (%s); "+
+			"it is a tolerance, not an offset, and a negative one refuses every token "+
+			"carrying an iat as issued in the future. Use 0 for strict checking", o.ClockSkew))
+	}
+	if o.ClockSkew > maxRecommendedClockSkew {
+		slog.Default().Warn("auth: JWTOptions.ClockSkew is large",
+			slog.Duration("clock_skew", o.ClockSkew),
+			slog.Duration("recommended_max", maxRecommendedClockSkew),
+			slog.String("why", "it is how long past its exp a token stays acceptable, so it "+
+				"extends the life of every token — including ones already revoked by expiry"),
+			slog.String("hint", "size it to the clock drift you actually expect between the issuer and this server"))
+	}
 	if o.Header == "" {
 		o.Header = "Authorization"
 	}

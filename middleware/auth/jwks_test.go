@@ -496,7 +496,10 @@ func TestJWKSAuthSilentOnSecureAndLoopbackIssuers(t *testing.T) {
 		"http://localhost:8080/jwks.json",
 	} {
 		buf := captureDefaultLogger(t)
-		_ = JWKSAuth(raw)
+		// Audience is set so this keeps testing what it is about — that a secure
+		// or loopback URL draws no *transport* warning — rather than picking up
+		// the unrelated one about audience confusion (audit AUTH-8).
+		_ = JWKSAuth(raw, JWTOptions{Audience: "api"})
 		if buf.Len() != 0 {
 			t.Errorf("JWKSAuth(%q) logged %q, want silence", raw, buf.String())
 		}

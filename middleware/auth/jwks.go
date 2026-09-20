@@ -74,6 +74,19 @@ func JWKSAuth(jwksURL string, opts ...JWTOptions) maniflex.MiddlewareFunc {
 		opt = opts[0]
 	}
 	opt.applyDefaults()
+	if opt.Audience == "" {
+		// An identity provider signs for every application in its tenant with
+		// the same keys, so "the signature verifies against the IdP's JWKS" does
+		// not mean "this token was minted for us". Without an audience check the
+		// server accepts a token issued to any other client of that IdP —
+		// audience confusion — and ValidateProduction cannot see the option to
+		// say so, since a middleware is an opaque closure to it (audit AUTH-8).
+		slog.Default().Warn("auth.JWKSAuth: no Audience configured",
+			slog.String("url", jwksURL),
+			slog.String("why", "the issuer signs tokens for its other clients with these same keys, "+
+				"so without an audience check a token minted for one of them verifies here too"),
+			slog.String("hint", "set JWTOptions.Audience to this API's identifier at the issuer"))
+	}
 	cache := newJWKSCache(jwksURL)
 	// secret is unused for JWKS (keys are asymmetric); the resolver supplies the key.
 	return jwtMiddleware("", opt, cache.key)

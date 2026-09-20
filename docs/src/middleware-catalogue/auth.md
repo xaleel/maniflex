@@ -461,6 +461,26 @@ The per-user cutoff is what makes "log out everywhere" possible: the outstanding
 cannot express it. Logging in again works immediately — the cutoff kills tokens
 issued *before* it, not the account.
 
+### The cutoff's own second
+
+An `iat` is normally a whole second, so a token minted in the same second as the
+cutoff cannot be placed either side of it. That second is **refused**, by every
+store: accepting it would also accept a token an attacker minted in the moments
+before the logout.
+
+For the legitimate replacement not to be caught by the same rule, `LogoutAll`
+answers only once that second has passed. It costs up to a second on an endpoint
+a person calls by hand, and it means any token minted after the `204` carries a
+later `iat` — so "log out everywhere, then log in again" works.
+
+Calling `Revoker.RevokeUser` yourself — from a password-change handler that
+issues the replacement in the same request — does not get that wait. Either mint
+the replacement a second later, or stamp it with a **fractional** `iat`: the
+fraction is compared exactly and places the token on the right side of the
+cutoff with no waiting. Only the in-memory store keeps that precision; the SQL
+and Redis stores hold the cutoff as whole seconds, so with them the ambiguous
+second is refused either way.
+
 ### What changes when it is on
 
 - **A `jti` becomes mandatory.** A token without one cannot be revoked, so it is

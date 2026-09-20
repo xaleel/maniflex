@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"sync"
 	"time"
@@ -132,11 +133,27 @@ func checkUserCutoff(ctx context.Context, rev Revoker, claims map[string]any, us
 			"token has no iat claim and cannot be shown to postdate the revocation"
 	}
 	iatF, _ := toFloat64(iatRaw)
-	if time.Unix(int64(iatF), 0).Before(cutoff) {
+	if issuedAt(iatF).Before(cutoff) {
 		return http.StatusUnauthorized, CodeTokenRevoked,
 			"all tokens for this user issued before the revocation have been revoked"
 	}
 	return 0, "", ""
+}
+
+// issuedAt reads an iat claim as an instant, keeping any fractional part.
+//
+// RFC 7519 NumericDate permits a non-integer value, and the fraction is exactly
+// what says which side of a cutoff a token minted in the same second falls on.
+// Truncating it, as this used to, threw that away: a token stamped .700 by an
+// issuer that does emit sub-second times was refused by a revocation at .500.
+//
+// Split rather than scaled to nanoseconds in one multiplication, which would
+// round: an iat near 1.7e9 scaled to 1.7e18 needs 61 bits of mantissa and
+// float64 has 53. Most issuers emit whole seconds, where the fraction is zero
+// and this is exact.
+func issuedAt(iat float64) time.Time {
+	sec, frac := math.Modf(iat)
+	return time.Unix(int64(sec), int64(frac*float64(time.Second)))
 }
 
 // ── MemoryRevoker ────────────────────────────────────────────────────────────
@@ -361,9 +378,41 @@ func LogoutAll(rev Revoker, path string, retain time.Duration) maniflex.ActionCo
 					fmt.Sprintf("could not revoke the user's tokens: %v", err))
 				return nil
 			}
+			waitOutAmbiguousSecond(ctx.Ctx, now)
 			ctx.Response = &maniflex.APIResponse{StatusCode: http.StatusNoContent}
 			return nil
 		},
+	}
+}
+
+// waitOutAmbiguousSecond blocks until the second containing cutoff has passed,
+// for at most one second, and returns early if the request is abandoned.
+//
+// A token's iat is usually a whole second, so one minted in the same second as
+// the cutoff cannot be placed either side of it, and the check refuses it —
+// deliberately, since the alternative is honouring a token an attacker minted
+// moments before the logout. That refusal lands on the legitimate token too:
+// "log out everywhere, then log back in" issued its replacement in the same
+// second and it was dead on arrival, every time (audit AUTH-7).
+//
+// Answering only once that second is over removes the ambiguity rather than
+// choosing a side: any token minted after this response has an iat the check can
+// place after the cutoff. The cost is up to a second on an endpoint a user calls
+// by hand, once.
+//
+// Nothing to wait for when the cutoff falls exactly on a second: a token from
+// that second is not *before* it and is already accepted.
+func waitOutAmbiguousSecond(ctx context.Context, cutoff time.Time) {
+	if cutoff.Nanosecond() == 0 {
+		return
+	}
+	timer := time.NewTimer(time.Until(cutoff.Truncate(time.Second).Add(time.Second)))
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+		// The caller is gone. The revocation stands; only the acknowledgement is
+		// lost, and nothing waits on this second any more.
 	}
 }
 

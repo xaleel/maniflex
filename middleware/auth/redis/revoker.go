@@ -94,7 +94,24 @@ func (r *Revoker) RevokeUser(ctx context.Context, userID string, cutoff, retainU
 		cutoff = existing
 	}
 	return r.client.Set(ctx, key,
-		strconv.FormatInt(cutoff.Unix(), 10), ttlUntil(retainUntil)).Err()
+		strconv.FormatInt(unixCeil(cutoff), 10), ttlUntil(retainUntil)).Err()
+}
+
+// unixCeil converts a cutoff to Unix seconds, rounding up.
+//
+// The key holds whole seconds, and which way the remainder goes decides a token
+// minted in the same second as the revocation: a token's iat is usually a whole
+// second too, so it cannot be placed either side of a cutoff inside that second.
+// Rounding down, as this used to, accepted it — including one an attacker minted
+// in the moments before the logout. Rounding up refuses the whole second, which
+// is what the in-memory and SQL stores do, so a deployment's answer no longer
+// depends on which blocklist it happens to use (audit AUTH-7).
+func unixCeil(t time.Time) int64 {
+	secs := t.Unix()
+	if t.Nanosecond() > 0 {
+		secs++
+	}
+	return secs
 }
 
 // UserCutoff implements auth.Revoker.

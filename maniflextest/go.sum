@@ -66,6 +66,8 @@ github.com/xaleel/maniflex/db/postgres v0.14.0 h1:lRYeGyVOUTg+t1JocrlTYMf0gYNbQg
 github.com/xaleel/maniflex/db/postgres v0.14.0/go.mod h1:+PU7UE22H/8J2fenjOsri6ZMPaEz5i/VhA1Vd+wGH/Y=
 github.com/xaleel/maniflex/db/postgres v0.15.0 h1:zSGK52D/lSu7r3K4LzlJR1ubuo1z+Bhqh6E6caRc/K0=
 github.com/xaleel/maniflex/db/postgres v0.15.0/go.mod h1:X61jemLmeeuSPv7ptBYJAfidIsVSytH3f6R3LzOrFEk=
+github.com/xaleel/maniflex/db/postgres v0.16.0 h1:OkYPOt1r6MpHWLjsbLPUvjpbXRdrh5unF6K50Ih0Luk=
+github.com/xaleel/maniflex/db/postgres v0.16.0/go.mod h1:knEq0Ox3voaFQtARS8+/phYBX2fYogR5rUq+689S2iA=
 github.com/xaleel/maniflex/db/sqlite v0.4.0 h1:VYHm/9ZTvrPAvh55uoYysRXBC5k558Xxv39bSibBDhc=
 github.com/xaleel/maniflex/db/sqlite v0.4.0/go.mod h1:KprI8+aPcoqCOkqtqhLQFYVCtlMzezZJCHIl/MOEjLM=
 github.com/xaleel/maniflex/db/sqlite v0.7.0 h1:+ZyMba6fH1miouRGrGyQ2Sook7I2Jq7eT++6UTDSMJU=
@@ -86,6 +88,8 @@ github.com/xaleel/maniflex/db/sqlite v0.14.0 h1:slkbYeR6TA9Zr75sMbCxspo5yRJZPdJm
 github.com/xaleel/maniflex/db/sqlite v0.14.0/go.mod h1:SdDQNkfbbgkvz2QdDtGPH4mpAeIhKxAg+TjbCW4j41s=
 github.com/xaleel/maniflex/db/sqlite v0.15.0 h1:h5HA17UPtMbPua5FiF4dUeQin2qgjRfh7cdVzoMeX8g=
 github.com/xaleel/maniflex/db/sqlite v0.15.0/go.mod h1:SDcp5AxHH82twaq3llT79jAVJCf/B0zyKEZbXoYgi2o=
+github.com/xaleel/maniflex/db/sqlite v0.16.0 h1:sSpv37DSZbElBq7cP6Pk6c9gX4sUnt0MjHoA/XfCzi8=
+github.com/xaleel/maniflex/db/sqlite v0.16.0/go.mod h1:GXebOk1+ri2GIMayuGiBvQ7vB1rHRZogtZffXZsoLFY=
 golang.org/x/mod v0.33.0 h1:tHFzIWbBifEmbwtGz65eaWyGiGZatSrT9prnU8DbVL8=
 golang.org/x/mod v0.33.0/go.mod h1:swjeQEj+6r7fODbD2cqrnje9PnziFuw4bmLbBZFrQ5w=
 golang.org/x/sync v0.20.0 h1:e0PTpb7pjO8GAtTs2dQ6jYa5BWYlMuX047Dco/pItO4=

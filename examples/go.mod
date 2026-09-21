@@ -6,7 +6,7 @@ require (
 	github.com/go-chi/chi/v5 v5.3.2
 	github.com/prometheus/client_golang v1.24.1
 	github.com/xaleel/maniflex v0.16.0
-	github.com/xaleel/maniflex/db/sqlite v0.15.0
+	github.com/xaleel/maniflex/db/sqlite v0.16.0
 )
 
 require (

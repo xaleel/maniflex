@@ -106,6 +106,22 @@ func (o *CSRFOptions) applyDefaults() {
 //
 // For CSRFSignedToken mode register it AFTER the JWT middleware so that
 // ctx.Auth.SessionID is already populated.
+//
+// A request raised by Server.Execute passes untouched. CSRF defends a browser
+// against being tricked into spending credentials it attaches by itself, and an
+// in-process call has no browser to trick, no cookie jar to spend from and no
+// header a caller could echo one back in — the check can only ever refuse it.
+//
+// The rule here is ctx.InProcess() alone, deliberately weaker than the
+// trustedPrincipal rule JWTAuth and JWKSAuth use (InProcess *and* a principal).
+// Their extra condition is what keeps an Execute with no principal anonymous, so
+// that the app's own auth refuses it. This middleware is not the app's own auth:
+// it is marked as deciding nothing (see MarkNotADecision below), so applying the
+// same condition here would answer a principal-less Execute with 403
+// CSRF_TOKEN_MISSING — a transport complaint standing in front of the 401 the
+// authenticator was about to give, naming the wrong problem. Stepping aside
+// lets the authenticator answer. See ServerContext.InProcess, which is derived
+// from a field only Execute can set: over HTTP this branch is never taken.
 func CSRF(opts ...CSRFOptions) maniflex.MiddlewareFunc {
 	var opt CSRFOptions
 	if len(opts) > 0 {
@@ -118,6 +134,10 @@ func CSRF(opts ...CSRFOptions) maniflex.MiddlewareFunc {
 	}
 
 	fn := func(ctx *maniflex.ServerContext, next func() error) error {
+		if ctx.InProcess() {
+			return next()
+		}
+
 		r := ctx.Request
 
 		if isSafeMethod(r.Method) {

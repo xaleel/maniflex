@@ -143,14 +143,26 @@ not being authenticated.
 
 `ctx.InProcess()` reads an unexported field that only `Execute` sets, so no client
 and no middleware can claim it. Over HTTP it is always `false`, and the JWT header
-path behaves bit-for-bit as it always has. Use it in your own middleware where a
-check is about the transport rather than the caller:
+path behaves bit-for-bit as it always has.
+
+`auth.CSRF` uses it too, and its rule is the other one worth knowing: it steps
+aside on `ctx.InProcess()` **alone**, without asking for a principal. CSRF defends
+a browser against being tricked into spending credentials it attaches by itself,
+and there is no browser in process either way — so an `Execute` carrying no
+principal is left to the authenticator's 401 rather than answered with a 403 about
+a header no in-process caller could have sent. Which of the two rules a middleware
+wants follows from what it is for: an authenticator establishes identity and must
+still refuse an anonymous call, while a transport check has nothing to say about
+one.
+
+Use it in your own middleware where a check is about the transport rather than the
+caller:
 
 ```go
 server.Pipeline.Auth.Register(func(ctx *maniflex.ServerContext, next func() error) error {
-    if ctx.InProcess() { return next() }  // no browser to protect from CSRF
-    return csrfCheck(ctx, next)
-}, maniflex.WithName("csrf"))
+    if ctx.InProcess() { return next() }  // no remote address to rate-limit per
+    return perIPRateLimit(ctx, next)
+}, maniflex.WithName("ip-rate-limit"))
 ```
 
 That is also the supported way to exempt a middleware from in-process calls. There

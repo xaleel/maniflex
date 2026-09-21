@@ -637,6 +637,15 @@ checked first on unsafe methods. Failures abort with a `403` carrying one of
 From a login Action, hand the token to the SPA with `auth.IssueCSRFCookie(w,
 opts)` (double-submit) or `auth.SignedCSRFToken(sessionID, secret)` (signed mode).
 
+**`Server.Execute` passes untouched.** An in-process call has no browser to be
+tricked, no cookie jar to spend from and no header to echo a token back in, so the
+check could only ever refuse it — a job, saga step or workflow driving a write
+through `Execute` in a cookie-authenticated app is not a CSRF risk and is not
+treated as one. This is the transport exemption `ctx.InProcess()` exists for; see
+[Execute → Authentication](../advanced-topics/execute.md#authentication-ctxinprocess).
+It does not weaken the HTTP path, which is the only one a client can reach, and it
+is not a way in: an `Execute` with no principal still meets the authenticator.
+
 > **The admin panel does not use this middleware.** It ships its own
 > always-on double-submit check over its own forms — see
 > [Admin Panel → CSRF protection](../deployment/admin.md#csrf-protection).

@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.16.0
+## v0.16.0 (2026-09-21)
 
 - **Security:** the panel bounds a multipart submission before parsing it, at the new `admin.Config.MaxUploadBytes` (default 32 MB), and streams the part to the API rather than buffering it twice. `ParseMultipartForm`'s argument is a spill threshold, not a ceiling, so an authenticated user could post an unbounded body and the panel paid for it in memory and temp files before the API's own limit ever applied. **Migrate:** raise it to accept larger files through the panel.
 - **Security:** the CSRF cookie is named `__Host-maniflex_admin_csrf` when `Secure` is on, and a value that is not exactly 32 hex characters is no longer adopted. The unprefixed cookie could be planted by a sibling subdomain, which then holds both halves of the double-submit pair and can forge a same-site `POST` that `SameSite=Lax` does not stop. **Migrate:** live sessions re-mint once; an explicit `Secure: false` keeps the old name.

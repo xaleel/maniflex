@@ -150,6 +150,24 @@ path, the restore cannot read its target back to check scope the way an update
 does; instead the request's forced filters are applied to the restore statement
 itself. A caller cannot un-delete a row outside their tenancy by knowing its id.
 
+That difference decides which middleware can govern a restore at all:
+
+- **Scoping by filter works.** `db.ForceFilter`, `db.ForceFilterVia` and
+  `db.Tenancy` add a forced filter, which the restore statement applies against
+  the deleted row. `auth.RequireOwner` scopes restores the same way, rather than
+  by the fetch-and-compare it uses for an ordinary update.
+- **Deciding by reading the row back cannot.** The target is invisible, so there
+  is nothing to decide about. `auth.Enforce` refuses a restore outright and says
+  so, because a `Policy` is arbitrary Go over a record map and cannot be pushed
+  into the statement the way an equality can. Middleware of your own that fetches
+  the record before deciding has the same limit — check `ctx.IsRestore()` and
+  either impose a forced filter or refuse.
+
+Getting this wrong is not a quiet failure. Until v0.17.0 `auth.Enforce` read
+"cannot fetch the row" as "the DB step will 404 this" and stood aside, so any
+authenticated caller could un-delete any record by id; `auth.RequireOwner` read
+it as "not yours" and answered `404` to the record's own owner.
+
 ### What it writes
 
 Only the delete marker is cleared. `updated_at` is left untouched, so a restore

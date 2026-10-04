@@ -270,6 +270,13 @@ version history (`GET /{model}/{id}/history`) and its attachment downloads
 (`GET /{model}/{id}/{file_field}`). Both name a single record by id, so a caller
 refused the record itself is refused these too.
 
+A **restore** (`POST /{model}/{id}/restore`) is scoped differently, because its
+target is soft-deleted and every read path hides it — there is no row to fetch
+and compare. `RequireOwner` imposes the ownership test as a forced filter
+instead, which the restore statement applies against the deleted row, so the
+owner restores their own record and anyone else gets the same `404`. `adminRoles`
+still bypass it.
+
 ```go
 server.Pipeline.Auth.Register(auth.RequireOwner("user_id", "admin"))
 ```
@@ -308,6 +315,7 @@ Which record the policy sees depends on the operation:
 | `OpRead` | the fetched record | after the DB step |
 | `OpList` | each row in turn | after the DB step; denied rows are dropped |
 | history / attachment reads | the **parent** record | fetched before the DB step |
+| restore | — | refused with **403** |
 | `OpExport` / `OpSearch` | — | refused with **403** |
 
 The derived reads are checked *before* the DB step because what that step
@@ -320,6 +328,22 @@ there is nothing left for a post-filter to remove. `ForOperation(OpList)` covers
 `OpExport` by alias, so before this a policy that correctly filtered your list
 handed the whole table to anyone who asked for `/export`. Scope those routes with
 [`db.ForceFilter`](db.md) or `db.Tenancy` instead.
+
+A **restore** is refused for a third reason: its target is soft-deleted, so the
+fetch that feeds the policy finds nothing. Before this, `Enforce` read that as
+"the DB step will answer 404" and stood aside — but the restore statement *does*
+find the row, so any authenticated caller could un-delete any record by id and
+get the whole row back in the response. A `Policy` is arbitrary Go over a record
+map rather than a predicate, so it cannot be pushed into the restore statement
+the way an equality can. Scope restores with [`db.ForceFilter`](db.md),
+`db.Tenancy`, or `RequireOwner`, all of which filter in SQL against the deleted
+row.
+
+For the same reason, a **soft-deleted record's history** is now refused rather
+than served. That query deliberately omits the soft-delete condition, so the
+parent a policy guards while it is live used to lose that guard the moment it was
+deleted — a non-owner could read its full field-level diffs. `Enforce` cannot see
+the parent, so it serves nothing derived from it.
 
 Note that `Enforce` belongs on the **DB** step, and `GET /search` skips that step
 entirely — so a DB-registered `Enforce` never runs on global search at all, and

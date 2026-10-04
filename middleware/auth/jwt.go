@@ -692,6 +692,26 @@ func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFu
 			ctx.SetField(owner.jsonName, ctx.Auth.UserID)
 
 		case maniflex.OpUpdate:
+			if ctx.IsRestore() {
+				// A restore dispatches as OpUpdate, but its target is soft-deleted
+				// and every read path hides it — so the pre-flight below fetched
+				// nothing and answered 404 to the record's own owner, leaving
+				// restore working for admins alone (audit AUTH-10).
+				//
+				// Scoped with a forced filter instead of a fetch. The adapter's
+				// restore statement applies forced filters through a subquery that
+				// deliberately omits the soft-delete condition — "the row it must
+				// find is the deleted one" — which is why db.ForceFilter already
+				// scoped restores correctly while this middleware could not. The
+				// ownership test is an equality on a column, so it is expressible
+				// that way; auth.Enforce's policy is arbitrary Go over a record and
+				// is not, which is why that one refuses a restore instead.
+				//
+				// No stamp: a restore carries no body to overwrite, and the row
+				// keeps the owner it already had.
+				scopeRestoreToOwner(ctx, owner.dbName)
+				break
+			}
 			if abortOwnershipMismatch(ctx, owner.dbName) {
 				return nil
 			}
@@ -730,6 +750,29 @@ func RequireOwner(ownerField string, adminRoles ...string) maniflex.MiddlewareFu
 		}
 		return next()
 	}
+}
+
+// scopeRestoreToOwner constrains a restore to rows the caller owns by imposing
+// the ownership test as a forced filter, the way db.ForceFilter does.
+//
+// This is the one operation RequireOwner cannot check by fetching the row first:
+// the target is soft-deleted, so every read path hides it. The restore statement
+// applies forced filters itself, against the deleted row, so a non-owner's
+// restore matches nothing and answers 404 — the same answer the fetch-and-compare
+// path gives, arrived at in SQL rather than in Go.
+//
+// ownerCol may be a DB or JSON name; ResolveFilterField accepts either, as it
+// does for a filter arriving from a URL.
+func scopeRestoreToOwner(ctx *maniflex.ServerContext, ownerCol string) {
+	if ctx.Query == nil {
+		ctx.Query = &maniflex.QueryParams{Page: 1, Limit: 20}
+	}
+	ctx.Query.Filters = append(ctx.Query.Filters, &maniflex.FilterExpr{
+		Field:    ownerCol,
+		Operator: maniflex.OpEq,
+		Value:    ctx.Auth.UserID,
+		Forced:   true,
+	})
 }
 
 // ownerColumn is RequireOwner's owner column, named both ways.

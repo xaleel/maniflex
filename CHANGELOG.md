@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.17.0
+
+- **Security (behaviour change):** `auth.Enforce` refuses a restore and a deleted record's history. Its pre-fetch cannot see a soft-deleted row and read that as "the DB step will 404 this", so anyone authenticated could un-delete any record by id and get the row back, or read a deleted record's diffs. `auth.RequireOwner` scopes restores by forced filter instead, so the owner can restore again rather than being 404'd. **Migrate:** scope restores under `Enforce` with `db.ForceFilter` or `db.Tenancy`.
+
 ## v0.16.0 (2026-09-21)
 
 - **Security:** the panel bounds a multipart submission before parsing it, at the new `admin.Config.MaxUploadBytes` (default 32 MB), and streams the part to the API rather than buffering it twice. `ParseMultipartForm`'s argument is a spill threshold, not a ceiling, so an authenticated user could post an unbounded body and the panel paid for it in memory and temp files before the API's own limit ever applied. **Migrate:** raise it to accept larger files through the panel.

@@ -60,6 +60,24 @@ func Enforce(p Policy) maniflex.MiddlewareFunc {
 		case maniflex.OpCreate:
 			return enforceOnBody(ctx, p, next)
 		case maniflex.OpUpdate, maniflex.OpDelete:
+			if ctx.IsRestore() {
+				// A restore dispatches as OpUpdate against a soft-deleted row, which
+				// every read path hides — so the fetch below returned ErrNotFound and
+				// was read as "the DB step will 404 this", and the DB step then
+				// restored the row with the policy never evaluated. Any authenticated
+				// caller could un-delete any record by id, and the response returned
+				// the whole row with it (audit AUTH-10).
+				//
+				// Refused rather than guessed at. A Policy is arbitrary Go over a
+				// record map, so it cannot be pushed into the restore statement the
+				// way an equality can — which is how db.ForceFilter, db.Tenancy and
+				// RequireOwner scope a restore correctly.
+				ctx.Abort(http.StatusForbidden, "FORBIDDEN",
+					"auth.Enforce cannot evaluate a policy on a restore: its target is "+
+						"soft-deleted and so unreadable here. Scope restores with "+
+						"db.ForceFilter or db.Tenancy, which filter in SQL.")
+				return nil
+			}
 			return enforceOnStoredRecord(ctx, p, next)
 		case maniflex.OpRead:
 			return enforceAfterRead(ctx, p, next)
@@ -160,7 +178,25 @@ func enforceOnStoredRecord(ctx *maniflex.ServerContext, p Policy, next func() er
 	}
 	record, err := ctx.GetModel(ctx.Model.Name).Read(ctx.ResourceID)
 	if errors.Is(err, maniflex.ErrNotFound) {
-		return next() // let the DB step produce the 404
+		switch ctx.Operation {
+		case maniflex.OpReadHistory, maniflex.OpReadAttachment:
+			// Falling through to next() here assumes the DB step will answer 404
+			// for the same row this fetch could not find. For the derived reads
+			// that assumption does not hold: the history query deliberately omits
+			// the soft-delete condition, because "a soft-deleted record's history
+			// must stay readable by whoever could read the record" — so a record
+			// the policy guards while it is live lost that guard the moment it was
+			// deleted, and any authenticated caller could read its full field-level
+			// diffs, values included (audit AUTH-10).
+			//
+			// Refused instead. The parent is unreadable to this middleware, so the
+			// policy cannot be evaluated, so nothing derived from it is served. The
+			// attachment path does 404 on a soft-deleted row today, via FindByID;
+			// it is refused here too rather than left resting on that.
+			ctx.Abort(http.StatusNotFound, "NOT_FOUND", "record not found")
+			return nil
+		}
+		return next() // a write: the DB step produces the 404
 	}
 	if err != nil {
 		return err

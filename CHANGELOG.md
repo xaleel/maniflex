@@ -2,6 +2,7 @@
 
 ## v0.17.0
 
+- **Bugfix (behaviour change):** `auth.APIKeyAuth` passes a `Server.Execute` call that carries a principal, as `JWTAuth` already did. It read its key from the request and 401'd when absent, and an in-process call has no headers — so an app authenticating machine traffic by API key was refused on every `Execute`, reads included, unless it put the raw key in `Invocation.Header`. An `Execute` with no principal is still refused, and the HTTP path is unchanged.
 - **Security (behaviour change):** `auth.Enforce` refuses a restore and a deleted record's history. Its pre-fetch cannot see a soft-deleted row and read that as "the DB step will 404 this", so anyone authenticated could un-delete any record by id and get the row back, or read a deleted record's diffs. `auth.RequireOwner` scopes restores by forced filter instead, so the owner can restore again rather than being 404'd. **Migrate:** scope restores under `Enforce` with `db.ForceFilter` or `db.Tenancy`.
 
 ## v0.16.0 (2026-09-21)

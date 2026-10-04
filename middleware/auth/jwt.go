@@ -562,6 +562,12 @@ type APIKeyEntry struct {
 //	    auth.APIKeyEntry{Key: "abc123", Auth: maniflex.AuthInfo{UserID: "svc-1", Roles: []string{"admin"}}},
 //	    auth.APIKeyEntry{Key: "xyz789", Auth: maniflex.AuthInfo{UserID: "svc-2", Roles: []string{"reader"}}},
 //	))
+//
+// A request raised by Server.Execute that already carries a principal passes
+// through without a key, on the same terms as JWTAuth: it has no header because
+// it has no client, and its identity arrived as a typed *AuthInfo that no client
+// can forge. An Execute with no principal is anonymous and is refused here like
+// any other. See trustedPrincipal.
 func APIKeyAuth(header string, entries ...APIKeyEntry) maniflex.MiddlewareFunc {
 	// Keyed by digest, not by the key itself. A Go map lookup is not
 	// constant-time — it hashes, then compares candidates in a bucket — so
@@ -584,6 +590,22 @@ func APIKeyAuth(header string, entries ...APIKeyEntry) maniflex.MiddlewareFunc {
 		index[sha256.Sum256([]byte(e.Key))] = e.Auth
 	}
 	return func(ctx *maniflex.ServerContext, next func() error) error {
+		// Same rule jwtMiddleware applies, and for the same reason: a request
+		// Server.Execute raised has no headers to carry a key in, because it has
+		// no client, and its identity arrived as a typed *AuthInfo no caller can
+		// forge. Without this, an app that authenticates machine traffic with an
+		// API key and also drives jobs or actions through Execute was refused on
+		// every in-process call — reads included — and the only way out was to put
+		// the raw key into Invocation.Header, which is the secret-in-band pattern
+		// the typed principal exists to abolish (audit AUTH-11).
+		//
+		// trustedPrincipal, not a bare ctx.InProcess(): both halves are load-bearing
+		// here. An Execute carrying no principal is anonymous and must still be
+		// refused by this authenticator, which is what auth.CSRF — a transport check
+		// that decides nothing about who may call — can skip and this cannot.
+		if trustedPrincipal(ctx) {
+			return next()
+		}
 		key := ctx.Request.Header.Get(header)
 		if key == "" {
 			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",

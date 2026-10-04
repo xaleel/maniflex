@@ -126,9 +126,10 @@ success and the error envelope on a failure.
 
 ## Authentication: `ctx.InProcess()`
 
-An in-process call has no `Authorization` header, because there is no client. The
-shipped `auth.JWTAuth` and `auth.JWKSAuth` stand aside when — and only when — the
-request came from `Execute` **and** already carries a principal:
+An in-process call carries no credential headers at all, because there is no
+client to send them. The shipped authenticators — `auth.JWTAuth`, `auth.JWKSAuth`
+and `auth.APIKeyAuth` — stand aside when, and only when, the request came from
+`Execute` **and** already carries a principal:
 
 ```go
 if ctx.InProcess() && ctx.Auth != nil {
@@ -142,8 +143,12 @@ Everything else on the Auth step still runs against that principal: `RequireRole
 not being authenticated.
 
 `ctx.InProcess()` reads an unexported field that only `Execute` sets, so no client
-and no middleware can claim it. Over HTTP it is always `false`, and the JWT header
-path behaves bit-for-bit as it always has.
+and no middleware can claim it. Over HTTP it is always `false`, and the credential
+paths behave bit-for-bit as they always have.
+
+When a principal is attached it wins outright: the check above returns before the
+credential is read, so a key or token also present in `Invocation.Header` is
+neither consulted nor required to be valid.
 
 `auth.CSRF` uses it too, and its rule is the other one worth knowing: it steps
 aside on `ctx.InProcess()` **alone**, without asking for a principal. CSRF defends

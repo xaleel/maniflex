@@ -179,6 +179,16 @@ server.Pipeline.Auth.Register(auth.APIKeyAuth("X-API-Key",
 `AuthMethod` on `ctx.Auth` is set to `"api_key"`. Combine with `JWTAuth` on
 the same step to accept either credential — the first match wins.
 
+**`Server.Execute` passes without a key** when the invocation carries a
+principal, on the same terms as [`JWTAuth`](#jwtauth): an in-process call has no
+header to put a key in, because it has no client, and its identity arrived as a
+typed `*AuthInfo` no caller can forge. An `Execute` carrying **no** principal is
+anonymous and is refused here like any other request — being internal is not
+being authenticated. That second half is why this exemption asks for a principal
+while [`CSRF`](#csrf)'s does not: a transport check decides nothing about who may
+call, and an authenticator does. The HTTP path is unchanged, and is the only one
+a client can reach.
+
 Keys are indexed by their SHA-256 digest rather than by the key itself, so
 lookup timing is a function of the digest and not of the secret, and the raw
 keys are not retained in the index. Lookup stays O(1) — comparing every entry

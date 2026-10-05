@@ -485,7 +485,13 @@ const (
 // exactly as it is anywhere else (audit AU-2).
 func readToken(ctx *maniflex.ServerContext, opt JWTOptions) (string, tokenResult) {
 	raw := ctx.Request.Header.Get(opt.Header)
-	if raw == "" && anonymousAllowed(ctx) {
+	// Absence is forgiven on two different grounds, and only absence. The route
+	// may tolerate an anonymous caller (AllowAnonymous), or this may be one
+	// alternative among several and another may carry the credential
+	// (FirstOf) — in which case FirstOf, not this function, answers 401 when
+	// none of them did. A header that is present and unreadable still falls
+	// through to the refusals below under either marker.
+	if raw == "" && (anonymousAllowed(ctx) || credentialOptional(ctx)) {
 		return "", tokenAbsent
 	}
 	token, hadScheme := stripBearer(raw)
@@ -608,6 +614,14 @@ func APIKeyAuth(header string, entries ...APIKeyEntry) maniflex.MiddlewareFunc {
 		}
 		key := ctx.Request.Header.Get(header)
 		if key == "" {
+			// One alternative among several: let a sibling authenticator try its
+			// own credential, and leave the 401 to FirstOf if none matches. Note
+			// this does NOT honour AllowAnonymous — an API key is all-or-nothing
+			// and a route that tolerates no credential has nothing for this
+			// middleware to do (audit AUTH-12).
+			if credentialOptional(ctx) {
+				return next()
+			}
 			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",
 				fmt.Sprintf("missing %s header", header))
 			return nil

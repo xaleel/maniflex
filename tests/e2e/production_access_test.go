@@ -10,6 +10,7 @@ package e2e
 //	go test ./tests/e2e/... -run TestProductionAccess
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,52 @@ func TestProductionAccess_NonDecidingMiddlewareAloneFails(t *testing.T) {
 			}
 		})
 	}
+}
+
+// auth.FirstOf wrapping authenticators satisfies the access check, as its
+// members do. The nonsense composition — every member transport-only — is
+// refused at construction instead of at audit time, because accessdecision keys
+// on a code pointer shared by every closure from one literal, so a per-instance
+// verdict for a combinator cannot be recorded (audit AUTH-12, guarding AUTH-6).
+func TestProductionAccess_FirstOfCountsAndRefusesTheEmptyComposition(t *testing.T) {
+	t.Parallel()
+
+	t.Run("authenticators count", func(t *testing.T) {
+		t.Parallel()
+		if err := prodAccessServer(func(s *maniflex.Server) {
+			s.Pipeline.Auth.Register(auth.FirstOf(
+				auth.APIKeyAuth("X-API-Key", auth.APIKeyEntry{Key: "k",
+					Auth: maniflex.AuthInfo{UserID: "svc"}}),
+				auth.JWTAuth(prodAccessSecret),
+			))
+		}).ValidateProduction(); err != nil {
+			t.Errorf("FirstOf over two authenticators must satisfy the audit: %v", err)
+		}
+	})
+
+	t.Run("one deciding member is enough", func(t *testing.T) {
+		t.Parallel()
+		if err := prodAccessServer(func(s *maniflex.Server) {
+			s.Pipeline.Auth.Register(auth.FirstOf(auth.CSRF(), auth.JWTAuth(prodAccessSecret)))
+		}).ValidateProduction(); err != nil {
+			t.Errorf("a FirstOf containing an authenticator must count: %v", err)
+		}
+	})
+
+	t.Run("all members transport-only panics", func(t *testing.T) {
+		t.Parallel()
+		defer func() {
+			r := recover()
+			if r == nil {
+				t.Fatal("FirstOf over only non-deciding middleware must panic; " +
+					"otherwise it satisfies the audit while authenticating no one")
+			}
+			if !strings.Contains(fmt.Sprint(r), "authenticates no one") {
+				t.Errorf("panic does not explain the problem: %v", r)
+			}
+		}()
+		auth.FirstOf(auth.CSRF(), auth.AllowAnonymous())
+	})
 }
 
 // The mark follows the constructor, not one instance: a second CSRF with its own

@@ -344,6 +344,9 @@ import (
 // AUTH (Auth step)
 auth.JWTAuth(secret, auth.JWTOptions{Issuer, Audience, TenantClaim, ScopesClaim, PublicKey})
 auth.APIKeyAuth("X-API-Key", auth.APIKeyEntry{Key, Auth: maniflex.AuthInfo{...}}, ...)
+auth.FirstOf(auth.APIKeyAuth(...), auth.JWTAuth(...)) // accept EITHER credential; registering both
+                                             //   side by side instead demands both. First listed wins when
+                                             //   several are presented; a credential that FAILS stops the chain
 auth.RequireRole("admin")
 auth.RequireScope("posts:read", "posts:write") // ALL of them; RequireAnyScope(...) for any one
 auth.AllowAnonymous()                        // register BEFORE JWTAuth/JWKSAuth + ForModel/ForOperation:

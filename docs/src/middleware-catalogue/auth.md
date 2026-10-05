@@ -113,7 +113,7 @@ to tell you.
 
 ### The JWKS URL must be `https://`
 
-The JWK Set is the *entire* root of trust here. There is no shared secret: a
+The JWK Set is the _entire_ root of trust here. There is no shared secret: a
 token is accepted if its signature verifies against a key from that URL, and
 `Issuer` and `Audience` are claims inside the token, checked only once the
 signature already has. Anyone who can control the bytes that URL returns can
@@ -139,7 +139,7 @@ looks untouched. Such a redirect is refused and the fetch fails.
 
 ### How often your issuer is contacted
 
-The `kid` is read from the token header *before* the signature is verified —
+The `kid` is read from the token header _before_ the signature is verified —
 it has to be, since it selects the key that does the verifying. So an
 unauthenticated client picks which `kid` is looked up, and therefore influences
 when a fetch happens. Three rules keep that from turning into traffic aimed at
@@ -176,8 +176,9 @@ server.Pipeline.Auth.Register(auth.APIKeyAuth("X-API-Key",
 ))
 ```
 
-`AuthMethod` on `ctx.Auth` is set to `"api_key"`. Combine with `JWTAuth` on
-the same step to accept either credential — the first match wins.
+`AuthMethod` on `ctx.Auth` is set to `"api_key"`. To accept **either** an API key
+or a token on the same route, wrap the two in [`FirstOf`](#firstof) — registering
+them side by side on the step does not do it, and demands both.
 
 **`Server.Execute` passes without a key** when the invocation carries a
 principal, on the same terms as [`JWTAuth`](#jwtauth): an in-process call has no
@@ -195,10 +196,50 @@ keys are not retained in the index. Lookup stays O(1) — comparing every entry
 with `subtle.ConstantTimeCompare` would close the same gap but scan every
 configured key on every authenticated request.
 
-These are *static* keys held in memory: they are as good as the deployment's
+These are _static_ keys held in memory: they are as good as the deployment's
 secret handling, they cannot be revoked without a restart, and they do not
 expire. For rotation, revocation, or per-user credentials, use `JWTAuth` with an
 [`auth.Revoker`](#token-revocation-and-logout).
+
+## `FirstOf`
+
+Accepts any one of several credentials on the same route. It runs the
+authenticators in order and stops at the first that establishes an identity.
+
+```go
+server.Pipeline.Auth.Register(auth.FirstOf(
+    auth.APIKeyAuth("X-API-Key", serviceKeys...),
+    auth.JWTAuth(secret),
+))
+```
+
+A **missing** credential is what gets deferred, and only that:
+
+| caller presents              | result                                                                                             |
+| ---------------------------- | -------------------------------------------------------------------------------------------------- |
+| one member's credential      | authenticated as that member's identity                                                            |
+| several members' credentials | authenticated by the **first listed** member; the rest do not run                                  |
+| a credential that fails      | **401** from that member, with its own message; the rest do not run                                |
+| nothing                      | **401** from `FirstOf`, or served anonymously if the route has [`AllowAnonymous`](#allowanonymous) |
+
+Order decides two things: which identity wins when a caller presents
+more than one credential, and which failures are reachable at all. List the
+credential you consider primary first.
+
+Members must be authenticators — middleware that establishes `ctx.Auth` from
+something on the request. `FirstOf` stops at the first member that sets a
+principal and leaves the rest untried, so wrapping a check that decides
+something else (`RequireRole`, `CSRF`) is not meaningful; a `FirstOf` whose
+members _all_ decide nothing panics at construction rather than quietly
+satisfying [production validation](../reference/production-validation.md).
+
+`FirstOf` does not vouch for a principal some earlier middleware installed: if
+none of its own members matches, it answers `401` even when `ctx.Auth` is already
+set. Put an authenticator of your own in the list, where it is one of the
+alternatives, rather than before it.
+
+`Server.Execute` passes with a typed principal, exactly as each member does on
+its own.
 
 ## `RequireRole`
 
@@ -275,7 +316,7 @@ ownership is therefore something only `adminRoles` can do, since they bypass
 `RequireOwner` altogether. An `mfx:"immutable"` owner column is left alone, since
 it cannot change anyway.
 
-The two reads *derived* from a record read are covered on the same terms: its
+The two reads _derived_ from a record read are covered on the same terms: its
 version history (`GET /{model}/{id}/history`) and its attachment downloads
 (`GET /{model}/{id}/{file_field}`). Both name a single record by id, so a caller
 refused the record itself is refused these too.
@@ -298,8 +339,8 @@ which is a list in another shape. Constrain those with `db.ForceFilter` or
 
 ## `Enforce` — attribute-based policies
 
-`RequireRole` and `RequireOwner` answer *who is calling*; `Enforce` answers *may
-this principal touch **this** record*, evaluating a `Policy` against the affected
+`RequireRole` and `RequireOwner` answer _who is calling_; `Enforce` answers _may
+this principal touch **this** record_, evaluating a `Policy` against the affected
 row's fields. A `Policy` is a plain function:
 
 ```go
@@ -318,17 +359,17 @@ server.Pipeline.DB.Register(auth.Enforce(sameTenant), maniflex.ForModel("Patient
 
 Which record the policy sees depends on the operation:
 
-| Operation | Record checked | When |
-|---|---|---|
-| `OpCreate` | the proposed body (`ctx.ParsedBody`) | before the insert |
-| `OpUpdate` / `OpDelete` | the current stored record | fetched before the write |
-| `OpRead` | the fetched record | after the DB step |
-| `OpList` | each row in turn | after the DB step; denied rows are dropped |
-| history / attachment reads | the **parent** record | fetched before the DB step |
-| restore | — | refused with **403** |
-| `OpExport` / `OpSearch` | — | refused with **403** |
+| Operation                  | Record checked                       | When                                       |
+| -------------------------- | ------------------------------------ | ------------------------------------------ |
+| `OpCreate`                 | the proposed body (`ctx.ParsedBody`) | before the insert                          |
+| `OpUpdate` / `OpDelete`    | the current stored record            | fetched before the write                   |
+| `OpRead`                   | the fetched record                   | after the DB step                          |
+| `OpList`                   | each row in turn                     | after the DB step; denied rows are dropped |
+| history / attachment reads | the **parent** record                | fetched before the DB step                 |
+| restore                    | —                                    | refused with **403**                       |
+| `OpExport` / `OpSearch`    | —                                    | refused with **403**                       |
 
-The derived reads are checked *before* the DB step because what that step
+The derived reads are checked _before_ the DB step because what that step
 produces for them is history rows, or file bytes streamed straight to the
 response writer — neither is the record the policy is written about.
 
@@ -341,7 +382,7 @@ handed the whole table to anyone who asked for `/export`. Scope those routes wit
 
 A **restore** is refused for a third reason: its target is soft-deleted, so the
 fetch that feeds the policy finds nothing. Before this, `Enforce` read that as
-"the DB step will answer 404" and stood aside — but the restore statement *does*
+"the DB step will answer 404" and stood aside — but the restore statement _does_
 find the row, so any authenticated caller could un-delete any record by id and
 get the whole row back in the response. A `Policy` is arbitrary Go over a record
 map rather than a predicate, so it cannot be pushed into the restore statement
@@ -364,7 +405,7 @@ Every other operation — custom actions, presigned uploads, `HEAD`, `OPTIONS` �
 passes through untouched. `Enforce` decides about a model's records, and those
 requests carry none for it to decide about.
 
-### An update policy sees the row *before* the update
+### An update policy sees the row _before_ the update
 
 On `OpUpdate` the record is the one **as stored** — not what the request is about
 to write. A policy that only asks "is this your record?" therefore approves a
@@ -409,7 +450,7 @@ never fetches rows the caller can't see.
 ## `AllowAnonymous`
 
 Marks the routes it is registered for as tolerating a request that carries **no
-credential at all**. Register it *before* the authenticator and scope it with the
+credential at all**. Register it _before_ the authenticator and scope it with the
 usual filters; `JWTAuth` and `JWKSAuth` honour it.
 
 ```go
@@ -432,7 +473,7 @@ Two consequences worth planning around:
   stays registered globally, so a model added next month is protected by default.
   Forgetting an entry in the exemption list produces a `401` on the first request
   rather than an endpoint that quietly opens.
-- **A token that *is* presented still authenticates.** This is what scoping
+- **A token that _is_ presented still authenticates.** This is what scoping
   `JWTAuth` away from a route cannot do — there the middleware never runs, so even
   a valid token leaves `ctx.Auth` nil. Use `AllowAnonymous` when a route shows
   more to a signed-in visitor than to a stranger (published posts to everyone,
@@ -440,7 +481,7 @@ Two consequences worth planning around:
 
 `ctx.Auth` stays `nil` for the anonymous caller rather than being filled with a
 blank principal, so every `ctx.Auth == nil` test keeps meaning what it means.
-Ordering is by registration within a step: an `AllowAnonymous` registered *after*
+Ordering is by registration within a step: an `AllowAnonymous` registered _after_
 the authenticator sets its marker too late to be read, which fails closed.
 
 ## `AllowPublicRead`
@@ -504,15 +545,15 @@ everything else (they read `ctx.Auth`).
 
 ### The two granularities
 
-| Call | Effect |
-|---|---|
-| `RevokeToken(ctx, jti, exp)` | blocks one token; the entry may be dropped once `exp` passes, since the token is refused for being expired anyway |
+| Call                                           | Effect                                                                                                                                                          |
+| ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `RevokeToken(ctx, jti, exp)`                   | blocks one token; the entry may be dropped once `exp` passes, since the token is refused for being expired anyway                                               |
 | `RevokeUser(ctx, userID, cutoff, retainUntil)` | blocks every token for the user **issued before `cutoff`**; keep the record until `retainUntil`, which must be past the exp of the longest-lived token you mint |
 
 The per-user cutoff is what makes "log out everywhere" possible: the outstanding
 `jti` values are unknown and usually unknowable, so a per-token blocklist alone
 cannot express it. Logging in again works immediately — the cutoff kills tokens
-issued *before* it, not the account.
+issued _before_ it, not the account.
 
 ### The cutoff's own second
 
@@ -546,11 +587,11 @@ second is refused either way.
 
 Error codes:
 
-| Code | Status | Meaning |
-|---|---|---|
-| `TOKEN_REVOKED` | `401` | explicitly revoked; the client should discard it and log in again |
-| `TOKEN_NOT_REVOCABLE` | `401` | no `jti`, so it cannot be revoked — a minting bug, not a client error |
-| `REVOCATION_UNAVAILABLE` | `503` | the blocklist could not be consulted |
+| Code                     | Status | Meaning                                                               |
+| ------------------------ | ------ | --------------------------------------------------------------------- |
+| `TOKEN_REVOKED`          | `401`  | explicitly revoked; the client should discard it and log in again     |
+| `TOKEN_NOT_REVOCABLE`    | `401`  | no `jti`, so it cannot be revoked — a minting bug, not a client error |
+| `REVOCATION_UNAVAILABLE` | `503`  | the blocklist could not be consulted                                  |
 
 ### Failing closed
 
@@ -650,7 +691,7 @@ request forgery. Two strategies, selected by `CSRFOptions.Mode`:
   cookie on safe requests and requires the client to echo it in a header on
   unsafe ones.
 - **`CSRFSignedToken`** — derives the expected token as `HMAC(SessionID, Secret)`;
-  stateless, no cookie issued. Register it *after* the JWT step so
+  stateless, no cookie issued. Register it _after_ the JWT step so
   `ctx.Auth.SessionID` is populated (e.g. from the token's `jti` claim).
 
 ```go
@@ -689,7 +730,7 @@ is not a way in: an `Execute` with no principal still meets the authenticator.
 ## `ReadAudit`
 
 Writes a structured audit record after every successful read or list — the
-read-side counterpart to `db.AuditLog`, for data where *who looked* is itself the
+read-side counterpart to `db.AuditLog`, for data where _who looked_ is itself the
 compliance control (clinical, financial). Implement a `ReadAuditSink` and register
 `ReadAudit` at the `After` position on the **Response** step, so it fires only on
 a 2xx:

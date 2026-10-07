@@ -746,9 +746,26 @@ server.Pipeline.Response.Register(
 
 Each `ReadAuditRecord` carries the actor, roles, tenant, session, request/trace
 IDs, client IP, and either the accessed `RecordID` (read) or the `RecordCount`
-(list). Writes are **fire-and-forget** — a goroutine with a 5 s timeout, so a slow
-sink never delays the response — and sink errors are discarded, so back a lossless
-requirement with a durable queue.
+(list).
+
+Writes are **fire-and-forget**: the record is built while the request is still on
+the pipeline, then handed to a background goroutine with a 5 s write timeout, so a
+slow sink never delays the response. A sink error is logged at `Warn`, and a sink
+that panics is recovered and reported through `Config.PanicLogger` and
+`Config.OnBackgroundPanic` rather than taking the process down.
+
+**Fire-and-forget bounds the loss; it does not remove it.** `Server.Shutdown`
+waits for audit writes still in flight, so the reads served in a replica's last
+moments are no longer abandoned by a rolling deploy — but that wait is itself
+bounded by `Config.ShutdownTimeout`. Past the deadline the write is cancelled and
+the record is gone, and the shutdown log reports how many did not finish. Back a
+genuinely lossless requirement with a durable queue the sink writes to, rather
+than with the final destination.
+
+One goroutine is in flight per audited read until its write returns, so a read
+burst against a slow sink costs roughly `rate × 5 s` goroutines. That is the price
+of not delaying responses; a sink that honours the context it is handed keeps it
+bounded.
 
 ## Scoping patterns
 

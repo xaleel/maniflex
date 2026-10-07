@@ -226,6 +226,20 @@ func checkJWKSRedirect(from, to *url.URL) error {
 // key resolves the public key for kid, (re)fetching the JWK Set when the cache
 // is empty/stale or when kid is unknown (a likely rotation). It satisfies the
 // keyResolver signature; alg is unused (the key type drives verification).
+// ErrJWKSUnavailable marks a verification failure caused by the issuer rather
+// than by the token: the JWK Set could not be fetched, read or parsed, and no
+// cached key covered the request.
+//
+// It exists so the two failures stop being reported as one. "The issuer is
+// unreachable" and "this token is signed by a key the issuer does not publish"
+// both surfaced as 401 INVALID_TOKEN carrying the fetch error's own text, which
+// is wrong twice over: the message named the IdP's internal host, port and
+// failure class to an unauthenticated caller, and a 401 tells every healthy
+// client to re-authenticate during an outage none of them caused. The revoker
+// had already settled the same question for its own store — see
+// CodeRevocationUnavailable (audit AUTH-14).
+var ErrJWKSUnavailable = errors.New("JWK Set unavailable")
+
 func (c *jwksCache) key(kid, _ string) (crypto.PublicKey, error) {
 	c.mu.RLock()
 	k, ok := c.keys[kid]
@@ -243,7 +257,10 @@ func (c *jwksCache) key(kid, _ string) (crypto.PublicKey, error) {
 		if ok {
 			return k, nil
 		}
-		return nil, err
+		// Wrapped, not replaced: the caller decides the status from the sentinel
+		// and logs the cause, so the detail survives for whoever operates the
+		// service without being handed to whoever sent the token.
+		return nil, fmt.Errorf("%w: %w", ErrJWKSUnavailable, err)
 	}
 
 	c.mu.RLock()

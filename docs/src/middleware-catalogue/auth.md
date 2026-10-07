@@ -101,6 +101,10 @@ or for offline tests. See
 [Auth & Security Hardening](../advanced-topics/security.md#authentication) for the
 production checklist.
 
+When the JWK Set cannot be fetched, read or parsed and no cached key covers the
+request, the signature cannot be checked and that is answered with
+**`503 JWKS_UNAVAILABLE`**, similar to [`REVOCATION_UNAVAILABLE`](#token-revocation-and-logout).
+
 ### Set `Audience` against an identity provider
 
 An IdP signs tokens for **every** application in its tenant with the same keys,

@@ -278,6 +278,19 @@ func jwtMiddleware(secret string, opt JWTOptions, resolve keyResolver) maniflex.
 
 		claims, err := parseJWT(raw, secret, resolve)
 		if err != nil {
+			// "The issuer is unreachable" is not "your token is bad". Reported as
+			// 503 so a healthy client retries instead of re-authenticating, and so
+			// the cause — which names the IdP's host, port and failure class — goes
+			// to the log rather than into the response body. Abort replaces a 5xx
+			// message with generic status text on its own and keeps the code, so the
+			// client still learns which of the two happened (audit AUTH-14).
+			if errors.Is(err, ErrJWKSUnavailable) {
+				ctx.Logger().Error("auth: JWK Set unavailable, cannot verify token",
+					"error", err.Error())
+				ctx.Abort(http.StatusServiceUnavailable, CodeJWKSUnavailable,
+					"could not verify the token signature")
+				return nil
+			}
 			ctx.Abort(http.StatusUnauthorized, "INVALID_TOKEN", err.Error())
 			return nil
 		}

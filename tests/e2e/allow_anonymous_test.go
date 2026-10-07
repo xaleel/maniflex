@@ -266,9 +266,15 @@ func TestAllowAnonymous_JWKSAuthHonoursTheMarker(t *testing.T) {
 
 	t.Run("presented_credential_is_still_verified", func(t *testing.T) {
 		t.Parallel()
+		// 503, not 401, and the status is the evidence rather than a detail: it
+		// can only come from the key fetch, so it proves the presented token
+		// reached resolution instead of being forgiven like an absent one. This
+		// asserted 401 until the fetch failure was reclassified as the issuer's
+		// problem rather than the token's (audit AUTH-14); the property under
+		// test is unchanged, and is now pinned more precisely than before.
 		newSrv(t).GET("/anon_posts", map[string]string{
 			"Authorization": "Bearer " + anonToken(t, map[string]any{"sub": "u1"}),
-		}).AssertStatus(http.StatusUnauthorized)
+		}).AssertStatus(http.StatusServiceUnavailable)
 	})
 }
 

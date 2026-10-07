@@ -80,6 +80,14 @@ const (
 	// credential — a 401 here would send every healthy client into a re-login
 	// storm during a store outage.
 	CodeRevocationUnavailable = "REVOCATION_UNAVAILABLE"
+
+	// CodeJWKSUnavailable means the issuer's JWK Set could not be fetched and no
+	// cached key covered the request, so the signature could not be checked at
+	// all. Like CodeRevocationUnavailable it is a 503 for the same reason: the
+	// server's dependency is down, the credential may be perfectly good, and
+	// answering 401 would send every healthy client to the login page during an
+	// outage none of them caused (audit AUTH-14).
+	CodeJWKSUnavailable = "JWKS_UNAVAILABLE"
 )
 
 // checkRevocation consults the blocklist for a token that has already passed

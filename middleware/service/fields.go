@@ -4,10 +4,12 @@ package service
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -21,6 +23,24 @@ import (
 // package carries no crypto dependency. A bcrypt implementation lives in the
 // maniflex/middleware/service/bcrypt satellite.
 type Hasher func(plaintext string) (string, error)
+
+// ErrClientInput marks a Hasher failure caused by the value rather than by the
+// server, so HashField can answer 4xx instead of 500.
+//
+// It exists because the service package carries no crypto dependency — that is
+// the whole point of the satellite — so it cannot recognise, say,
+// bcrypt.ErrPasswordTooLong on its own. A Hasher wraps this around any error
+// the caller could have avoided and HashField does the rest.
+//
+// bcrypt refuses a password over 72 **bytes**, and mfx:"maxlen:" bounds
+// **characters**, so no tag on the model closes the gap: a 25-character CJK
+// passphrase is 75 bytes and used to arrive as a masked 500 HASH_ERROR, logged
+// as a server fault and alerted on as one (audit AUTH-15).
+var ErrClientInput = errors.New("rejected by the hasher")
+
+// hashFieldTagWarned remembers the model/field pairs already warned about, so
+// the writeonly check below reports once rather than per request.
+var hashFieldTagWarned sync.Map
 
 // HashField hashes the named field in ctx.ParsedBody with the supplied Hasher
 // before the DB write. If the field is absent or nil on a PATCH request the
@@ -36,16 +56,48 @@ type Hasher func(plaintext string) (string, error)
 //	)
 func HashField(field string, h Hasher) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
+		warnIfFieldIsReadable(ctx, field)
+
 		raw, ok := ctx.Field(field)
 		if !ok || raw == nil {
 			return next()
 		}
 		str, ok := raw.(string)
-		if !ok || str == "" {
+		if !ok {
 			return next()
+		}
+		if str == "" {
+			// "Absent" and "empty" are different things, and treating them alike
+			// is what made this dangerous: the empty string was skipped for
+			// hashing but left in the body, so a PATCH stored "" over the hash and
+			// a create stored "" as the password. Either way the account could no
+			// longer be logged into and nothing said so (audit AUTH-15).
+			if ctx.Operation == maniflex.OpUpdate {
+				// Removed rather than refused. A form that submits every field
+				// sends a blank password box on an ordinary save, and that must
+				// mean "leave the password alone", which is what an absent field
+				// already means.
+				ctx.DeleteField(field)
+				return next()
+			}
+			ctx.Abort(http.StatusBadRequest, "INVALID_FIELD",
+				fmt.Sprintf("field %q may not be empty", field))
+			return nil
 		}
 		hashed, err := h(str)
 		if err != nil {
+			// A value the caller could have avoided is their problem, not a server
+			// fault: a 500 here is masked on the wire, so the client is told
+			// nothing, and it trips server-error alerting on user input.
+			if errors.Is(err, ErrClientInput) {
+				// err itself, not errors.Unwrap(err): the satellite wraps two errors
+				// with %w, and Unwrap reports nil for that shape rather than either
+				// of them. The chain's own text carries the cause, which is what the
+				// client needs to act on.
+				ctx.Abort(http.StatusBadRequest, "INVALID_FIELD",
+					fmt.Sprintf("field %q %v", field, err))
+				return nil
+			}
 			ctx.Abort(http.StatusInternalServerError, "HASH_ERROR",
 				fmt.Sprintf("failed to hash field %q: %v", field, err))
 			return nil
@@ -53,6 +105,40 @@ func HashField(field string, h Hasher) maniflex.MiddlewareFunc {
 		ctx.SetField(field, hashed)
 		return next()
 	}
+}
+
+// warnIfFieldIsReadable reports a hashed field that the API will echo back,
+// once per model and field.
+//
+// A field carrying HashField is a secret by construction, and without
+// mfx:"writeonly" (or hidden) the stored hash is returned on every read. That
+// is not an exposure on its own — a bcrypt hash is meant to be unusable — but
+// it is a lockout waiting to happen: a client that reads a record, edits one
+// field and submits the whole thing back sends the hash as the password, and
+// HashField hashes it again. The stored value becomes bcrypt(bcrypt(pw)) and
+// the real password stops working, with nothing in the logs to say why
+// (audit AUTH-15).
+//
+// Warned at the first request rather than at registration because the field's
+// tags live on the model, and a middleware closure cannot see which model it
+// was registered for until a request arrives.
+func warnIfFieldIsReadable(ctx *maniflex.ServerContext, field string) {
+	if ctx.Model == nil {
+		return
+	}
+	f := ctx.Model.FieldByJSONName(field)
+	if f == nil || f.Tags.WriteOnly || f.Tags.Hidden {
+		return
+	}
+	if _, seen := hashFieldTagWarned.LoadOrStore(ctx.Model.Name+"."+field, struct{}{}); seen {
+		return
+	}
+	ctx.Logger().Warn("service.HashField: hashed field is returned in API responses",
+		"model", ctx.Model.Name,
+		"field", field,
+		"why", "a client that round-trips the record resubmits the hash as the password, "+
+			"which is hashed again and locks the account out",
+		"hint", `add mfx:"writeonly" to the field`)
 }
 
 // ── SlugifyField ──────────────────────────────────────────────────────────────

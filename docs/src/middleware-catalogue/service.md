@@ -28,8 +28,38 @@ server.Pipeline.Service.Register(
 ```
 
 `svcbcrypt.Hasher()` takes an optional cost (`svcbcrypt.Hasher(12)`); the default
-is suitable for production. A `Hasher` is just `func(plaintext string) (string,
-error)`, so you can supply argon2 or any other implementation.
+is suitable for production. A cost outside bcrypt's `4..31` **panics at
+construction** rather than failing per request — `Hasher(32)` used to compile and
+then answer `500` to every write, and `Hasher(2)` used to become the default
+silently. A `Hasher` is just `func(plaintext string) (string, error)`, so you can
+supply argon2 or any other implementation.
+
+**Tag the hashed field `mfx:"writeonly"`.** Without it the stored hash is
+returned on every read, and a client that reads a record, changes one field and
+submits the whole thing back sends the hash as the password — which `HashField`
+hashes again. The stored value becomes a hash of a hash, the real password stops
+working, and nothing in the logs says why. `HashField` warns once per model and
+field when the tag is missing.
+
+An **absent** field is skipped on update, so a caller can change other fields
+without resetting the password. An **empty string** is not the same thing: it is
+removed on update (a form that submits every field sends a blank password box on
+an ordinary save) and refused with `400` on create, where storing `""` would
+produce an account that cannot be logged into. Note `mfx:"required"` does not
+cover this — it means *present*, not *non-empty*.
+
+### The 72-byte bcrypt limit
+
+bcrypt refuses a password longer than **72 bytes**, and that is a byte count, not
+a character count. `HashField` answers `400 INVALID_FIELD` naming the limit, so
+it reaches the client as the input error it is rather than as a masked `500`.
+
+`mfx:"maxlen:72"` on the field is worth adding as a first line of defence, but it
+is **not** equivalent: `maxlen` counts characters. A 25-character Japanese or
+emoji passphrase is 75–100 bytes and passes that check while still being over
+bcrypt's limit, which is why the refusal is implemented in the hasher rather than
+left to validation. Any `Hasher` of your own can do the same by wrapping
+`service.ErrClientInput` around an error the caller could have avoided.
 
 ### `SlugifyField`
 

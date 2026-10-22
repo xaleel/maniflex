@@ -191,6 +191,7 @@ Subpackages:
 
 | Sentinel | Package | Returned when |
 |---|---|---|
+| `ErrClientInput` | `middleware/service` | a `Hasher` rejected the value for something the caller could have avoided — bcrypt's 72-byte password limit, say. `HashField` answers `400` instead of `500`; wrap it in a `Hasher` of your own to get the same treatment |
 | `ErrJWKSUnavailable` | `middleware/auth` | the issuer's JWK Set could not be fetched, read or parsed and no cached key covered the request, so the signature could not be checked. `JWKSAuth` maps it to `503 JWKS_UNAVAILABLE` rather than a 401, because the credential may be fine and the dependency is not |
 | `ErrBusClosed` | `events/inproc` | `Publish` after `Close` — the event was never accepted |
 | `ErrQueueFull` | `events/inproc` | a matching subscription's queue is full. The bus is behind; the caller still holds the event |

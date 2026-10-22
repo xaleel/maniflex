@@ -210,15 +210,27 @@ type SetFieldFunc func(ctx *maniflex.ServerContext) any
 // DB write. The function receives the full ServerContext so it can read ctx.Auth,
 // ctx.ResourceID, or other fields.
 //
-//	// Force author_id to the authenticated user
+//	// Stamp a request id onto every write
 //	server.Pipeline.Service.Register(
-//	    service.SetField("author_id", func(ctx *maniflex.ServerContext) any {
-//	        if ctx.Auth != nil { return ctx.Auth.UserID }
-//	        return nil
+//	    service.SetField("request_id", func(ctx *maniflex.ServerContext) any {
+//	        return ctx.RequestID
 //	    }),
-//	    maniflex.ForModel("Post"),
-//	    maniflex.ForOperation(maniflex.OpCreate),
+//	    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate),
 //	)
+//
+// fn returning nil **clears** the field: SetField writes JSON null, which a
+// nilable column stores as NULL. There is no way for fn to say "leave this one
+// alone" — that is deliberate, since ctx.SetField(name, nil) exists precisely so
+// a middleware can clear a value (audit STEP-3).
+//
+// So a resolver that returns nil on the path it cannot answer for is a data
+// eraser, not a no-op. This example used to be an author_id stamp guarded with
+// `if ctx.Auth != nil { ... } return nil`, and registered for OpUpdate as its
+// sibling OwnerScope invites, that nils the owner column on any request without a
+// principal (audit AUTH-16). For identity in particular, reach for OwnerScope,
+// which refuses such a request instead of writing to it; where you do need a
+// conditional stamp, scope the registration with ForOperation and
+// maniflex.ForModel rather than branching inside fn.
 func SetField(field string, fn SetFieldFunc) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
 		ctx.SetField(field, fn(ctx))
@@ -318,13 +330,19 @@ func TimestampWhen(field, condField, condValue string) maniflex.MiddlewareFunc {
 //	)
 func OwnerScope(ownerField string) maniflex.MiddlewareFunc {
 	return func(ctx *maniflex.ServerContext, next func() error) error {
-		if ctx.Auth == nil {
-			return next()
-		}
-		// Stamping "" would give the record to every principal without a user id
-		// at once — whatever keys on the owner column then treats them as one
-		// user (audit AUTH-5).
-		if ctx.Auth.UserID == "" {
+		// No principal and an empty user id are the same problem — the scope
+		// cannot be computed — and used to get opposite answers: the empty id was
+		// refused while a nil principal fell through to next(), leaving whatever
+		// the client sent in the owner column. On a route reached without a
+		// principal (an AllowAnonymous scoped wider than intended, or a route with
+		// no authenticator) that is ownership the caller chose for themselves,
+		// under a middleware whose entire purpose is to choose it for them.
+		//
+		// A scope that cannot be computed must not fall through (audit AUTH-16).
+		// Stamping "" instead would be worse than either: it hands the record to
+		// every id-less principal at once, so whatever keys on the column reads
+		// them as one user (audit AUTH-5).
+		if ctx.Auth == nil || ctx.Auth.UserID == "" {
 			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED",
 				"the authenticated principal has no user id to own records by")
 			return nil

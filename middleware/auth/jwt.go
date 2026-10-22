@@ -92,7 +92,8 @@ type JWTOptions struct {
 	//   *rsa.PublicKey   → RS256 / RS384 / RS512 (PKCS#1 v1.5)
 	//   *ecdsa.PublicKey → ES256 (P-256) / ES384 (P-384) / ES512 (P-521)
 	//
-	// When nil, HMAC-SHA256 (HS256) is used with the secret.
+	// When nil, HMAC is used with the secret: HS256, HS384 or HS512, selected by
+	// the token header.
 	PublicKey crypto.PublicKey
 
 	// Revoker, when set, is consulted on every request after the signature and
@@ -167,7 +168,8 @@ func (o *JWTOptions) applyDefaults() {
 
 // JWTAuth validates a signed JWT and populates ctx.Auth.
 //
-// By default it verifies HMAC-SHA256 (HS256) using the supplied secret. To
+// By default it verifies HMAC using the supplied secret, accepting HS256, HS384
+// or HS512 as the token header asks. To
 // verify asymmetric tokens issued by an identity provider (Keycloak, Auth0,
 // Cognito, etc.) set JWTOptions.PublicKey to an *rsa.PublicKey for RS256/384/512
 // or an *ecdsa.PublicKey for ES256/384/512; the secret argument is then ignored.
@@ -995,10 +997,17 @@ func parseJWT(token, secret string, resolve keyResolver) (map[string]any, error)
 func verifySignature(alg string, signingInput, sig []byte, secret string, pub crypto.PublicKey) error {
 	switch pub.(type) {
 	case nil:
-		if alg != "HS256" {
-			return fmt.Errorf("unexpected algorithm %q (HS256 required)", alg)
+		// HS256, HS384 and HS512, which is what the catalogue has always claimed.
+		// Only HS256 was accepted, so an issuer minting HS512 on that promise got
+		// 401 on every request with "HS256 required" as the only clue — while the
+		// asymmetric branch below already took all six of its variants. The
+		// HS256-only guard was there to stop algorithm confusion, and that is the
+		// pub == nil switch itself, not the digest width (audit AUTH-16).
+		newMAC, err := hmacForAlg(alg)
+		if err != nil {
+			return err
 		}
-		mac := hmac.New(sha256.New, []byte(secret))
+		mac := newMAC([]byte(secret))
 		mac.Write(signingInput)
 		if !hmac.Equal(mac.Sum(nil), sig) {
 			return fmt.Errorf("invalid token signature")
@@ -1039,6 +1048,27 @@ func verifySignature(alg string, signingInput, sig []byte, secret string, pub cr
 		return nil
 	default:
 		return fmt.Errorf("unsupported PublicKey type %T", pub)
+	}
+}
+
+// hmacForAlg returns the HMAC constructor for an HS* algorithm. It mirrors
+// hashForAlg, and is deliberately separate: that one serves the asymmetric path,
+// where a bare hash.Hash is what the verifier wants, while HMAC needs a keyed
+// constructor. Sharing them would mean handing the secret to the asymmetric path.
+//
+// An unrecognised algorithm names the three that are accepted, because the error
+// it replaces ("HS256 required") was also the error for a perfectly good HS512
+// and read as though nothing else existed.
+func hmacForAlg(alg string) (func(key []byte) hash.Hash, error) {
+	switch alg {
+	case "HS256":
+		return func(k []byte) hash.Hash { return hmac.New(sha256.New, k) }, nil
+	case "HS384":
+		return func(k []byte) hash.Hash { return hmac.New(sha512.New384, k) }, nil
+	case "HS512":
+		return func(k []byte) hash.Hash { return hmac.New(sha512.New, k) }, nil
+	default:
+		return nil, fmt.Errorf("unexpected algorithm %q (HS256, HS384 or HS512 required)", alg)
 	}
 }
 

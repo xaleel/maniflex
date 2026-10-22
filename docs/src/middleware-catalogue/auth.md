@@ -24,9 +24,10 @@ server.Pipeline.Auth.Register(
 )
 ```
 
-Supports HMAC (`HS256/384/512`) when the secret is a string and asymmetric
-algorithms (`RS256/384/512`) when `JWTOptions.PublicKey` is set — useful with
-external identity providers (Auth0, Okta, Cognito, etc.). `AuthMethod` on
+Supports HMAC (`HS256/384/512`) when the secret is a string, and asymmetric
+`RS256/384/512` or `ES256/384/512` when `JWTOptions.PublicKey` is set — useful
+with external identity providers (Auth0, Okta, Cognito, etc.). The digest is
+chosen by the token's `alg` header; a header naming anything else is a `401`. `AuthMethod` on
 `ctx.Auth` is set to `"jwt"`.
 
 ### Where the token is read from

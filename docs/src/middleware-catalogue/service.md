@@ -76,17 +76,32 @@ Punctuation is stripped, spaces become hyphens, and the result is lowercased.
 
 ### `SetField`
 
-Sets a field on every create or update based on context — typically pulling
-identity from `ctx.Auth`:
+Sets a field on every create or update to whatever your function returns:
 
 ```go
 server.Pipeline.Service.Register(
-    service.SetField("user_id", func(ctx *maniflex.ServerContext) any {
-        return ctx.Auth.UserID
+    service.SetField("request_id", func(ctx *maniflex.ServerContext) any {
+        return ctx.RequestID
     }),
-    maniflex.ForOperation(maniflex.OpCreate),
+    maniflex.ForOperation(maniflex.OpCreate, maniflex.OpUpdate),
 )
 ```
+
+Two things to know before reaching for it to stamp identity.
+
+`ctx.Auth` is **nil** on any request that reached the route without a principal,
+so `return ctx.Auth.UserID` is a nil dereference — a `500 PANIC` on every
+anonymous create. This example used to be exactly that.
+
+Returning `nil` **clears** the field rather than skipping it: `SetField` writes
+JSON null, which a nilable column stores as NULL. That is deliberate — clearing a
+value is something middleware needs to do — but it means a resolver that returns
+`nil` on the branch it cannot answer for erases data. Guarded as
+`if ctx.Auth != nil { return ctx.Auth.UserID }; return nil` and registered for
+`OpUpdate`, it nils the owner column on any unauthenticated request.
+
+For identity, use [`OwnerScope`](#ownerscope): it refuses a request it cannot
+compute a scope for instead of writing to it.
 
 ### `StripField`
 
@@ -141,9 +156,12 @@ server.Pipeline.Service.Register(
 
 Forces a user-id field to the authenticated caller on create. It is
 `SetField("user_id", ctx.Auth.UserID)` — an overwrite, so any value the client
-sent for that field is replaced (not rejected). A principal with an empty
-`UserID` is refused with `401` rather than stamped, since every such caller would
-otherwise own the record together:
+sent for that field is replaced (not rejected). A request it cannot compute a
+scope for is refused with `401`: that covers both a principal whose `UserID` is
+empty (every such caller would otherwise own the record together) and no
+principal at all, where the client's own value used to be stored verbatim — the
+caller choosing their own owner under the middleware that exists to choose it for
+them:
 
 ```go
 server.Pipeline.Service.Register(

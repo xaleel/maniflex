@@ -500,7 +500,7 @@ func TestMedium_ServiceFieldTransforms(t *testing.T) {
 		testutil.AssertEqual(t, "org_id injected", fmt.Sprintf("%v", body["org_id"]), "owner-abc")
 	})
 
-	t.Run("owner_scope_skips_when_no_auth", func(t *testing.T) {
+	t.Run("owner_scope_refuses_when_no_auth", func(t *testing.T) {
 		t.Parallel()
 		var mu sync.Mutex
 		var captured map[string]any
@@ -518,15 +518,20 @@ func TestMedium_ServiceFieldTransforms(t *testing.T) {
 				}, maniflex.ForModel("Article"), maniflex.ForOperation(maniflex.OpCreate))
 			},
 		})
+		// This asserted 201 and named itself "skips": OwnerScope used to return
+		// next() on a nil principal. Its real guarantee — that org_id is never
+		// injected from a principal that is not there — is unchanged and now
+		// stronger, because the request does not reach the write at all. A scope
+		// that cannot be computed must not fall through, or the client's own
+		// org_id is what gets stored (audit AUTH-16).
 		srv.POST("/articles", map[string]any{"title": "T", "body": "B", "status": "draft"}).
-			AssertStatus(http.StatusCreated)
+			AssertStatus(http.StatusUnauthorized)
 
 		mu.Lock()
 		body := captured
 		mu.Unlock()
-		// With no auth, org_id must not be set by OwnerScope
-		if v, ok := body["org_id"]; ok && v != "" && v != nil {
-			t.Errorf("OwnerScope must not inject org_id when auth is nil, got: %v", v)
+		if body != nil {
+			t.Errorf("the request reached the DB step despite the 401: %v", body)
 		}
 	})
 

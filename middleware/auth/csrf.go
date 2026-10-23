@@ -35,10 +35,30 @@ type CSRFOptions struct {
 	// Mode selects the validation strategy. Default: CSRFDoubleSubmit.
 	Mode CSRFMode
 
-	// Secret is required for CSRFSignedToken; it keys the HMAC.
+	// Secret keys the HMAC. It is required for CSRFSignedToken.
+	//
+	// In CSRFDoubleSubmit mode it is optional, and setting one changes what
+	// the cookie holds: the minted value carries an HMAC of itself, so a
+	// cookie this server did not mint is refused rather than adopted as the
+	// expected token. That is what closes cookie tossing. A double-submit
+	// pair is only as trustworthy as its cookie half, and cookies are not
+	// origin-scoped: a sibling host under the same registrable domain — or an
+	// XSS on one — can set csrf_token for the parent and then holds both
+	// halves. Without a Secret the two halves are still compared, exactly as
+	// before; set one for any app whose domain has hosts it does not control
+	// (audit AUTH-17).
 	Secret string
 
 	// CookieName is the name of the double-submit cookie. Default: "csrf_token".
+	//
+	// A name carrying the "__Host-" prefix is honoured: it forces Secure, the
+	// one condition this middleware did not already meet. A browser respects
+	// the prefix only on a Secure, Path=/, Domain-less cookie, and in return
+	// refuses to accept that cookie from any origin but the exact one serving
+	// it — the other half of the cookie-tossing defence, and the one the
+	// admin panel uses. Opt-in rather than automatic, because this cookie is
+	// non-HttpOnly precisely so your client can read it, and renaming it is
+	// the client's business (audit AUTH-17).
 	CookieName string
 
 	// HeaderName is the request header clients echo the token in.
@@ -64,9 +84,18 @@ type CSRFOptions struct {
 	// zero value be the safe default.
 	EnforceBearer bool
 
-	// Secure marks the issued cookie Secure. Default: false (set to true
-	// behind TLS).
-	Secure bool
+	// Secure marks the issued cookie Secure. Nil, the default, means Secure.
+	//
+	// It was a bool, so the zero value was the insecure one: an app that
+	// never set it sent its CSRF token over plaintext HTTP and nothing
+	// anywhere said so. A fixed secure default fails in the open instead —
+	// the browser withholds the cookie and the app visibly stops working,
+	// which is the truth worth hearing. http://localhost is a secure context
+	// in current browsers, so local development is unaffected; point this at
+	// a false for a service deliberately served over plaintext on a host that
+	// is not. Mirrors admin.Config.Secure, which took the same shape for the
+	// same reason (audit SEC-9, AUTH-17).
+	Secure *bool
 
 	// SameSite controls the issued cookie's SameSite attribute.
 	// Default: http.SameSiteLaxMode.
@@ -75,6 +104,24 @@ type CSRFOptions struct {
 	// TokenLength is the number of random bytes in a double-submit token
 	// before base64 encoding. Default: 32.
 	TokenLength int
+}
+
+// hostCookiePrefix is the cookie-name prefix a browser honours only on a
+// Secure, Path=/, Domain-less cookie, and whose cookie it then accepts from no
+// origin but the exact one that served it.
+const hostCookiePrefix = "__Host-"
+
+// secureCookie resolves Secure: nil means Secure, and a __Host- name forces it
+// since a browser would otherwise ignore the prefix and leave the app with a
+// host-wide cookie under a name that promised not to be one.
+func (o *CSRFOptions) secureCookie() bool {
+	if strings.HasPrefix(o.CookieName, hostCookiePrefix) {
+		return true
+	}
+	if o.Secure != nil {
+		return *o.Secure
+	}
+	return true
 }
 
 func (o *CSRFOptions) applyDefaults() {
@@ -97,12 +144,15 @@ func (o *CSRFOptions) applyDefaults() {
 //
 //	server.Pipeline.Auth.Register(auth.CSRF(auth.CSRFOptions{
 //	    Mode:           auth.CSRFDoubleSubmit,
+//	    Secret:         os.Getenv("CSRF_SECRET"), // signs the cookie; see Secret
 //	    AllowedOrigins: []string{"https://admin.example.com", "*.example.com"},
 //	    // EnforceBearer defaults to false: bearer-authenticated requests
 //	    // are exempt from CSRF checks (bearer tokens are not ambient
 //	    // credentials). Set true only if your bearer flow involves
 //	    // browser-managed cookies as well.
 //	}))
+//
+// The issued cookie is Secure unless CSRFOptions.Secure says otherwise.
 //
 // For CSRFSignedToken mode register it AFTER the JWT middleware so that
 // ctx.Auth.SessionID is already populated.
@@ -131,6 +181,14 @@ func CSRF(opts ...CSRFOptions) maniflex.MiddlewareFunc {
 
 	if opt.Mode == CSRFSignedToken && opt.Secret == "" {
 		panic("auth.CSRF: Secret is required for CSRFSignedToken mode")
+	}
+	// Refusing the contradiction rather than silently resolving it either way:
+	// a non-Secure __Host- cookie is dropped by the browser outright, so the
+	// app would have no CSRF cookie at all and every write would answer 403.
+	if strings.HasPrefix(opt.CookieName, hostCookiePrefix) && opt.Secure != nil && !*opt.Secure {
+		panic("auth.CSRF: CookieName " + opt.CookieName + " carries the " +
+			hostCookiePrefix + " prefix, which a browser honours only on a Secure " +
+			"cookie; drop the prefix or leave Secure unset")
 	}
 
 	fn := func(ctx *maniflex.ServerContext, next func() error) error {
@@ -175,6 +233,14 @@ func CSRF(opts ...CSRFOptions) maniflex.MiddlewareFunc {
 					"missing "+opt.CookieName+" cookie")
 				return nil
 			}
+			// With a Secret configured the cookie half must prove this server
+			// minted it. Without one this is the unsigned pair as before, and
+			// whatever the browser presents is the reference value.
+			if !doubleSubmitCookieValid(c.Value, &opt) {
+				ctx.Abort(http.StatusForbidden, "CSRF_COOKIE_INVALID",
+					"the "+opt.CookieName+" cookie was not issued by this server")
+				return nil
+			}
 			expected = c.Value
 		case CSRFSignedToken:
 			if ctx.Auth == nil || ctx.Auth.SessionID == "" {
@@ -206,7 +272,7 @@ func CSRF(opts ...CSRFOptions) maniflex.MiddlewareFunc {
 // rotate the token after authentication succeeds.
 func IssueCSRFCookie(w http.ResponseWriter, opts CSRFOptions) string {
 	opts.applyDefaults()
-	tok := randomToken(opts.TokenLength)
+	tok := mintDoubleSubmitToken(&opts)
 	setCSRFCookie(w, tok, &opts)
 	return tok
 }
@@ -241,10 +307,10 @@ func hasBearer(r *http.Request) bool {
 }
 
 func ensureDoubleSubmitCookie(w http.ResponseWriter, r *http.Request, opt *CSRFOptions) {
-	if c, err := r.Cookie(opt.CookieName); err == nil && c.Value != "" {
+	if c, err := r.Cookie(opt.CookieName); err == nil && doubleSubmitCookieValid(c.Value, opt) {
 		return
 	}
-	setCSRFCookie(w, randomToken(opt.TokenLength), opt)
+	setCSRFCookie(w, mintDoubleSubmitToken(opt), opt)
 }
 
 func setCSRFCookie(w http.ResponseWriter, value string, opt *CSRFOptions) {
@@ -253,9 +319,45 @@ func setCSRFCookie(w http.ResponseWriter, value string, opt *CSRFOptions) {
 		Value:    value,
 		Path:     "/",
 		HttpOnly: false, // JS must read it to echo in the header
-		Secure:   opt.Secure,
+		Secure:   opt.secureCookie(),
 		SameSite: opt.SameSite,
 	})
+}
+
+// mintDoubleSubmitToken returns a fresh cookie value. With a Secret configured
+// it is "<random>.<HMAC of that random>", so the server can later tell its own
+// token from one someone else wrote into the cookie jar. The MAC is over the
+// encoded text, not the raw bytes, so verification never has to decode.
+func mintDoubleSubmitToken(opt *CSRFOptions) string {
+	tok := randomToken(opt.TokenLength)
+	if opt.Secret == "" {
+		return tok
+	}
+	return tok + "." + doubleSubmitMAC(tok, opt.Secret)
+}
+
+// doubleSubmitCookieValid reports whether value may be used as the expected
+// token. With no Secret every non-empty value qualifies, which is the unsigned
+// behaviour this middleware has always had — an app may set the cookie itself.
+func doubleSubmitCookieValid(value string, opt *CSRFOptions) bool {
+	if value == "" {
+		return false
+	}
+	if opt.Secret == "" {
+		return true
+	}
+	tok, sig, ok := strings.Cut(value, ".")
+	if !ok || tok == "" {
+		return false
+	}
+	want := doubleSubmitMAC(tok, opt.Secret)
+	return subtle.ConstantTimeCompare([]byte(sig), []byte(want)) == 1
+}
+
+func doubleSubmitMAC(token, secret string) string {
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
 func randomToken(n int) string {

@@ -702,9 +702,39 @@ request forgery. Two strategies, selected by `CSRFOptions.Mode`:
 ```go
 server.Pipeline.Auth.Register(auth.CSRF(auth.CSRFOptions{
     AllowedOrigins: []string{"https://admin.example.com", "*.example.com"},
-    Secure:         true,
+    Secret:         os.Getenv("CSRF_SECRET"), // signs the double-submit cookie
 }))
 ```
+
+### The double-submit cookie
+
+The issued cookie is `Path=/`, `SameSite=Lax`, non-`HttpOnly` — your client has
+to read it — and **`Secure` by default**. `CSRFOptions.Secure` is a `*bool`:
+leave it nil and the cookie is `Secure`; point it at a `false` only for a
+service deliberately served over plaintext on a host browsers do not treat as a
+secure context. It used to be a plain `bool`, whose zero value sent the token
+over plaintext HTTP with nothing anywhere saying so. `http://localhost` **is** a
+secure context, so local development is unaffected.
+
+Two further hardenings, both opt-in, both aimed at the same hole: a double-submit
+pair proves only that the caller could write the cookie, and cookies are not
+origin-scoped. A sibling host under the same registrable domain — or an XSS on
+one — can set `csrf_token` for the parent and then holds both halves, and
+`SameSite=Lax` is no obstacle because the forged request is same-site.
+
+- **Set `Secret`.** In `CSRFDoubleSubmit` mode it is optional, and setting one
+  makes the minted value `<random>.<HMAC of that random>`. A cookie this server
+  did not mint is then refused with `CSRF_COOKIE_INVALID` rather than adopted as
+  the expected token, and replaced on the next safe request. With no `Secret`
+  the pair is compared exactly as before, so an app that mints the cookie itself
+  keeps working.
+- **Name the cookie `__Host-…`.** `CookieName: "__Host-csrf_token"` forces
+  `Secure` and makes the browser refuse that cookie from any origin but the
+  exact one that served it. Not automatic, because the cookie is non-`HttpOnly`
+  precisely so your client can read it, and renaming it is the client's
+  business. An explicit `Secure: &plaintext` alongside the prefix panics at
+  registration: a browser drops a non-`Secure` `__Host-` cookie, which would
+  leave the app with no token at all and every write answering `403`.
 
 Bearer-authenticated requests are **exempt by default** — a bearer token read
 from JS is not an ambient credential, so it isn't CSRF-vulnerable. Set
@@ -712,10 +742,12 @@ from JS is not an ambient credential, so it isn't CSRF-vulnerable. Set
 The optional `AllowedOrigins` allowlist (exact origins or `*.host` wildcards) is
 checked first on unsafe methods. Failures abort with a `403` carrying one of
 `CSRF_ORIGIN_REJECTED`, `CSRF_TOKEN_MISSING`, `CSRF_COOKIE_MISSING`,
-`CSRF_NO_SESSION`, or `CSRF_TOKEN_MISMATCH`.
+`CSRF_COOKIE_INVALID`, `CSRF_NO_SESSION`, or `CSRF_TOKEN_MISMATCH`.
 
 From a login Action, hand the token to the SPA with `auth.IssueCSRFCookie(w,
-opts)` (double-submit) or `auth.SignedCSRFToken(sessionID, secret)` (signed mode).
+opts)` (double-submit) or `auth.SignedCSRFToken(sessionID, secret)` (signed
+mode). `IssueCSRFCookie` mints under the same options, so pass it the same ones
+the middleware got — a `Secret` there signs the rotated cookie too.
 
 **`Server.Execute` passes untouched.** An in-process call has no browser to be
 tricked, no cookie jar to spend from and no header to echo a token back in, so the

@@ -139,7 +139,10 @@ server.Pipeline.Auth.Register(auth.JWKSAuth(
   cookies.** A bearer token read from JavaScript is not an ambient credential, so
   a token-authenticated API is not CSRF-vulnerable and the middleware exempts
   bearer requests by default. Cookie-borne sessions are the case that needs it.
-  See [CSRF](../middleware-catalogue/auth.md#csrf) for both modes. The admin
+  See [CSRF](../middleware-catalogue/auth.md#csrf) for both modes, and set
+  `CSRFOptions.Secret` in double-submit mode if your domain has hosts you do not
+  control: it signs the cookie, so a value planted from a sibling host is
+  refused rather than adopted as the expected token. The admin
   panel carries its own, unconditionally — see
   [Admin Panel](../deployment/admin.md#csrf-protection) — and configuring one
   does not affect the other.

@@ -25,7 +25,6 @@ import (
 	"maps"
 	"math/big"
 	"net/http"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -947,19 +946,15 @@ func abortOwnershipMismatch(ctx *maniflex.ServerContext, ownerCol string) bool {
 // renders as its decimal, which is the form JWTAuth gives a numeric sub.
 //
 // The core's foreignKeyID does the same job for cascades; it is unexported, and
-// one small copy beats a new exported symbol frozen at v1.0.
+// one small copy beats a new exported symbol frozen at v1.0. The dereference
+// itself is derefValue, shared with the Enforce policy map, which needs the same
+// unwrapping for the same reason (audit AUTH-21).
 func ownerIDOf(v any) string {
-	rv := reflect.ValueOf(v)
-	if !rv.IsValid() {
-		return "" // a nil interface: the column is absent or NULL
+	d := derefValue(v)
+	if d == nil {
+		return "" // absent, NULL, or a nil pointer: nobody owns this row
 	}
-	if rv.Kind() == reflect.Pointer {
-		if rv.IsNil() {
-			return ""
-		}
-		rv = rv.Elem()
-	}
-	return fmt.Sprint(rv.Interface())
+	return fmt.Sprint(d)
 }
 
 // ── AllowPublicRead ────────────────────────────────────────────────────────────

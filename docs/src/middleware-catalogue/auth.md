@@ -380,8 +380,10 @@ Return `(false, nil)` for a **403 FORBIDDEN**; a non-nil error becomes a `500`.
 Register on the **DB** step (not Auth), so the row is available:
 
 ```go
+// r is keyed by JSON name — "tenantId" for `json:"tenantId" db:"tenant_id"`,
+// the same name the client sends and ctx.Field takes.
 sameTenant := func(ctx *maniflex.ServerContext, r map[string]any) (bool, error) {
-    return r["tenant_id"] == ctx.Auth.TenantID, nil
+    return r["tenantId"] == ctx.Auth.TenantID, nil
 }
 server.Pipeline.DB.Register(auth.Enforce(sameTenant), maniflex.ForModel("Patient"))
 ```
@@ -401,6 +403,47 @@ Which record the policy sees depends on the operation:
 The derived reads are checked _before_ the DB step because what that step
 produces for them is history rows, or file bytes streamed straight to the
 response writer — neither is the record the policy is written about.
+
+### The record the policy sees
+
+One shape on every operation, whichever branch above produced it:
+
+- **Keyed by JSON name**, never by DB column. `json:"tenantId" db:"tenant_id"` is
+  `r["tenantId"]` — the name the client sends, the name `ctx.Field` takes, and
+  the name your policy can therefore use to compare the stored value against the
+  proposed one.
+- **Pointer scalars dereferenced.** A nullable `*string` column is a `string`,
+  and a `NULL` one is `nil`.
+- **Every field the model declares**, `mfx:"hidden"` and `mfx:"writeonly"`
+  included. A policy is server-side Go deciding who may touch a record, so a
+  column the API does not publish is exactly the kind of fact it may need. It
+  does not reach the response: that is still the serialised view.
+- Keys that name no field — populated `?include=` relations, framework
+  `*_hmac` columns — are carried through under their own names.
+
+Until v0.17.0 this was four different shapes. `OpCreate` and `OpList` were keyed
+by JSON name and the rest by DB column, so on any model whose two names differ —
+any camelCase API over snake_case columns — a policy could only be written
+correctly for half the operations, and the half that failed did so **open**:
+
+```go
+// Intended: archived records are frozen.
+return r["isArchived"] != true, nil
+```
+
+That holds on create and list, and is vacuously true on read, update and delete,
+because the key there was `is_archived` — so the rule that freezes archived
+records froze nothing on the operations it existed for. A nullable column also
+arrived as a `*string` on one half and a `string` on the other, and
+hidden/writeonly fields were present on some branches and absent on others. Every
+example in these docs used a field whose two names coincide, which is why none of
+them showed it.
+
+**`OpCreate` is still the one operation whose map is not a stored record**, and
+cannot be: there is no stored record yet. It is the parsed body, so it carries no
+`id` and no timestamps, and it carries a `writeonly` field only because the
+client sent one. A rule that needs the stored shape has nothing to read on
+create — refuse there on the body, or let `OpUpdate` carry the rule.
 
 Export and search are refused rather than passed for the same reason: both return
 their rows without ever populating `ctx.Response`, so there is nothing left for a
@@ -448,7 +491,9 @@ On `OpUpdate` the record is the one **as stored** — not what the request is ab
 to write. A policy that only asks "is this your record?" therefore approves a
 `PATCH` that hands the record to someone else, because the stored row is still
 yours at the moment it is checked. The values being written are on the request
-body; read them with `ctx.Field` when the rule is about the result:
+body; read them with `ctx.Field` when the rule is about the result — and both
+take the **JSON name**, so the stored value and the proposed one are reached by
+the same key:
 
 ```go
 ownerOnly := func(ctx *maniflex.ServerContext, r map[string]any) (bool, error) {

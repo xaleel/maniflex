@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
@@ -138,7 +140,8 @@ type AuthInfo struct {
 	// non-nil when Auth is set, so middleware may write to it to enrich the
 	// principal. Every authenticator here guarantees that, APIKeyAuth by
 	// giving each request its own copy of the configured entry (audit
-	// AUTH-18); a custom authenticator should do the same.
+	// AUTH-18), and Server.Execute by copying the principal the caller passes
+	// it (audit AUTH-22); a custom authenticator should do the same.
 	Claims map[string]any
 
 	// Multi-tenancy — the partition key for the authenticated principal.
@@ -168,6 +171,39 @@ type AuthInfo struct {
 	// JWTAuth sets this to "jwt"; APIKeyAuth sets it to "api_key".
 	// Conventional values: "jwt", "api_key", "session", "oauth2".
 	AuthMethod string
+}
+
+// clone returns a principal for one request to run on: the reference types
+// copied, and Claims non-nil so middleware can enrich it without checking.
+//
+// It exists because a principal that outlives the request is shared by every
+// request that uses it, and the sharing is invisible until a middleware writes.
+// APIKeyAuth held one per configured key and leaked roles and claims between
+// callers (audit AUTH-18); Server.Execute ran on the pointer the app handed it,
+// so one invocation's enrichment was the next one's starting state and a role
+// granted for one invocation opened a gate for the one after (audit AUTH-22).
+// Both entry points now copy, so neither can.
+//
+// The copy is one level deep: a Claims value that is itself a map or a slice is
+// still shared with the original. Going deeper would mean reflecting over
+// arbitrary claim payloads on every request, and the thing being protected is
+// the principal's own shape — who the caller is, what they may do — not the
+// interior of a claim an app put there.
+//
+// nil in, nil out: an unauthenticated request has no principal to copy.
+func (a *AuthInfo) clone() *AuthInfo {
+	if a == nil {
+		return nil
+	}
+	c := *a
+	c.Roles = slices.Clone(a.Roles)
+	c.Scopes = slices.Clone(a.Scopes)
+	if a.Claims == nil {
+		c.Claims = map[string]any{}
+	} else {
+		c.Claims = maps.Clone(a.Claims)
+	}
+	return &c
 }
 
 // ServerContext is the single shared object threaded through every pipeline step

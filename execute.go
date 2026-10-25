@@ -82,6 +82,14 @@ type Invocation struct {
 	// Auth is the principal this invocation runs as. It is a typed value rather
 	// than a header, which is the point: a caller cannot forge it and a client
 	// cannot reach it. Leave it nil to run unauthenticated.
+	//
+	// The pipeline runs on a per-invocation copy, so one principal can be reused
+	// across invocations — the natural shape for a batch, and the one the
+	// maker-checker example below uses. Middleware that enriches the principal
+	// writes into that copy: the enrichment does not carry into the next
+	// invocation, and it is not visible on this struct afterwards. Claims may be
+	// left nil; the copy always has a map, as the AuthInfo.Claims contract
+	// requires.
 	Auth *AuthInfo
 
 	// Tx, when set, is the transaction this invocation joins. Several Executes
@@ -256,7 +264,12 @@ func (c *Server) Execute(ctx context.Context, inv Invocation) (*APIResponse, err
 
 	sctx.inProcess = true
 	sctx.ResourceID = inv.ID
-	sctx.Auth = inv.Auth
+	// Copied, not aliased. Running on the caller's own struct made every
+	// invocation that shared a principal share its enrichment too — a role
+	// granted for one invocation was still granted for the next, and a principal
+	// built without Claims panicked the first middleware that enriched it, with
+	// no HTTP recoverer on this path to turn it into a 500 (audit AUTH-22).
+	sctx.Auth = inv.Auth.clone()
 	sctx.Tx = inv.Tx
 
 	if err := c.Pipeline.execute(sctx); err != nil {

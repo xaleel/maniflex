@@ -177,6 +177,41 @@ and middleware names are labels for trace logs, not identifiers (six shipped
 middlewares share the name `otel.span`). Writing the exemption at the registration
 site keeps it type-checked, greppable, and rename-proof.
 
+### The principal is copied per invocation
+
+The pipeline runs on a copy of `Invocation.Auth`, not on your struct. That is
+what makes the loop above safe: one `requester`, N invocations, and no
+invocation inherits anything from the one before it.
+
+```go
+requester := principalFor(request.RequesterID)  // built once, reused below
+
+for _, item := range request.Items {
+    // Each pass runs on its own copy of requester. Nothing a middleware
+    // wrote onto the principal is still there on the next pass, or on
+    // requester itself.
+    srv.Execute(ctx.Ctx, invocationFor(item, &requester, tx))
+}
+```
+
+Two things follow:
+
+- **`Claims` may be nil.** The copy always has a map, as the `AuthInfo.Claims`
+  contract requires, so a middleware that enriches the principal can write to it
+  without checking. A `&maniflex.AuthInfo{UserID: id}` with nothing else set is a
+  complete principal.
+- **Enrichment does not come back out.** Middleware that resolves a tenant onto
+  `ctx.Auth.TenantID`, or appends a role, is writing to the copy; your
+  `requester` is unchanged after `Execute` returns. Pass what you need in, and
+  return what you need out through the response.
+
+Before v0.17.0 the pipeline ran on the pointer, so a reused principal
+accumulated: a role a middleware granted for one invocation was still granted for
+the next, and `RequireRole` honoured it. If your code depends on reading
+middleware enrichment back out of its own principal, that is the behaviour that
+changed — and it never worked over HTTP, where the authenticator builds the
+principal and there is no caller struct to read.
+
 ## No step can be skipped
 
 There is no `Steps` bitmask. `Execute` runs the whole pipeline, so it cannot become
@@ -201,7 +236,7 @@ meant to be constrained by — which is the vulnerability, not the fix.
 | `ID` | Primary key. Required for read, update, delete. |
 | `Body` | Request body for create/update. `[]byte`/`json.RawMessage`/`string` verbatim; anything else is marshalled. |
 | `Query` | `url.Values` carrying filters, sort, include, pagination. |
-| `Auth` | The principal. Typed, unforgeable, not a header. |
+| `Auth` | The principal. Typed, unforgeable, not a header. Copied per invocation, so one principal is safe to reuse across a batch. |
 | `Tx` | Transaction to join. The caller owns it — `Execute` neither commits nor rolls back. |
 | `Header` | Request headers for middleware that reads them (`If-Match`, `Accept-Language`). Not `Authorization` — use `Auth`. |
 

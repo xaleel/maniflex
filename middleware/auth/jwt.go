@@ -22,8 +22,10 @@ import (
 	"fmt"
 	"hash"
 	"log/slog"
+	"maps"
 	"math/big"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -570,9 +572,34 @@ func validateRegisteredClaims(claims map[string]any, opt JWTOptions, now time.Ti
 // ── APIKeyAuth ─────────────────────────────────────────────────────────────────
 
 // APIKeyEntry maps an API key string to the AuthInfo it grants.
+//
+// Auth is a template, not the principal itself: each matching request is given
+// its own copy, with Roles, Scopes and Claims cloned so that middleware writing
+// to the principal cannot reach back into the entry. Without that every request
+// for one key shared the entry's backing arrays, and the sharing was not subtle
+// — a middleware compacting ctx.Auth.Roles in place stripped a role from the
+// entry for every later caller, and one writing to ctx.Auth.Claims handed its
+// value to the next request that read it (audit AUTH-18).
+//
+// The template is copied once at registration too, so mutating the slice you
+// passed in afterwards cannot change what the key grants.
 type APIKeyEntry struct {
 	Key  string
 	Auth maniflex.AuthInfo
+}
+
+// principalFromTemplate returns a per-request principal built from a configured
+// AuthInfo: the reference fields get backing stores of their own, and Claims is
+// non-nil whatever the template said, which is what AuthInfo documents.
+func principalFromTemplate(tmpl maniflex.AuthInfo) maniflex.AuthInfo {
+	tmpl.Roles = slices.Clone(tmpl.Roles)
+	tmpl.Scopes = slices.Clone(tmpl.Scopes)
+	if tmpl.Claims == nil {
+		tmpl.Claims = map[string]any{}
+	} else {
+		tmpl.Claims = maps.Clone(tmpl.Claims)
+	}
+	return tmpl
 }
 
 // APIKeyAuth validates a static API key from a request header.
@@ -608,7 +635,7 @@ func APIKeyAuth(header string, entries ...APIKeyEntry) maniflex.MiddlewareFunc {
 	// keys are not retained in this map at all.
 	index := make(map[[sha256.Size]byte]maniflex.AuthInfo, len(entries))
 	for _, e := range entries {
-		index[sha256.Sum256([]byte(e.Key))] = e.Auth
+		index[sha256.Sum256([]byte(e.Key))] = principalFromTemplate(e.Auth)
 	}
 	return func(ctx *maniflex.ServerContext, next func() error) error {
 		// Same rule jwtMiddleware applies, and for the same reason: a request
@@ -641,13 +668,24 @@ func APIKeyAuth(header string, entries ...APIKeyEntry) maniflex.MiddlewareFunc {
 				fmt.Sprintf("missing %s header", header))
 			return nil
 		}
-		info, ok := index[sha256.Sum256([]byte(key))]
+		tmpl, ok := index[sha256.Sum256([]byte(key))]
 		if !ok {
 			ctx.Abort(http.StatusUnauthorized, "UNAUTHORIZED", "invalid API key")
 			return nil
 		}
+		// Per request, not per entry: the struct copy a map lookup gives is
+		// shallow, so Roles, Scopes and Claims would still be the entry's own.
+		info := principalFromTemplate(tmpl)
 		if info.AuthMethod == "" {
 			info.AuthMethod = "api_key"
+		}
+		if info.IdentityType == maniflex.IdentityAnonymous {
+			// An API key is a machine credential, and this is the one
+			// authenticator whose caller provably is not a person — the field's
+			// "treat the zero value as a human" reading cannot apply here. An
+			// explicit value on the entry still wins, for a key issued as
+			// somebody's personal access token.
+			info.IdentityType = maniflex.IdentityServiceAccount
 		}
 		ctx.Auth = &info
 		return next()
@@ -990,6 +1028,15 @@ func parseJWT(token, secret string, resolve keyResolver) (map[string]any, error)
 	var claims map[string]any
 	if err := json.Unmarshal(claimBytes, &claims); err != nil {
 		return nil, fmt.Errorf("malformed token claims: %w", err)
+	}
+	if claims == nil {
+		// A payload of literally `null` unmarshals to a nil map and no error.
+		// AuthInfo.Claims is documented as non-nil whenever Auth is set, and a
+		// middleware or VerifyToken hook that enriches the principal writes to
+		// it, so a nil map here is a panic later. Such a token needs both
+		// AllowNoSubject and AllowNoExpiry to get past the registered-claim
+		// checks, which is why it went unnoticed (audit AUTH-18).
+		claims = map[string]any{}
 	}
 	return claims, nil
 }

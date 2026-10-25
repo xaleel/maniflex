@@ -134,7 +134,12 @@ type AuthInfo struct {
 	// Core identity — present in every auth scheme.
 	UserID string
 	Roles  []string
-	Claims map[string]any // raw token claims or equivalent; always non-nil when Auth is set
+	// Claims holds the raw token claims or their equivalent. It is always
+	// non-nil when Auth is set, so middleware may write to it to enrich the
+	// principal. Every authenticator here guarantees that, APIKeyAuth by
+	// giving each request its own copy of the configured entry (audit
+	// AUTH-18); a custom authenticator should do the same.
+	Claims map[string]any
 
 	// Multi-tenancy — the partition key for the authenticated principal.
 	// Set by JWTAuth when JWTOptions.TenantClaim is configured, or directly
@@ -143,6 +148,11 @@ type AuthInfo struct {
 
 	// IdentityType classifies the caller. Zero value (IdentityAnonymous) means
 	// the type was not determined; treat it as a human for backward compatibility.
+	//
+	// APIKeyAuth is the exception: it sets IdentityServiceAccount when the
+	// matching APIKeyEntry left the field unset, since an API key is a machine
+	// credential and "treat it as a human" cannot apply. An entry that names a
+	// type keeps it.
 	IdentityType AuthIdentityType
 
 	// Scopes holds the OAuth2 scopes granted to the token.

@@ -181,9 +181,25 @@ server.Pipeline.Auth.Register(auth.APIKeyAuth("X-API-Key",
 ))
 ```
 
-`AuthMethod` on `ctx.Auth` is set to `"api_key"`. To accept **either** an API key
-or a token on the same route, wrap the two in [`FirstOf`](#firstof) — registering
-them side by side on the step does not do it, and demands both.
+`AuthMethod` on `ctx.Auth` is set to `"api_key"`, and `IdentityType` to
+`IdentityServiceAccount` unless the entry names one itself — an API key is a
+machine credential, so the field's usual "treat the zero value as a human"
+reading cannot apply. Label a key issued as somebody's personal access token
+with `IdentityType: maniflex.IdentityHuman` on the entry.
+
+To accept **either** an API key or a token on the same route, wrap the two in
+[`FirstOf`](#firstof) — registering them side by side on the step does not do it,
+and demands both.
+
+**`APIKeyEntry.Auth` is a template, not the principal.** Each matching request
+gets its own copy, with `Roles`, `Scopes` and `Claims` cloned, so middleware that
+writes to `ctx.Auth` cannot reach back into the entry. Without that the sharing
+was not subtle: a middleware compacting `ctx.Auth.Roles` in place stripped a role
+from the entry for every later caller of that key, and one writing to
+`ctx.Auth.Claims` handed its value to the next request that read it. `Claims` is
+non-nil for these callers too, as `AuthInfo` documents — it was nil, so enriching
+the principal answered `500`. The template is also copied at registration, so
+editing the slice you passed in afterwards cannot change what the key grants.
 
 **`Server.Execute` passes without a key** when the invocation carries a
 principal, on the same terms as [`JWTAuth`](#jwtauth): an in-process call has no

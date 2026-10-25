@@ -127,12 +127,50 @@ An intentionally public search endpoint can set
 `ValidateProduction`, not an authorization middleware. Production validation
 also requires `MaxLimit` to remain positive.
 
-Because per-model row-level rules are not applied, only set `GlobalSearchable` on
-models that are safe to expose this way. When you need per-model authorisation,
-build a scoped Action with `ctx.Search` instead (see above) and attach your own
-middleware. Middleware registered for `OpSearch` on the Deserialize, Validate,
-Service, or DB steps never runs (the endpoint skips them) and is reported with a
-startup warning.
+#### Row scoping
+
+A forced filter scopes the search — `db.Tenancy`, `db.ForceFilter`, or anything
+you wrote and declared `maniflex.ProvidesScope()` — but **only when it is
+registered somewhere `OpSearch` runs**:
+
+```go
+// Scopes every operation, search included.
+server.Pipeline.Auth.Register(
+    db.Tenancy("org_id", orgFromAuth),
+    maniflex.ProvidesScope(),
+)
+```
+
+Two conditions, and both are easy to miss:
+
+- **The step must be one the endpoint runs**, which means `Pipeline.Auth`. The
+  conventional `Pipeline.DB` registration does not reach search: hoisting with
+  `ProvidesScope()` changes _when_ a middleware runs, never _whether_ it does, so
+  a scope on a step `OpSearch` skips is skipped with it.
+- **It must not be restricted with `ForModel`.** Search runs on a synthetic
+  `__search` model, which no `ForModel` can name. A `ForOperation` filter must
+  name `OpSearch` (or be absent) for the same reason — `OpList` does not cover it
+  the way it covers `OpExport`.
+
+Each model is filtered independently, and a forced filter naming a column a model
+does not have excludes that model rather than passing it through: the filter
+renderer answers an unresolvable field with a false predicate. So a tenancy scope
+silently leaves out a searchable model that carries no tenant column.
+
+When a `GlobalSearchable` model carries a scope that cannot reach search, the
+server **says so at boot**, naming the model, the middleware and the reason, and
+refuses to start under `Config.Strict`. Nothing can report it at request time: an
+unscoped search simply answers `200`.
+
+`auth.Enforce` is different — a `Policy` needs a record and a search hit is an id
+and a snippet, so it cannot scope one at all. Registered where search runs it
+refuses the request with `403`, which is a safe answer; registered on the DB step
+it does neither, and that is one of the cases boot reports.
+
+If none of that fits, build a scoped Action with `ctx.Search` (see above) and
+attach your own middleware, or leave the model out of `GlobalSearchable`.
+Middleware registered for `OpSearch` on the Deserialize, Validate, Service or DB
+steps never runs, and that registration is a startup error.
 
 ## Merge order
 

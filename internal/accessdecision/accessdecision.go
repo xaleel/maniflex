@@ -1,6 +1,11 @@
-// Package accessdecision lets the framework's own middleware tell
-// Server.ValidateProduction that it sits on the Auth step without deciding who
-// may call anything.
+// Package accessdecision carries the two things the framework's own middleware
+// needs to tell a startup check about itself, neither of which a func value can
+// hold on its own.
+//
+// The first lets middleware tell Server.ValidateProduction that it sits on the
+// Auth step without deciding who may call anything. The second lets it say that
+// it decides which rows a caller may see, so a check can ask whether that scope
+// reaches a given endpoint (see MarkRowScope).
 //
 // The production audit asks, of every mounted operation, whether someone decided
 // who may reach it, and it answers by looking for Pipeline.Auth middleware that
@@ -19,7 +24,9 @@
 // writes.
 //
 // Internal so it stays a contract between the framework's packages rather than
-// an API applications could use to switch the audit off.
+// an API applications could use to switch the audit off. An application's own
+// scope middleware says the same thing with maniflex.ProvidesScope(), which is
+// public and which the checks read as well.
 package accessdecision
 
 import (
@@ -40,4 +47,34 @@ func MarkNotADecision(fn any) {
 func IsNotADecision(fn any) bool {
 	_, ok := notDecisions.Load(reflect.ValueOf(fn).Pointer())
 	return ok
+}
+
+var rowScopes sync.Map // code pointer → label
+
+// MarkRowScope records that fn decides which rows a caller may see, under the
+// given label — "db.Tenancy", "auth.Enforce". fn must be a func value.
+//
+// The label is what makes a startup warning actionable: "this model's rows are
+// not scoped" sends the operator looking, while "db.Tenancy on the DB step does
+// not reach GET /search" names the registration to move. There is no way to
+// recover a constructor's name from a closure, so the constructor states it.
+//
+// The mark is not an alternative to maniflex.ProvidesScope(): that declares where
+// the middleware should run, and this only says what it is for. A check that
+// asks "is this model scoped" reads both — the mark for the framework's own
+// middleware whatever way it was registered, and ProvidesScope for an
+// application's.
+func MarkRowScope(fn any, label string) {
+	rowScopes.Store(reflect.ValueOf(fn).Pointer(), label)
+}
+
+// RowScopeLabel returns the label fn was marked with, and whether it was marked
+// at all.
+func RowScopeLabel(fn any) (string, bool) {
+	v, ok := rowScopes.Load(reflect.ValueOf(fn).Pointer())
+	if !ok {
+		return "", false
+	}
+	label, _ := v.(string)
+	return label, true
 }

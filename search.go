@@ -83,6 +83,19 @@ func searchSyntheticModel() *ModelMeta { return &ModelMeta{Name: searchModelName
 //
 // With Models empty it searches every ModelConfig.GlobalSearchable model — the
 // behaviour the built-in GET /search endpoint relies on.
+//
+// Forced filters on ctx.Query — the ones db.Tenancy, db.ForceFilter and any
+// maniflex.ProvidesScope middleware append — constrain every model searched. Only
+// Forced ones: a client's own ?filter= reaches ctx.Query too and has never scoped
+// anything, which is the same rule the write-scope pre-flight applies.
+//
+// Each model is filtered independently, and a forced filter naming a column a
+// model does not have matches no row of it rather than none of them — the filter
+// renderer answers a missing field with a false predicate. So a tenant filter
+// silently excludes a searchable model that carries no tenant column, instead of
+// handing over the whole table. See the scope note on GET /search: a scope must
+// be registered somewhere OpSearch runs, or it never reaches this call at all
+// (audit AUTH-20).
 func (c *ServerContext) Search(opts SearchOptions) ([]SearchResult, error) {
 	// SearchOptions carries no per-model filters — it is a text query over a set
 	// of models — so there is nowhere to put an ActionScope, and a search that
@@ -116,10 +129,15 @@ func (c *ServerContext) search(opts SearchOptions) ([]SearchResult, error) {
 		limit = defaultSearchLimit
 	}
 
+	scope, err := searchScope(c.Query)
+	if err != nil {
+		return nil, err
+	}
+
 	driver := c.DriverType()
 	perModel := make([][]SearchResult, 0, len(models))
 	for _, m := range models {
-		hits, err := c.searchModel(m, query, limit, driver)
+		hits, err := c.searchModel(m, query, limit, driver, scope)
 		if err != nil {
 			return nil, err
 		}
@@ -129,6 +147,35 @@ func (c *ServerContext) search(opts SearchOptions) ([]SearchResult, error) {
 	}
 
 	return mergeSearch(perModel, limit, opts.PerModelLimit), nil
+}
+
+// searchScope returns the forced filters a search must apply, from the request's
+// own query parameters.
+//
+// Only Forced filters count. A client's own ?filter= lands in the same slice and
+// has never constrained anything the server did not ask it to — the write-scope
+// pre-flight draws the same line for the same reason.
+//
+// A nested-relation filter is refused rather than dropped. It renders as
+// "relation"."column", which needs a JOIN the search query does not emit, so
+// passing it through would produce SQL referencing a table that was never joined;
+// dropping it would serve the model unscoped, which is the failure this exists to
+// prevent. Aggregate refuses the same shape for the same reason. db.ForceFilterVia
+// is the middleware that produces one.
+func searchScope(q *QueryParams) ([]*FilterExpr, error) {
+	if q == nil {
+		return nil, nil
+	}
+	forced := forcedFilters(q.Filters)
+	for _, f := range forced {
+		if f.IsNested {
+			return nil, fmt.Errorf("maniflex: search cannot apply the forced filter on %q.%q: "+
+				"a nested-relation scope needs a join the search query does not emit — scope the "+
+				"searchable model by one of its own columns, or leave it out of global search",
+				f.RelationKey, f.NestedField)
+		}
+	}
+	return forced, nil
 }
 
 // resolveSearchModels validates an explicit model list (each must be registered
@@ -160,13 +207,14 @@ func (c *ServerContext) resolveSearchModels(names []string) ([]*ModelMeta, error
 
 // searchModel runs the FTS query for one model and returns its hits, already
 // ordered best-first, capped at limit.
-func (c *ServerContext) searchModel(m *ModelMeta, query string, limit int, driver DriverType) ([]SearchResult, error) {
+func (c *ServerContext) searchModel(m *ModelMeta, query string, limit int, driver DriverType,
+	scope []*FilterExpr) ([]SearchResult, error) {
 	pb := newAggPH(driver)
 	var sql string
 	if driver == Postgres {
-		sql = searchSQLPostgres(m, query, limit, pb)
+		sql = searchSQLPostgres(m, query, limit, pb, scope)
 	} else {
-		sql = searchSQLSQLite(m, query, limit, pb)
+		sql = searchSQLSQLite(m, query, limit, pb, scope)
 		if sql == "" {
 			// Input had no usable FTS5 tokens (e.g. punctuation only) — no matches.
 			return nil, nil
@@ -197,7 +245,7 @@ func (c *ServerContext) searchModel(m *ModelMeta, query string, limit int, drive
 // with websearch_to_tsquery, ranked with ts_rank, and excerpted with ts_headline
 // over the concatenated searchable columns. The query text is bound three times
 // (rank, headline, predicate) in the order it appears in the SQL.
-func searchSQLPostgres(m *ModelMeta, query string, limit int, pb *aggPH) string {
+func searchSQLPostgres(m *ModelMeta, query string, limit int, pb *aggPH, scope []*FilterExpr) string {
 	lang := searchLang(m)
 	tbl := Quote(m.TableName)
 	ftsCol := tbl + "." + Quote("fts")
@@ -221,6 +269,9 @@ func searchSQLPostgres(m *ModelMeta, query string, limit int, pb *aggPH) string 
 	if sd := searchSoftDeleteCond(m, Postgres); sd != "" {
 		where += " AND " + sd
 	}
+	if sc := BuildFilterSQL(m, scope, Postgres, pb); sc != "" {
+		where += " AND " + sc
+	}
 
 	return fmt.Sprintf(
 		"SELECT %s.%s AS id, %s AS score, %s AS snippet FROM %s WHERE %s ORDER BY score DESC LIMIT %s",
@@ -232,7 +283,7 @@ func searchSQLPostgres(m *ModelMeta, query string, limit int, pb *aggPH) string 
 // MATCH, scores with the negated bm25 `rank` (so higher = better, comparable to
 // Postgres ts_rank), and excerpts with snippet(). Returns "" when the sanitised
 // match query is empty (no usable tokens).
-func searchSQLSQLite(m *ModelMeta, query string, limit int, pb *aggPH) string {
+func searchSQLSQLite(m *ModelMeta, query string, limit int, pb *aggPH, scope []*FilterExpr) string {
 	match := sqliteSearchMatch(query)
 	if match == "" {
 		return ""
@@ -243,6 +294,11 @@ func searchSQLSQLite(m *ModelMeta, query string, limit int, pb *aggPH) string {
 	where := fmt.Sprintf("%s MATCH %s", fts, pb.add(match))
 	if sd := searchSoftDeleteCond(m, SQLite); sd != "" {
 		where += " AND " + sd
+	}
+	// BuildFilterSQL qualifies every column as "table"."column", so a scope
+	// column cannot be mistaken for one of the joined FTS table's.
+	if sc := BuildFilterSQL(m, scope, SQLite, pb); sc != "" {
+		where += " AND " + sc
 	}
 
 	// snippet(<fts>, -1, '', '', '…', 12): column -1 = pick the best matching

@@ -1083,6 +1083,7 @@ func (c *Server) handler() (http.Handler, error) {
 		warnUninferableSchemas(c.registry, &c.cfg, c.cfg.logger())
 		warnUnsignedFileACL(c.registry, &c.cfg, c.cfg.logger())
 		warnReplaceDropsRedaction(c.registry, c.Pipeline, c.cfg.logger())
+		warnUnscopedGlobalSearch(c.registry, c.Pipeline, c.globalSearch, &c.cfg, c.cfg.logger())
 		c.warnProductionUnvalidated()
 		// Close the registration window — after this the composed chains are cached
 		// per (model, operation) instead of rebuilt six times per request, so the

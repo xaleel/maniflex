@@ -402,12 +402,20 @@ The derived reads are checked _before_ the DB step because what that step
 produces for them is history rows, or file bytes streamed straight to the
 response writer — neither is the record the policy is written about.
 
-Export and search are refused rather than passed for the same reason, minus a way
-to fix it: both stream their rows out without ever populating `ctx.Response`, so
-there is nothing left for a post-filter to remove. `ForOperation(OpList)` covers
-`OpExport` by alias, so before this a policy that correctly filtered your list
-handed the whole table to anyone who asked for `/export`. Scope those routes with
-[`db.ForceFilter`](db.md) or `db.Tenancy` instead.
+Export and search are refused rather than passed for the same reason: both return
+their rows without ever populating `ctx.Response`, so there is nothing left for a
+post-filter to remove. `ForOperation(OpList)` covers `OpExport` by alias, so
+before this a policy that correctly filtered your list handed the whole table to
+anyone who asked for `/export`. Scope those routes with
+[`db.ForceFilter`](db.md) or `db.Tenancy` instead — **registered where the
+operation runs**: the DB step for an export, `Pipeline.Auth` for a search, since
+`GET /search` runs neither the DB step nor anything scoped `ForModel`. See
+[Searching → Row scoping](../using-the-api/searching.md#row-scoping).
+
+The refusal only fires from a step the operation runs, so an `Enforce` on the DB
+step is simply absent from `GET /search` rather than refusing it. A
+`GlobalSearchable` model in that position is named at boot, and refused under
+`Config.Strict`.
 
 A **restore** is refused for a third reason: its target is soft-deleted, so the
 fetch that feeds the policy finds nothing. Before this, `Enforce` read that as

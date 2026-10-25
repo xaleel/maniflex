@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/internal/accessdecision"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -50,8 +51,15 @@ type ForceFilterFunc func(ctx *maniflex.ServerContext) any
 // see cannot ask — which for a scoped Singleton means its row id is unknown
 // during validation, and validate.UniqueField reports the row as conflicting
 // with itself (audit 13.12).
+//
+// Register it on Pipeline.Auth, not Pipeline.DB, if the model is
+// GlobalSearchable: GET /search does not run the DB step, and hoisting changes
+// when a middleware runs rather than whether it does, so a DB-step scope is
+// absent from search however it is declared. A ForModel restriction keeps it
+// out too, since search runs on a synthetic model. The server names the gap at
+// boot and refuses it under Config.Strict (audit AUTH-20).
 func ForceFilter(field string, fn ForceFilterFunc) maniflex.MiddlewareFunc {
-	return func(ctx *maniflex.ServerContext, next func() error) error {
+	mw := func(ctx *maniflex.ServerContext, next func() error) error {
 		val := fn(ctx)
 		if val == nil {
 			return next()
@@ -87,6 +95,11 @@ func ForceFilter(field string, fn ForceFilterFunc) maniflex.MiddlewareFunc {
 		})
 		return next()
 	}
+	// So a startup check can ask whether this model's scope reaches an endpoint
+	// the step it is registered on does not run — GET /search is the one that
+	// does not (audit AUTH-20).
+	accessdecision.MarkRowScope(mw, "db.ForceFilter")
+	return mw
 }
 
 // ForceFilterVia scopes a model that has no column to scope by, through the
@@ -123,7 +136,7 @@ func ForceFilter(field string, fn ForceFilterFunc) maniflex.MiddlewareFunc {
 // request against the model being served, so registering it on a model without
 // that relation fails the request rather than serving it unscoped.
 func ForceFilterVia(relationKey, parentField string, fn ForceFilterFunc) maniflex.MiddlewareFunc {
-	return func(ctx *maniflex.ServerContext, next func() error) error {
+	mw := func(ctx *maniflex.ServerContext, next func() error) error {
 		val := fn(ctx)
 		if val == nil {
 			return next()
@@ -140,6 +153,8 @@ func ForceFilterVia(relationKey, parentField string, fn ForceFilterFunc) manifle
 		ctx.Query.Filters = append(ctx.Query.Filters, f)
 		return next()
 	}
+	accessdecision.MarkRowScope(mw, "db.ForceFilterVia")
+	return mw
 }
 
 // ── Tenancy ───────────────────────────────────────────────────────────────────
@@ -162,7 +177,7 @@ type TenantFunc func(ctx *maniflex.ServerContext) string
 //	    }),
 //	)
 func Tenancy(tenantField string, fn TenantFunc) maniflex.MiddlewareFunc {
-	return func(ctx *maniflex.ServerContext, next func() error) error {
+	mw := func(ctx *maniflex.ServerContext, next func() error) error {
 		tenantID := fn(ctx)
 		if tenantID == "" {
 			ctx.Abort(http.StatusForbidden, "FORBIDDEN", "tenant identity could not be determined")
@@ -200,6 +215,8 @@ func Tenancy(tenantField string, fn TenantFunc) maniflex.MiddlewareFunc {
 
 		return next()
 	}
+	accessdecision.MarkRowScope(mw, "db.Tenancy")
+	return mw
 }
 
 // scopeFieldImmutable reports whether the model's scope column — Tenancy's

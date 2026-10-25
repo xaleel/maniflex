@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/xaleel/maniflex"
+	"github.com/xaleel/maniflex/internal/accessdecision"
 )
 
 // Policy is an authorization function that determines whether the authenticated
@@ -55,7 +56,7 @@ type Policy func(ctx *maniflex.ServerContext, resource map[string]any) (allow bo
 // pagination totals reflect the pre-filter count. Use db.ForceFilter for
 // efficient row-level scoping when the policy can be expressed as a WHERE clause.
 func Enforce(p Policy) maniflex.MiddlewareFunc {
-	return func(ctx *maniflex.ServerContext, next func() error) error {
+	mw := func(ctx *maniflex.ServerContext, next func() error) error {
 		switch ctx.Operation {
 		case maniflex.OpCreate:
 			return enforceOnBody(ctx, p, next)
@@ -100,13 +101,21 @@ func Enforce(p Policy) maniflex.MiddlewareFunc {
 			// /export.
 			ctx.Abort(http.StatusForbidden, "FORBIDDEN",
 				"auth.Enforce cannot evaluate a policy on "+string(ctx.Operation)+
-					": it streams rows the policy never sees. Scope this route with "+
-					"db.ForceFilter or db.Tenancy, which filter in SQL.")
+					": it returns rows the policy never sees. Scope this route with "+
+					"db.ForceFilter or db.Tenancy instead, registered where the "+
+					"operation runs — the DB step for an export, Pipeline.Auth for a "+
+					"search.")
 			return nil
 		default:
 			return next()
 		}
 	}
+	// A policy is not a filter, so this cannot scope GET /search at all — it can
+	// only refuse it, and only from a step that endpoint runs. Marked so the
+	// startup check can say which model is left unscoped and where to move the
+	// registration (audit AUTH-20).
+	accessdecision.MarkRowScope(mw, "auth.Enforce")
+	return mw
 }
 
 // AllOf returns a Policy that allows only when every policy in ps allows.

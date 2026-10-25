@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.17.0
+## v0.17.0 (2026-10-25)
 
 - **Security (behaviour change):** `Server.Execute` now runs on a copy of `Invocation.Auth` rather than the caller’s struct. A reused principal carried each invocation’s middleware enrichment into the next, so a role granted for one still opened a `RequireRole` gate for the next; nil `Claims` also panicked the first middleware to enrich it, uncaught. **Migrate:** code reading enrichment back out of its own `*AuthInfo` after `Execute` no longer sees it.
 - **Security (behaviour change):** an `auth.Enforce` policy is handed one map shape on every operation: keyed by **JSON name**, pointers dereferenced, every field included. It got JSON names on create and list and DB columns elsewhere, so on a model whose two names differ a rule like `r["isArchived"] != true` was vacuously true on exactly the read, update and delete it existed for. **Migrate:** policies on such a model must use the JSON name; the half that worked before is the half to keep.

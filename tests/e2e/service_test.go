@@ -232,6 +232,16 @@ func newLifecycleServer(t *testing.T, setup func(*maniflex.Server), cfg maniflex
 	if cfg.ShutdownTimeout == 0 {
 		cfg.ShutdownTimeout = 5 * time.Second
 	}
+	// A connection that was accepted but never sent a request header is noise
+	// for every test built on this fixture — and net/http will not treat one as
+	// idle until it has sat there for a full 5 seconds (Go issue 22682), so
+	// http.Server.Shutdown waits out any budget shorter than that and reports a
+	// failure for a drain it had nothing to wait for. The production default of
+	// 10s is right for a real server and far too long here, where the shortest
+	// budget under test is 200ms.
+	if cfg.ReadHeaderTimeout == 0 {
+		cfg.ReadHeaderTimeout = 100 * time.Millisecond
+	}
 
 	server := maniflex.New(cfg)
 	server.MustRegister(testutil.DefaultModels()...)

@@ -358,6 +358,14 @@ collection still returns every row, and that includes `GET /{model}/export`,
 which is a list in another shape. Constrain those with `db.ForceFilter` or
 `db.Tenancy` on the DB step, which filter in SQL and so cover the export too.
 
+**A nullable owner column works**, including a numeric one: `OwnerID *string` or
+`*int64` — the pointer field [a `NULL` column
+needs](../defining-your-api/models.md#nullability-is-the-go-type) — is compared by value. It did
+not until v0.17.0: the stored value was rendered as it stood, so a pointer became
+a hex address and the comparison could never match, answering `404` to the
+record's own owner on every read, update and delete. A row whose owner column is
+`NULL` belongs to nobody and stays `404` to every non-admin, which is unchanged.
+
 ## `Enforce` — attribute-based policies
 
 `RequireRole` and `RequireOwner` answer _who is calling_; `Enforce` answers _may

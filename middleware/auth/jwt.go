@@ -25,6 +25,7 @@ import (
 	"maps"
 	"math/big"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -916,11 +917,49 @@ func abortOwnershipMismatch(ctx *maniflex.ServerContext, ownerCol string) bool {
 		}
 		return true
 	}
-	if fmt.Sprint(rec[ownerCol]) != ctx.Auth.UserID {
+	if ownerIDOf(rec[ownerCol]) != ctx.Auth.UserID {
 		ctx.Abort(http.StatusNotFound, "NOT_FOUND", "record not found")
 		return true
 	}
 	return false
+}
+
+// ownerIDOf renders a stored owner column as the id string to compare against
+// ctx.Auth.UserID.
+//
+// It exists because the column may be a pointer. A nullable owner — OwnerID
+// *string, which is how an optional owner is declared — reaches here as a
+// *string, since the map the accessor returns holds each struct field as it
+// stands. fmt.Sprint of that is a hex address, so the comparison could never
+// match and RequireOwner answered 404 to the record's own owner on every read,
+// update and delete: not a leak, since a non-owner got 404 too, but the
+// middleware was entirely non-functional on any model whose owner column can be
+// null, and the 404 is indistinguishable from "no such record" (audit AUTH-19).
+//
+// db.ForceFilter and db.Tenancy never had this: their write pre-flight re-reads
+// the row through the forced filters and so compares in SQL. This middleware
+// compares a field to the caller in Go, which is what put a Go value shape on
+// the path.
+//
+// A nil pointer gives "", which cannot equal a UserID — RequireOwner refuses an
+// empty UserID before reaching here — so a row with no owner stays 404 to every
+// non-admin, as it was. Dereferencing also makes a numeric owner work: *int64
+// renders as its decimal, which is the form JWTAuth gives a numeric sub.
+//
+// The core's foreignKeyID does the same job for cascades; it is unexported, and
+// one small copy beats a new exported symbol frozen at v1.0.
+func ownerIDOf(v any) string {
+	rv := reflect.ValueOf(v)
+	if !rv.IsValid() {
+		return "" // a nil interface: the column is absent or NULL
+	}
+	if rv.Kind() == reflect.Pointer {
+		if rv.IsNil() {
+			return ""
+		}
+		rv = rv.Elem()
+	}
+	return fmt.Sprint(rv.Interface())
 }
 
 // ── AllowPublicRead ────────────────────────────────────────────────────────────
